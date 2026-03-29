@@ -1,0 +1,41 @@
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# 仮想環境
+venv/
+.venv/
+env/
+ENV/
+
+# ユーザー設定ファイル（端末ごとに異なるため除外）
+*_settings.json
+config.json
+
+# アーカイブ
+*.zip
+
+# 動画ファイル
+*.mp4
+*.mkv
+*.avi
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Windows
+Thumbs.db
+Desktop.ini
+ehthumbs.db
