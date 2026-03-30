@@ -1,0 +1,296 @@
+"""
+RRoulette — スピンエンジン Mixin
+  - _start_spin: スピン開始（結果先行決定・velocity 逆算）
+  - _frame: アニメーション更新ループ
+  - _finish / _flash: 停止処理・結果オーバーレイ
+  - _calc_final_angle / _compress_to: 停止角度計算・強制減速
+  - _handle_action / _on_cv_release / _on_space_press: 操作ハンドラ
+"""
+
+import math
+import random
+
+from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS
+
+
+class SpinEngineMixin:
+
+    _ACTION_WINDOW_MS = 400  # 連打をまとめる時間窓（ms）
+
+    # ════════════════════════════════════════════════════════════════
+    #  スピン制御
+    # ════════════════════════════════════════════════════════════════
+    def _start_spin(self):
+        if self.spinning or len(self.items) < 2:
+            return
+        self.spinning      = True
+        self._flashing     = False  # フラッシュを強制終了
+        self.set_item_spin_lock(True)
+        self.set_cfg_spin_lock(True)
+        self._decelerating = False
+        self._action_count = 0
+        if self._action_timer:
+            self.root.after_cancel(self._action_timer)
+            self._action_timer = None
+        if getattr(self, "_result_win_id", None) is not None:
+            self.cv.delete(self._result_win_id)
+            self._result_win_id = None
+        self.cv.delete("result_overlay")
+        target_frames = max(1, self._spin_duration * 1000 / 16)
+
+        # ── 結果を先に完全ランダム決定し、そこへ着地する velocity を逆算 ──
+        n = len(self.items)
+        arc = 360.0 / n
+        target_seg   = random.randrange(n)
+        target_angle = arc * target_seg + self._pointer_angle + random.uniform(arc * 0.15, arc * 0.85)
+        self._final_angle = target_angle % 360
+
+        # target_angle に着地するための総回転量を決める
+        v_ref = 25.0
+        d_ref = (0.06 / v_ref) ** (1.0 / target_frames)
+        ref_total = (v_ref - 0.06) / (1.0 - d_ref)
+        base_rots  = max(3, int(ref_total / 360))
+        needed_residual = (target_angle - self.angle) % 360
+        adjusted_total  = base_rots * 360 + needed_residual
+
+        # adjusted_total を実現する velocity を二分探索
+        def total_for_v(v):
+            d = (0.06 / v) ** (1.0 / target_frames)
+            return (v - 0.06) / (1.0 - d)
+
+        lo, hi = 1.0, 300.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if total_for_v(mid) < adjusted_total:
+                lo = mid
+            else:
+                hi = mid
+        self.velocity = (lo + hi) / 2
+        self.decel    = (0.06 / self.velocity) ** (1.0 / target_frames)
+
+        self.prev_seg = self._seg_at_pointer()
+        self._frame()
+
+    def _frame(self):
+        if not self.spinning:
+            return
+        self.angle     = (self.angle + self.velocity) % 360
+        self.velocity *= self.decel
+
+        seg = self._seg_at_pointer()
+        if seg != self.prev_seg:
+            self.prev_seg = seg
+            if self.velocity > 0.6:
+                self.snd.play_tick()
+
+        self._redraw()
+
+        if self.velocity < 0.06:
+            self._finish()
+        else:
+            self.root.after(16, self._frame)
+
+    def _finish(self):
+        self.spinning      = False
+        self._decelerating = False
+        self._action_count = 0
+        if self._action_timer:
+            self.root.after_cancel(self._action_timer)
+            self._action_timer = None
+        seg = self._seg_at_pointer()
+        if seg >= 0:
+            winner = self.items[seg]
+            self._record_result(winner)
+            self.snd.play_win()
+            seg_color = SEGMENT_COLORS[seg % len(SEGMENT_COLORS)]
+            self._flash(4, winner, seg_color)
+        else:
+            self.set_item_spin_lock(False)
+            self.set_cfg_spin_lock(False)
+
+    def _flash(self, times: int, winner: str, seg_color: str):
+        self._flashing = True   # _redraw() の割り込みをブロック
+        log_on_top = getattr(self, "_log_on_top", False)
+        log_show   = getattr(self, "_log_overlay_show", True)
+
+        # 前回の window item を削除してから再描画
+        if getattr(self, "_result_win_id", None) is not None:
+            self.cv.delete(self._result_win_id)
+            self._result_win_id = None
+        self.cv.delete("result_overlay")
+        self.cv.delete("log_overlay")
+
+        if log_on_top:
+            # 結果を canvas item として先に描き、ログを canvas item として後に描く（ログ前面）
+            self._draw_result_overlay(winner, times, seg_color, use_window=False)
+            if log_show:
+                self._draw_log_overlay()
+        else:
+            # ログを canvas item として描き、結果を window item として描く
+            # window item は canvas の全 draw item より常に最前面に表示される
+            if log_show:
+                self._draw_log_overlay()
+            self._draw_result_overlay(winner, times, seg_color, use_window=True)
+
+        if times > 0:
+            self.root.after(220, lambda: self._flash(times - 1, winner, seg_color))
+        else:
+            self._flashing = False  # フラッシュ完了
+            self.set_item_spin_lock(False)
+            self.set_cfg_spin_lock(False)
+
+    def _draw_result_overlay(self, winner: str, times: int, seg_color: str,
+                              use_window: bool = False):
+        """結果フラッシュ枠とテキストを描画する。
+
+        use_window=True のとき、canvas.create_window() で埋め込みキャンバスを配置する。
+        window item は全 canvas draw item より常に最前面に表示されるため、
+        ログオーバーレイ（draw item）より確実に前面になる。
+        """
+        pw, ph = 280, 90
+        text_color = WHITE if times % 2 else GOLD
+
+        if use_window:
+            rc = self._result_canvas
+            rc.configure(width=pw, height=ph, bg=seg_color,
+                         highlightthickness=3, highlightbackground="#ff0000")
+            rc.delete("all")
+            # 疑似アウトライン（4方向オフセットで黒縁）
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                rc.create_text(pw // 2 + dx, ph // 2 + dy,
+                               text=winner, fill="#000000",
+                               font=("Meiryo", 16, "bold"), width=pw - 20)
+            # 本体テキスト
+            rc.create_text(pw // 2, ph // 2, text=winner, fill=text_color,
+                           font=("Meiryo", 16, "bold"), width=pw - 20)
+            self._result_win_id = self.cv.create_window(
+                self.CX, self.CY, window=rc, anchor="center"
+            )
+        else:
+            x0 = self.CX - pw // 2
+            y0 = self.CY - ph // 2
+            x1 = self.CX + pw // 2
+            y1 = self.CY + ph // 2
+            self.cv.create_rectangle(
+                x0, y0, x1, y1,
+                fill=seg_color, outline="#ff0000", width=3,
+                tags="result_overlay",
+            )
+            # 疑似アウトライン（4方向オフセットで黒縁）
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                self.cv.create_text(
+                    self.CX + dx, self.CY + dy,
+                    text=winner, fill="#000000",
+                    font=("Meiryo", 16, "bold"), tags="result_overlay",
+                    width=pw - 20,
+                )
+            # 本体テキスト
+            self.cv.create_text(
+                self.CX, self.CY,
+                text=winner, fill=text_color,
+                font=("Meiryo", 16, "bold"), tags="result_overlay",
+                width=pw - 20,
+            )
+
+    # ════════════════════════════════════════════════════════════════
+    #  クリック / スペースキー操作
+    # ════════════════════════════════════════════════════════════════
+    def _calc_final_angle(self) -> float:
+        """現在の velocity / decel から自然停止する最終角度をシミュレートして返す"""
+        a, v, d = self.angle, self.velocity, self.decel
+        while v >= 0.06:
+            a = (a + v) % 360
+            v *= d
+        return a
+
+    def _on_cv_release(self, event):
+        """キャンバス上で ButtonRelease-1 が発生したとき、ドラッグでなければ操作を処理する"""
+        if self._dragging_pointer:
+            self._dragging_pointer = False
+            return
+        dx = abs(event.x_root - self._click_start_x)
+        dy = abs(event.y_root - self._click_start_y)
+        if dx > 5 or dy > 5:
+            return
+        # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブ26px超）のみ受け付ける
+        dist = math.hypot(event.x - self.CX, event.y - self.CY)
+        if dist > self.R or dist <= 26:
+            return
+        self._handle_action()
+
+    def _on_space_press(self, event):
+        """スペースキー押下: スピン開始 / 連打で停止操作"""
+        self._handle_action()
+
+    def _handle_action(self):
+        """操作の共通ハンドラ。
+        - 非スピン中: スピン開始
+        - スピン中 ダブル操作: 停止フェーズ開始
+        - スピン中 トリプル操作: 即時停止
+        """
+        if not self.spinning:
+            self._start_spin()
+            return
+
+        self._action_count += 1
+        if self._action_timer:
+            self.root.after_cancel(self._action_timer)
+        self._action_timer = self.root.after(
+            self._ACTION_WINDOW_MS, self._reset_action_count
+        )
+
+        if self._action_count == 2:
+            self._compress_to(self._double_duration)
+        elif self._action_count >= 3:
+            self._action_count = 0
+            if self._action_timer:
+                self.root.after_cancel(self._action_timer)
+                self._action_timer = None
+            self._compress_to(self._triple_duration)
+
+    def _reset_action_count(self):
+        """連打タイマー満了 → カウントをリセット"""
+        self._action_count = 0
+        self._action_timer = None
+
+    def _compress_to(self, target_seconds: int):
+        """残りアニメーションを target_seconds 秒に圧縮する。
+        0 = 即時停止。残り時間が既に target 以下の場合は介入しない。
+        """
+        if not self.spinning:
+            return
+
+        if self.decel < 1.0 and self.velocity > 0.06:
+            remaining_frames = math.log(0.06 / self.velocity) / math.log(self.decel)
+        else:
+            remaining_frames = 0
+
+        target_frames = target_seconds * 1000 / 16
+
+        if remaining_frames <= target_frames:
+            return
+
+        if target_seconds == 0:
+            self.angle = self._final_angle
+            self._redraw()
+            self._finish()
+            return
+
+        self._decelerating = True
+
+        total_remaining = 0.0
+        vv, dd = self.velocity, self.decel
+        while vv >= 0.06:
+            total_remaining += vv
+            vv *= dd
+
+        if total_remaining < 0.5:
+            self.angle = self._final_angle
+            self._redraw()
+            self._finish()
+            return
+
+        fast_frames = max(1, int(target_frames))
+        new_d = (0.06 / max(self.velocity, 0.07)) ** (1.0 / fast_frames)
+        self.velocity = total_remaining * (1.0 - new_d)
+        self.decel = new_d

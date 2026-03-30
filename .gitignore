@@ -18,7 +18,9 @@ env/
 ENV/
 
 # ユーザー設定ファイル（端末ごとに異なるため除外）
+# 命名規則: ツール名_settings.json（例: roulette_settings.json）
 *_settings.json
+*_config.json
 config.json
 
 # アーカイブ
@@ -39,3 +41,6 @@ config.json
 Thumbs.db
 Desktop.ini
 ehthumbs.db
+
+# 内部開発メモ（公開しない）
+Document/*.txt

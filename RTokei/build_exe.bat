@@ -1,6 +1,7 @@
 @echo off
+chcp 65001 > nul
 echo ====================================
-echo  RTokei - exeビルド
+echo  RTokei - Build EXE
 echo ====================================
 echo.
 
@@ -11,34 +12,34 @@ if not exist "%PI_PATH%" (
 )
 
 if not exist "%PI_PATH%" (
-    echo [Install] PyInstaller をインストールします...
+    echo [Install] Installing PyInstaller...
     pip install pyinstaller
     for /f "delims=" %%i in ('python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable), 'Scripts', 'pyinstaller.exe'))" 2^>nul') do set PI_PATH=%%i
 )
 
 if not exist "%PI_PATH%" (
-    echo [Error] pyinstaller.exe が見つかりません。
-    echo 手動で実行してください: pip install pyinstaller
+    echo [Error] pyinstaller.exe not found.
+    echo Please run manually: pip install pyinstaller
     pause
     exit /b 1
 )
 
 echo [Use] %PI_PATH%
-echo [Build] RTokei.exe を作成します...
+echo [Build] Creating RTokei.exe ...
 echo.
 
-"%PI_PATH%" --onefile --noconsole --name "RTokei" clock.py --clean
+"%PI_PATH%" --onefile --noconsole --name "RTokei" rtokei.py --clean
 
 if errorlevel 1 (
     echo.
-    echo [Error] ビルドに失敗しました。
+    echo [Error] Build failed.
     pause
     exit /b 1
 )
 
 echo.
 echo ====================================
-echo  完了！ dist\RTokei.exe が作成されました
+echo  Done! dist\RTokei.exe is ready.
 echo ====================================
 echo.
 pause

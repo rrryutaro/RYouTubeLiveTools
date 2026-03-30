@@ -6,6 +6,8 @@ Google Sheets Viewer
 - システムの Chrome を専用プロファイルで起動・埋め込み
 """
 
+VERSION = "0.1.0"
+
 import sys
 import os
 import json
@@ -29,9 +31,9 @@ from PyQt6.QtGui import QKeySequence, QShortcut, QCursor
 # 設定
 # ─────────────────────────────────────────────────────────────
 APP_DIR     = Path(os.environ.get("APPDATA", Path.home())) / "SheetsViewer"
-CONFIG_FILE = APP_DIR / "config.json"
+CONFIG_FILE = APP_DIR / "sheetsviewer_settings.json"
 PROFILE_DIR = APP_DIR / "chrome_profile"
-TOOLBAR_H   = 44
+TOOLBAR_H   = 48
 RESIZE_MARGIN = 6   # ウィンドウ端のリサイズ判定幅(px)
 
 def load_config() -> dict:
@@ -71,7 +73,18 @@ def find_chrome() -> str | None:
 # ─────────────────────────────────────────────────────────────
 user32 = ctypes.windll.user32
 
+# SetWindowPos の argtypes を明示（HWND は void* = 8byte のため -1/-2 を正しく渡すため必須）
+user32.SetWindowPos.argtypes = [
+    ctypes.c_void_p,  # hWnd
+    ctypes.c_void_p,  # hWndInsertAfter（HWND_TOPMOST=-1 等）
+    ctypes.c_int, ctypes.c_int,   # X, Y
+    ctypes.c_int, ctypes.c_int,   # cx, cy
+    ctypes.c_uint,                # uFlags
+]
+user32.SetWindowPos.restype = ctypes.c_bool
+
 GWL_STYLE      = -16
+GWL_EXSTYLE    = -20
 WS_CAPTION     = 0x00C00000
 WS_THICKFRAME  = 0x00040000
 WS_BORDER      = 0x00800000
@@ -79,6 +92,10 @@ WS_DLGFRAME    = 0x00400000
 WS_SYSMENU     = 0x00080000
 WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
+WS_EX_TOOLWINDOW = 0x00000080   # タスクバー・Alt+Tab から非表示
+WS_EX_APPWINDOW  = 0x00040000   # タスクバーに表示（削除対象）
+HWND_TOPMOST     = -1
+HWND_NOTOPMOST   = -2
 SWP_FRAMECHANGED = 0x0020
 SWP_NOMOVE       = 0x0002
 SWP_NOSIZE       = 0x0001
@@ -103,10 +120,15 @@ def find_hwnd_by_pid(pid: int) -> int | None:
     return found[0] if found else None
 
 def strip_chrome_decoration(hwnd: int):
+    # ウィンドウ装飾を除去
     style = user32.GetWindowLongW(hwnd, GWL_STYLE)
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_BORDER |
                WS_DLGFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
     user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+    # タスクバー・Alt+Tab から非表示にする（独立ウィンドウとして表示されないよう）
+    exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    exstyle = (exstyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle)
     user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
                         SWP_NOACTIVATE | SWP_FRAMECHANGED)
@@ -153,6 +175,8 @@ class DraggableToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._drag_pos: QPoint | None = None
+        # QWidget サブクラスはデフォルトで背景を描画しないため明示的に有効化
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -303,6 +327,9 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._restore_geometry()
+        # 常に最前面の状態を起動時に復元
+        if self.cfg.get("topmost", False):
+            QTimer.singleShot(0, lambda: self._toggle_topmost(True))
 
         # リサイズ追従タイマー
         self._resize_timer = QTimer(self)
@@ -317,7 +344,7 @@ class MainWindow(QMainWindow):
 
     # ── UI ───────────────────────────────────────────────────
     def _setup_ui(self):
-        self.setWindowTitle("Sheets Viewer")
+        self.setWindowTitle("RSheetsViewer")
         self.setMinimumSize(640, 400)
 
         # マウストラッキングをウィンドウ全体で有効化（リサイズカーソル用）
@@ -335,22 +362,30 @@ class MainWindow(QMainWindow):
         self.toolbar.setFixedHeight(TOOLBAR_H)
         self.toolbar.setMouseTracking(True)
         self.toolbar.setStyleSheet("""
-            DraggableToolbar { background: #1a73e8; }
-            QPushButton {
-                color: white; background: transparent;
-                border: none; border-radius: 4px;
-                padding: 4px 10px; font-size: 13px;
+            DraggableToolbar {
+                background: #1e3a5f;
+                border-bottom: 2px solid #0d2137;
             }
-            QPushButton:hover    { background: rgba(255,255,255,0.18); }
-            QPushButton:pressed  { background: rgba(255,255,255,0.30); }
-            QPushButton:disabled { color: rgba(255,255,255,0.35); }
-            QLabel { color: white; font-weight: bold; font-size: 13px; }
+            QPushButton {
+                color: #e8f0fe;
+                background: rgba(255,255,255,0.10);
+                border: 1px solid rgba(255,255,255,0.25);
+                border-radius: 5px;
+                padding: 5px 11px;
+                font-size: 14px;
+                min-height: 30px;
+            }
+            QPushButton:hover    { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.50); }
+            QPushButton:pressed  { background: rgba(255,255,255,0.32); }
+            QPushButton:checked  { background: rgba(255,255,255,0.30); border-color: rgba(255,255,255,0.70); }
+            QPushButton:disabled { color: rgba(232,240,254,0.45); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.10); }
+            QLabel { color: #e8f0fe; font-weight: bold; font-size: 14px; }
         """)
         tb = QHBoxLayout(self.toolbar)
         tb.setContentsMargins(10, 0, 6, 0)
         tb.setSpacing(4)
 
-        tb.addWidget(QLabel("📊 Sheets Viewer"))
+        tb.addWidget(QLabel("📊 RSheetsViewer"))
         tb.addSpacing(10)
 
         self.btn_back    = QPushButton("◀")
@@ -361,7 +396,7 @@ class MainWindow(QMainWindow):
         self.btn_reload.setToolTip("再読み込み (F5)")
         for b in (self.btn_back, self.btn_forward, self.btn_reload):
             b.setEnabled(False)
-            b.setFixedWidth(32)
+            b.setFixedWidth(38)
         self.btn_back.clicked.connect(self._go_back)
         self.btn_forward.clicked.connect(self._go_forward)
         self.btn_reload.clicked.connect(self._go_reload)
@@ -372,9 +407,19 @@ class MainWindow(QMainWindow):
         tb.addStretch()
 
         self.lbl_tb = QLabel("起動中...")
-        self.lbl_tb.setStyleSheet("color: rgba(255,255,255,0.8); font-size:12px;")
+        self.lbl_tb.setStyleSheet("color: rgba(232,240,254,0.85); font-size:12px;")
         tb.addWidget(self.lbl_tb)
         tb.addSpacing(6)
+
+        _pinned = self.cfg.get("topmost", False)
+        self.btn_topmost = QPushButton("📌" if _pinned else "📍")
+        self.btn_topmost.setToolTip("常に手前に表示")
+        self.btn_topmost.setFixedWidth(38)
+        self.btn_topmost.setCheckable(True)
+        self.btn_topmost.setChecked(_pinned)
+        self.btn_topmost.clicked.connect(self._toggle_topmost)
+        tb.addWidget(self.btn_topmost)
+        tb.addSpacing(4)
 
         self.btn_url = QPushButton("🔗 URLを変更")
         self.btn_url.setToolTip("Ctrl+L")
@@ -390,13 +435,14 @@ class MainWindow(QMainWindow):
         ):
             btn = QPushButton(text)
             btn.setToolTip(tip)
-            btn.setFixedWidth(36)
+            btn.setFixedWidth(40)
             btn.clicked.connect(slot)
             if text == "✕":
                 btn.setStyleSheet(
-                    "QPushButton { color:white; background:transparent; border:none; "
-                    "border-radius:4px; font-size:14px; padding:4px; }"
-                    "QPushButton:hover { background: #e53935; }"
+                    "QPushButton { color:white; background:rgba(255,255,255,0.12); "
+                    "border:1px solid rgba(255,255,255,0.20); border-radius:5px; "
+                    "font-size:15px; padding:5px; min-height:30px; }"
+                    "QPushButton:hover { background: #e53935; border-color: #e53935; }"
                 )
             tb.addWidget(btn)
 
@@ -405,7 +451,7 @@ class MainWindow(QMainWindow):
         # ── Chrome 埋め込みエリア ──
         self.embed_area = QWidget()
         self.embed_area.setMouseTracking(True)
-        self.embed_area.setStyleSheet("background: #e8eaed;")
+        self.embed_area.setStyleSheet("background: #ffffff;")
         root.addWidget(self.embed_area, 1)
 
         # 右下にサイズグリップ（視覚ヒント）
@@ -439,6 +485,17 @@ class MainWindow(QMainWindow):
             self.showNormal()
         else:
             self.showFullScreen()
+
+    def _toggle_topmost(self, checked: bool):
+        self.btn_topmost.setText("📌" if checked else "📍")
+        # setWindowFlags はウィンドウを再生成するため Win32 で直接切り替える
+        # argtypes を設定済みなので -1/-2 が 64bit HWND として正しく渡る
+        hwnd = int(self.winId())
+        insert_after = HWND_TOPMOST if checked else HWND_NOTOPMOST
+        user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        self.cfg["topmost"] = checked
+        save_config(self.cfg)
 
     # ── マウスイベント（リサイズ） ────────────────────────────
     def mousePressEvent(self, event):
@@ -539,6 +596,11 @@ class MainWindow(QMainWindow):
 
     def _sync_chrome_size(self):
         if self._chrome_hwnd:
+            style = user32.GetWindowLongW(self._chrome_hwnd, GWL_STYLE)
+            if style & 0x01000000:  # WS_MAXIMIZE
+                # ビット操作だけでは Chrome の内部プレースメントが残るため
+                # ShowWindow(SW_RESTORE=9) で内部状態ごとリセットする
+                user32.ShowWindow(self._chrome_hwnd, 9)
             r = self.embed_area.rect()
             user32.MoveWindow(self._chrome_hwnd, 0, 0, r.width(), r.height(), True)
 

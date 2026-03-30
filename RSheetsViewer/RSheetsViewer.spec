@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-# sheets_viewer.spec
+# RSheetsViewer.spec
 #
 # ビルド方法:
 #   pip install pyinstaller
-#   pyinstaller sheets_viewer.spec
+#   pyinstaller RSheetsViewer.spec
 #
-# 生成物: dist\SheetsViewer.exe（1ファイル）
+# 生成物: dist\RSheetsViewer.exe（1ファイル）
 
 a = Analysis(
     ['sheets_viewer.py'],
@@ -41,7 +41,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='SheetsViewer',
+    name='RSheetsViewer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

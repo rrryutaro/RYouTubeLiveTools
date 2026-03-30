@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['clock.py'],
+    ['rtokei.py'],
     pathex=[],
     binaries=[],
     datas=[],

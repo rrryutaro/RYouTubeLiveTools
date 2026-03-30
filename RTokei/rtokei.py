@@ -1,14 +1,34 @@
 """
-デジタル時計アプリ
+RTokei — デジタル時計アプリ
   - 1段目: 日付 + 曜日
-  - 2段目: 時刻 (HH:MM:SS)
+  - 2段目: 時刻 (書式選択可)
   - 右クリックメニューで各種設定
-  - 設定は clock_settings.json に自動保存
+  - 設定は rtokei_settings.json に自動保存
 """
 
+VERSION = "0.1.0"
+
 import tkinter as tk
-from tkinter import font as tkfont, colorchooser
-import json, os, sys, datetime, ctypes
+from tkinter import font as tkfont, colorchooser, ttk
+import json, os, sys, datetime, ctypes, ctypes.wintypes
+
+# ─── ウィンドウスタイル定数 ──────────────────────────────────────────
+GWL_EXSTYLE      = -20
+WS_EX_APPWINDOW  = 0x00040000
+WS_EX_TOOLWINDOW = 0x00000080
+
+MIN_W, MIN_H = 180, 50
+
+
+def _is_on_any_monitor(x, y, w=1, h=1):
+    """ウィンドウ中心がいずれかのモニター上にあるか確認"""
+    try:
+        MONITOR_DEFAULTTONULL = 0
+        pt = ctypes.wintypes.POINT(x + w // 2, y + h // 2)
+        return ctypes.windll.user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != 0
+    except Exception:
+        return True
+
 
 # ─── パス設定 ───────────────────────────────────────────────
 if getattr(sys, "frozen", False):
@@ -16,7 +36,7 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CONFIG_FILE = os.path.join(BASE_DIR, "clock_settings.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "rtokei_settings.json")
 
 WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -26,6 +46,15 @@ SIZE_PRESETS = {
     "中":   {"width": 360, "height": 112, "date_fs": 20, "time_fs": 40},
     "大":   {"width": 480, "height": 148, "date_fs": 26, "time_fs": 54},
     "極大": {"width": 640, "height": 196, "date_fs": 34, "time_fs": 72},
+}
+
+# 時刻表示フォーマット（表示名 → strftime書式）
+TIME_FORMATS = {
+    "HH:MM:SS":     "%H:%M:%S",
+    "HH:MM":        "%H:%M",
+    "HH時MM分SS秒": "%H時%M分%S秒",
+    "HH時MM分":     "%H時%M分",
+    "MM:SS":        "%M:%S",
 }
 
 DEFAULT_CONFIG = {
@@ -44,6 +73,9 @@ DEFAULT_CONFIG = {
     "bg_color": "#0D1B2A",
     "accent_color": "#1E3A4A",
     "size_preset": "小",
+    "show_date": True,
+    "show_time": True,
+    "time_format": "HH:MM:SS",
 }
 
 
@@ -83,9 +115,29 @@ class SettingsWindow(tk.Toplevel):
         self.resizable(False, False)
         self.grab_set()
         self.attributes("-topmost", True)
+        self._setup_ttk_style()
         self._build()
         self.update_idletasks()
         self.geometry(f"+{master.winfo_x()+20}+{master.winfo_y()+20}")
+
+    def _setup_ttk_style(self):
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Dark.TCombobox",
+            fieldbackground=self.ITEM,
+            background=self.ITEM,
+            foreground=self.FG,
+            selectbackground=self.ACC,
+            selectforeground="#ffffff",
+            arrowcolor=self.FG2,
+            bordercolor="#2A2A3E",
+            lightcolor="#2A2A3E",
+            darkcolor="#2A2A3E",
+        )
+        style.map("Dark.TCombobox",
+            fieldbackground=[("readonly", self.ITEM)],
+            foreground=[("readonly", self.FG)],
+        )
 
     def _section(self, text, row):
         tk.Frame(self, bg="#2A2A3E", height=1).grid(
@@ -112,15 +164,50 @@ class SettingsWindow(tk.Toplevel):
         self.columnconfigure(1, weight=1)
         row = 0
 
+        # 表示設定
+        row = self._section("表示設定", row)
+
+        self._lbl("表示項目", row)
+        vf = tk.Frame(self, bg=self.BG)
+        vf.grid(row=row, column=1, sticky="w", padx=10, pady=4)
+        self.show_date_var = tk.BooleanVar(value=self.cfg.get("show_date", True))
+        self.show_time_var = tk.BooleanVar(value=self.cfg.get("show_time", True))
+        tk.Checkbutton(vf, text="日付", variable=self.show_date_var,
+                       command=self._on_show_date_change,
+                       bg=self.BG, fg=self.FG, selectcolor=self.ITEM,
+                       activebackground=self.BG, font=("メイリオ", 10)
+                       ).pack(side="left", padx=4)
+        tk.Checkbutton(vf, text="時刻", variable=self.show_time_var,
+                       command=self._on_show_time_change,
+                       bg=self.BG, fg=self.FG, selectcolor=self.ITEM,
+                       activebackground=self.BG, font=("メイリオ", 10)
+                       ).pack(side="left", padx=4)
+        row += 1
+
+        self._lbl("時刻の形式", row)
+        ff = tk.Frame(self, bg=self.BG)
+        ff.grid(row=row, column=1, sticky="w", padx=10, pady=4)
+        self.time_format_var = tk.StringVar(value=self.cfg.get("time_format", "HH:MM:SS"))
+        for name in TIME_FORMATS:
+            tk.Radiobutton(ff, text=name, variable=self.time_format_var, value=name,
+                           bg=self.BG, fg=self.FG, selectcolor=self.ITEM,
+                           activebackground=self.BG, font=("メイリオ", 10)
+                           ).pack(side="left", padx=3)
+        row += 1
+
         # フォント
         row = self._section("フォント", row)
 
         self._lbl("フォント名", row)
         self.font_var = tk.StringVar(value=self.cfg["font_family"])
-        tk.Entry(self, textvariable=self.font_var, width=22,
-                 bg=self.ITEM, fg=self.FG, insertbackground=self.FG,
-                 relief="flat", font=("メイリオ", 10), bd=4
-                 ).grid(row=row, column=1, sticky="w", padx=10, pady=4)
+        font_list = sorted(
+            [f for f in tkfont.families() if not f.startswith("@")],
+            key=str.lower
+        )
+        cb = ttk.Combobox(self, textvariable=self.font_var, values=font_list,
+                          width=24, style="Dark.TCombobox",
+                          font=("メイリオ", 10), state="normal")
+        cb.grid(row=row, column=1, sticky="w", padx=10, pady=4)
         row += 1
 
         self._lbl("フォントサイズ", row)
@@ -224,9 +311,20 @@ class SettingsWindow(tk.Toplevel):
                       activebackground=bg, padx=4, pady=4
                       ).pack(side="left", padx=8)
 
+    def _on_show_date_change(self):
+        if not self.show_date_var.get() and not self.show_time_var.get():
+            self.show_time_var.set(True)
+
+    def _on_show_time_change(self):
+        if not self.show_time_var.get() and not self.show_date_var.get():
+            self.show_date_var.set(True)
+
     def _apply(self):
         p = SIZE_PRESETS[self.preset_var.get()]
         self.cfg.update({
+            "show_date":      self.show_date_var.get(),
+            "show_time":      self.show_time_var.get(),
+            "time_format":    self.time_format_var.get(),
             "font_family":    self.font_var.get(),
             "date_font_size": int(self.date_fs_var.get()),
             "time_font_size": int(self.time_fs_var.get()),
@@ -248,19 +346,28 @@ class SettingsWindow(tk.Toplevel):
 
 class ClockApp:
     def __init__(self):
+        self._closing = False
         self.cfg = load_config()
         self.root = tk.Tk()
+        self._resize_start_x = 0
+        self._resize_start_y = 0
+        self._resize_start_w = 0
+        self._resize_start_h = 0
         self._setup_window()
         self._build_ui()
         self._apply_settings(self.cfg, first_run=True)
         self._tick()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(10, self._set_appwindow)
         self.root.mainloop()
 
     def _setup_window(self):
-        self.root.title("時計")
+        self.root.title("RTokei")
         cfg = self.cfg
-        self.root.geometry(f"{cfg['width']}x{cfg['height']}+{cfg['x']}+{cfg['y']}")
+        x, y = cfg['x'], cfg['y']
+        if not _is_on_any_monitor(x, y, cfg['width'], cfg['height']):
+            x, y = 100, 100
+        self.root.geometry(f"{cfg['width']}x{cfg['height']}+{x}+{y}")
         self.root.bind("<ButtonPress-1>", self._start_drag)
         self.root.bind("<B1-Motion>",     self._on_drag)
 
@@ -278,38 +385,64 @@ class ClockApp:
             bg=cfg["bg_color"], fg=cfg["text_color"], anchor="center")
 
         self._build_menu()
+        self._build_resize_grip()
 
         for w in (self.root, self.canvas, self.date_label, self.time_label):
             w.bind("<Button-3>",      self._show_menu)
             w.bind("<ButtonPress-1>", self._start_drag)
             w.bind("<B1-Motion>",     self._on_drag)
 
+    # メニュー項目インデックス
+    _IDX_SHOW_DATE = 3
+    _IDX_SHOW_TIME = 4
+    _IDX_TOPMOST   = 6
+    _IDX_TRANS     = 7
+    _IDX_TITLEBAR  = 8
+
+    def _menu_label(self, base, state):
+        return base + ("  ✔" if state else "")
+
     def _build_menu(self):
         M = "#1C1C2E"; FG = "#C9D1E0"; HL = "#2E2E46"
         self.menu = tk.Menu(self.root, tearoff=0,
                             bg=M, fg=FG, activebackground=HL,
                             activeforeground=FG, font=("メイリオ", 10), bd=0)
-        self.menu.add_command(label="⚙  設定を開く", command=self._open_settings)
+        self.menu.add_command(label="⚙  設定を開く", command=self._open_settings)  # 0
 
-        pm = tk.Menu(self.menu, tearoff=0, bg=M, fg=FG,
+        self.size_menu = tk.Menu(self.menu, tearoff=0, bg=M, fg=FG,
                      activebackground=HL, activeforeground=FG, font=("メイリオ", 10))
         for name in SIZE_PRESETS:
-            pm.add_command(label=name, command=lambda n=name: self._apply_preset(n))
-        self.menu.add_cascade(label="📐  サイズ", menu=pm)
-        self.menu.add_separator()
+            self.size_menu.add_command(label=name, command=lambda n=name: self._apply_preset(n))
+        self.menu.add_cascade(label="📐  サイズ", menu=self.size_menu)  # 1
+        self.menu.add_separator()                                          # 2
 
-        self.topmost_var  = tk.BooleanVar(value=self.cfg["topmost"])
-        self.trans_var    = tk.BooleanVar(value=self.cfg["transparent_bg"])
-        self.titlebar_var = tk.BooleanVar(value=self.cfg["show_titlebar"])
+        cfg = self.cfg
+        self.menu.add_command(
+            label=self._menu_label("📅  日付を表示", cfg.get("show_date", True)),
+            command=self._toggle_show_date)                                # 3
+        self.menu.add_command(
+            label=self._menu_label("🕐  時刻を表示", cfg.get("show_time", True)),
+            command=self._toggle_show_time)                                # 4
+        self.menu.add_separator()                                          # 5
 
-        self.menu.add_checkbutton(label="📌  常に最前面",
-                                  variable=self.topmost_var,  command=self._toggle_topmost)
-        self.menu.add_checkbutton(label="💧  背景透過",
-                                  variable=self.trans_var,    command=self._toggle_transparent)
-        self.menu.add_checkbutton(label="🔲  タイトルバー",
-                                  variable=self.titlebar_var, command=self._toggle_titlebar)
-        self.menu.add_separator()
-        self.menu.add_command(label="✖  終了", command=self._on_close)
+        self.menu.add_command(
+            label=self._menu_label("📌  常に最前面", cfg["topmost"]),
+            command=self._toggle_topmost)                                  # 6
+        self.menu.add_command(
+            label=self._menu_label("💧  背景透過", cfg["transparent_bg"]),
+            command=self._toggle_transparent)                              # 7
+        self.menu.add_command(
+            label=self._menu_label("🔲  タイトルバー", cfg.get("show_titlebar", False)),
+            command=self._toggle_titlebar)                                 # 8
+        self.menu.add_separator()                                          # 9
+        self.menu.add_command(label="─  最小化", command=self._minimize)  # 10
+        self.menu.add_command(label="✖  終了", command=self._on_close)    # 11
+
+    def _update_size_menu_labels(self):
+        current = self.cfg.get("size_preset", "小")
+        for i, name in enumerate(SIZE_PRESETS):
+            label = name + ("  ✔" if name == current else "")
+            self.size_menu.entryconfig(i, label=label)
 
     def _apply_settings(self, cfg, first_run=False):
         self.cfg = cfg
@@ -347,24 +480,36 @@ class ClockApp:
         except Exception:
             self.time_label.configure(font=("TkDefaultFont", cfg["time_font_size"]))
 
-        self.topmost_var.set(cfg["topmost"])
-        self.trans_var.set(cfg["transparent_bg"])
-        self.titlebar_var.set(cfg.get("show_titlebar", False))
+        self.menu.entryconfig(self._IDX_SHOW_DATE, label=self._menu_label("📅  日付を表示", cfg.get("show_date", True)))
+        self.menu.entryconfig(self._IDX_SHOW_TIME, label=self._menu_label("🕐  時刻を表示", cfg.get("show_time", True)))
+        self.menu.entryconfig(self._IDX_TOPMOST,   label=self._menu_label("📌  常に最前面", cfg["topmost"]))
+        self.menu.entryconfig(self._IDX_TRANS,     label=self._menu_label("💧  背景透過", cfg["transparent_bg"]))
+        self.menu.entryconfig(self._IDX_TITLEBAR,  label=self._menu_label("🔲  タイトルバー", cfg.get("show_titlebar", False)))
 
         self._relayout()
+        self._update_size_menu_labels()
         save_config(cfg)
 
     def _relayout(self):
         w = self.cfg["width"]
         h = self.cfg["height"]
         self.canvas.place(x=0, y=0, width=w, height=h)
-        mid = h * 0.52
         self.canvas.delete("sep")
-        self.canvas.create_line(w*0.06, mid, w*0.94, mid,
-                                fill=self.cfg.get("accent_color", "#1E3A4A"),
-                                width=1, tags="sep")
-        self.date_label.place(relx=0.5, rely=0.27, anchor="center", width=w-16)
-        self.time_label.place(relx=0.5, rely=0.73, anchor="center", width=w-16)
+        show_date = self.cfg.get("show_date", True)
+        show_time = self.cfg.get("show_time", True)
+        if show_date and show_time:
+            mid = h * 0.52
+            self.canvas.create_line(w*0.06, mid, w*0.94, mid,
+                                    fill=self.cfg.get("accent_color", "#1E3A4A"),
+                                    width=1, tags="sep")
+            self.date_label.place(relx=0.5, rely=0.27, anchor="center", width=w-16)
+            self.time_label.place(relx=0.5, rely=0.73, anchor="center", width=w-16)
+        elif show_date:
+            self.date_label.place(relx=0.5, rely=0.5, anchor="center", width=w-16)
+            self.time_label.place_forget()
+        else:
+            self.time_label.place(relx=0.5, rely=0.5, anchor="center", width=w-16)
+            self.date_label.place_forget()
 
     def _apply_preset(self, name):
         p = SIZE_PRESETS[name]
@@ -374,43 +519,80 @@ class ClockApp:
         })
         self._apply_settings(self.cfg)
 
+    def _toggle_show_date(self):
+        new_val = not self.cfg.get("show_date", True)
+        if not new_val and not self.cfg.get("show_time", True):
+            return  # 両方非表示にはできない
+        self.cfg["show_date"] = new_val
+        self.menu.entryconfig(self._IDX_SHOW_DATE, label=self._menu_label("📅  日付を表示", new_val))
+        self._relayout()
+        save_config(self.cfg)
+
+    def _toggle_show_time(self):
+        new_val = not self.cfg.get("show_time", True)
+        if not new_val and not self.cfg.get("show_date", True):
+            return  # 両方非表示にはできない
+        self.cfg["show_time"] = new_val
+        self.menu.entryconfig(self._IDX_SHOW_TIME, label=self._menu_label("🕐  時刻を表示", new_val))
+        self._relayout()
+        save_config(self.cfg)
+
     def _toggle_topmost(self):
-        self.cfg["topmost"] = self.topmost_var.get()
+        self.cfg["topmost"] = not self.cfg["topmost"]
         self.root.attributes("-topmost", self.cfg["topmost"])
         if self.cfg["topmost"]:
             self.root.lift()
             self.root.after(50, lambda: self.root.attributes("-topmost", True))
+        self.menu.entryconfig(self._IDX_TOPMOST, label=self._menu_label("📌  常に最前面", self.cfg["topmost"]))
         save_config(self.cfg)
 
     def _toggle_transparent(self):
-        self.cfg["transparent_bg"] = self.trans_var.get()
+        self.cfg["transparent_bg"] = not self.cfg["transparent_bg"]
         if self.cfg["transparent_bg"]:
             try: self.root.attributes("-transparentcolor", self.cfg["bg_color"])
             except Exception: pass
         else:
             try: self.root.attributes("-transparentcolor", "")
             except Exception: pass
+        self.menu.entryconfig(self._IDX_TRANS, label=self._menu_label("💧  背景透過", self.cfg["transparent_bg"]))
         save_config(self.cfg)
 
     def _toggle_titlebar(self):
-        self.cfg["show_titlebar"] = self.titlebar_var.get()
+        self.cfg["show_titlebar"] = not self.cfg.get("show_titlebar", False)
         self.root.overrideredirect(not self.cfg["show_titlebar"])
+        if not self.cfg["show_titlebar"]:
+            self.root.after(10, self._set_appwindow)
         self.root.after(100, lambda: self.root.attributes("-topmost", self.cfg["topmost"]))
+        self.menu.entryconfig(self._IDX_TITLEBAR, label=self._menu_label("🔲  タイトルバー", self.cfg["show_titlebar"]))
         save_config(self.cfg)
 
     def _open_settings(self, event=None):
         SettingsWindow(self.root, self.cfg, self._apply_settings)
 
     def _show_menu(self, event):
-        self.menu.tk_popup(event.x_root, event.y_root)
+        if self._closing:
+            return
+        x, y = event.x_root, event.y_root
+        self.root.focus_force()
+        self.root.after(1, lambda: self._popup_menu(x, y))
+
+    def _popup_menu(self, x, y):
+        try:
+            self.menu.tk_popup(x, y)
+        except Exception:
+            pass
 
     def _tick(self):
         now = datetime.datetime.now()
-        wd  = WEEKDAYS[now.weekday()]
-        self.date_label.configure(text=now.strftime(f"%Y/%m/%d（{wd}）"))
-        self.time_label.configure(text=now.strftime("%H:%M:%S"))
+        if self.cfg.get("show_date", True):
+            wd = WEEKDAYS[now.weekday()]
+            self.date_label.configure(text=now.strftime(f"%Y/%m/%d（{wd}）"))
+        if self.cfg.get("show_time", True):
+            fmt_key = self.cfg.get("time_format", "HH:MM:SS")
+            fmt = TIME_FORMATS.get(fmt_key, "%H:%M:%S")
+            self.time_label.configure(text=now.strftime(fmt))
         ms = 1000 - now.microsecond // 1000
-        self.root.after(ms, self._tick)
+        self._tick_id = self.root.after(ms, self._tick)
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -484,12 +666,68 @@ class ClockApp:
         if snap_x != win_x or snap_y != win_y:
             self.root.geometry(f"+{snap_x}+{snap_y}")
 
+    def _set_appwindow(self):
+        """overrideredirect 時も Alt+Tab に表示されるようスタイルを修正"""
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception:
+            pass
+
+    def _build_resize_grip(self):
+        grip = tk.Canvas(self.root, width=16, height=16,
+                         bg=self.cfg["bg_color"], highlightthickness=0,
+                         cursor="size_nw_se")
+        grip.place(relx=1.0, rely=1.0, anchor="se")
+        for i in range(3):
+            offset = 4 + i * 4
+            grip.create_line(16, offset, offset, 16, fill="#334455", width=1)
+        grip.bind("<ButtonPress-1>", self._resize_start)
+        grip.bind("<B1-Motion>",     self._resize_move)
+        self._grip = grip
+
+    def _resize_start(self, event):
+        self._resize_start_x = event.x_root
+        self._resize_start_y = event.y_root
+        self._resize_start_w = self.root.winfo_width()
+        self._resize_start_h = self.root.winfo_height()
+
+    def _resize_move(self, event):
+        dw = event.x_root - self._resize_start_x
+        dh = event.y_root - self._resize_start_y
+        new_w = max(MIN_W, self._resize_start_w + dw)
+        new_h = max(MIN_H, self._resize_start_h + dh)
+        self.cfg["width"]  = new_w
+        self.cfg["height"] = new_h
+        self.root.geometry(f"{new_w}x{new_h}")
+        self._relayout()
+
+    def _minimize(self):
+        self.root.overrideredirect(False)
+        self.root.iconify()
+
+        def on_restore(event):
+            self.root.overrideredirect(not self.cfg.get("show_titlebar", False))
+            self.root.after(10, self._set_appwindow)
+            self.root.unbind("<Map>")
+
+        self.root.bind("<Map>", on_restore)
+
     def _on_close(self):
+        self._closing = True
+        if hasattr(self, "_tick_id"):
+            self.root.after_cancel(self._tick_id)
         self.cfg["x"] = self.root.winfo_x()
         self.cfg["y"] = self.root.winfo_y()
         self.cfg["width"]  = self.root.winfo_width()
         self.cfg["height"] = self.root.winfo_height()
         save_config(self.cfg)
+        try:
+            self.menu.unpost()
+        except Exception:
+            pass
         self.root.destroy()
 
 
