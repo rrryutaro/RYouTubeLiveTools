@@ -692,6 +692,7 @@ class CfgPanelMixin:
         def on_log_on_top():
             self._log_on_top = self._cfg_log_on_top_var.get()
             self._save_config()
+            self._redraw()
 
         tk.Checkbutton(
             g_log, text="結果表示時にログを前面に表示する",

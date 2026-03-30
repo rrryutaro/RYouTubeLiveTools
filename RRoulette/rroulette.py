@@ -69,7 +69,6 @@ class RouletteApp(
         self.decel      = 1.0
         self.spinning   = False
         self._flashing  = False
-        self._result_win_id = None
         self.prev_seg   = -1
         self.snd      = SoundManager()
 
@@ -293,9 +292,6 @@ class RouletteApp(
 
         self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
-        # 結果オーバーレイ用の埋め込みキャンバス（window item として常に最前面に表示）
-        self._result_canvas = tk.Canvas(self.cv, width=280, height=90,
-                                        highlightthickness=0, bg=BG)
 
         self.cv.bind("<Configure>", self._on_canvas_resize)
 

@@ -32,9 +32,6 @@ class SpinEngineMixin:
         if self._action_timer:
             self.root.after_cancel(self._action_timer)
             self._action_timer = None
-        if getattr(self, "_result_win_id", None) is not None:
-            self.cv.delete(self._result_win_id)
-            self._result_win_id = None
         self.cv.delete("result_overlay")
         target_frames = max(1, self._spin_duration * 1000 / 16)
 
@@ -109,28 +106,14 @@ class SpinEngineMixin:
             self.set_cfg_spin_lock(False)
 
     def _flash(self, times: int, winner: str, seg_color: str):
-        self._flashing = True   # _redraw() の割り込みをブロック
-        log_on_top = getattr(self, "_log_on_top", False)
-        log_show   = getattr(self, "_log_overlay_show", True)
+        # _flashing を一時解除して _redraw() を呼ぶことで
+        # ホイール・ログの正しい描画順（log_on_top 設定準拠）を維持する。
+        # その後 _flashing を再セットしてリザルトを最前面に追加する。
+        self._flashing = False
+        self._redraw()          # log_on_top に従い [ログ→ホイール] or [ホイール→ログ] を描画
+        self._flashing = True   # 以降の _redraw() 割り込みをブロック
 
-        # 前回の window item を削除してから再描画
-        if getattr(self, "_result_win_id", None) is not None:
-            self.cv.delete(self._result_win_id)
-            self._result_win_id = None
-        self.cv.delete("result_overlay")
-        self.cv.delete("log_overlay")
-
-        if log_on_top:
-            # 結果を canvas item として先に描き、ログを canvas item として後に描く（ログ前面）
-            self._draw_result_overlay(winner, times, seg_color, use_window=False)
-            if log_show:
-                self._draw_log_overlay()
-        else:
-            # ログを canvas item として描き、結果を window item として描く
-            # window item は canvas の全 draw item より常に最前面に表示される
-            if log_show:
-                self._draw_log_overlay()
-            self._draw_result_overlay(winner, times, seg_color, use_window=True)
+        self._draw_result_overlay(winner, times, seg_color)  # 常に最前面
 
         if times > 0:
             self.root.after(220, lambda: self._flash(times - 1, winner, seg_color))
@@ -139,58 +122,36 @@ class SpinEngineMixin:
             self.set_item_spin_lock(False)
             self.set_cfg_spin_lock(False)
 
-    def _draw_result_overlay(self, winner: str, times: int, seg_color: str,
-                              use_window: bool = False):
-        """結果フラッシュ枠とテキストを描画する。
-
-        use_window=True のとき、canvas.create_window() で埋め込みキャンバスを配置する。
-        window item は全 canvas draw item より常に最前面に表示されるため、
-        ログオーバーレイ（draw item）より確実に前面になる。
+    def _draw_result_overlay(self, winner: str, times: int, seg_color: str):
+        """結果フラッシュ枠とテキストを canvas item として描画する。
+        描画順（呼び出し順）で Z-order を制御するため use_window は使わない。
         """
         pw, ph = 280, 90
         text_color = WHITE if times % 2 else GOLD
-
-        if use_window:
-            rc = self._result_canvas
-            rc.configure(width=pw, height=ph, bg=seg_color,
-                         highlightthickness=3, highlightbackground="#ff0000")
-            rc.delete("all")
-            # 疑似アウトライン（4方向オフセットで黒縁）
-            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                rc.create_text(pw // 2 + dx, ph // 2 + dy,
-                               text=winner, fill="#000000",
-                               font=("Meiryo", 16, "bold"), width=pw - 20)
-            # 本体テキスト
-            rc.create_text(pw // 2, ph // 2, text=winner, fill=text_color,
-                           font=("Meiryo", 16, "bold"), width=pw - 20)
-            self._result_win_id = self.cv.create_window(
-                self.CX, self.CY, window=rc, anchor="center"
-            )
-        else:
-            x0 = self.CX - pw // 2
-            y0 = self.CY - ph // 2
-            x1 = self.CX + pw // 2
-            y1 = self.CY + ph // 2
-            self.cv.create_rectangle(
-                x0, y0, x1, y1,
-                fill=seg_color, outline="#ff0000", width=3,
-                tags="result_overlay",
-            )
-            # 疑似アウトライン（4方向オフセットで黒縁）
-            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                self.cv.create_text(
-                    self.CX + dx, self.CY + dy,
-                    text=winner, fill="#000000",
-                    font=("Meiryo", 16, "bold"), tags="result_overlay",
-                    width=pw - 20,
-                )
-            # 本体テキスト
+        x0 = self.CX - pw // 2
+        y0 = self.CY - ph // 2
+        x1 = self.CX + pw // 2
+        y1 = self.CY + ph // 2
+        self.cv.create_rectangle(
+            x0, y0, x1, y1,
+            fill=seg_color, outline="#ff0000", width=3,
+            tags="result_overlay",
+        )
+        # 疑似アウトライン（4方向オフセットで黒縁）
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             self.cv.create_text(
-                self.CX, self.CY,
-                text=winner, fill=text_color,
+                self.CX + dx, self.CY + dy,
+                text=winner, fill="#000000",
                 font=("Meiryo", 16, "bold"), tags="result_overlay",
                 width=pw - 20,
             )
+        # 本体テキスト
+        self.cv.create_text(
+            self.CX, self.CY,
+            text=winner, fill=text_color,
+            font=("Meiryo", 16, "bold"), tags="result_overlay",
+            width=pw - 20,
+        )
 
     # ════════════════════════════════════════════════════════════════
     #  クリック / スペースキー操作

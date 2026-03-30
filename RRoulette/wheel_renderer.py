@@ -68,15 +68,22 @@ class WheelRendererMixin:
         if getattr(self, "_flashing", False):
             return
         self.cv.delete("all")
-        # delete("all") は window item も削除するので参照をリセット
-        if hasattr(self, "_result_win_id"):
-            self._result_win_id = None
         cx, cy, r = self.CX, self.CY, self.R
         n = len(self.items)
 
+        # _log_on_top=False のときログをホイールより先に描画（ホイールが前面）
+        # _log_on_top=True  のときログをホイールより後に描画（ログが前面）
+        # donut_hole=True かつ transparent=True の場合、ログが背面でも穴部分の
+        # ログ pixels は hole 描画（TRANSPARENT_KEY）で上書きされるため、
+        # 穴からログが透けて見えることはない。
+        log_on_top = getattr(self, "_log_on_top", False)
+        if not log_on_top:
+            self._draw_log_overlay()
+
         if n == 0:
             self.cv.create_text(cx, cy, text="項目を追加してください",
-                                fill=WHITE, font=("Meiryo", 13))
+                                fill=WHITE, font=("Meiryo", 13),
+                                tags=("wheel_text", "wheel_all"))
         else:
             arc = 360.0 / n
 
@@ -107,6 +114,7 @@ class WheelRendererMixin:
                     cx - r, cy - r, cx + r, cy + r,
                     start=seg_start, extent=arc,
                     fill=color, outline=WHITE, width=2,
+                    tags=("wheel_sector", "wheel_all"),
                 )
 
                 mid_deg = seg_start + arc / 2
@@ -126,6 +134,7 @@ class WheelRendererMixin:
                     self.cv.create_text(
                         _lx, _ly, text=_lay.lines[0].text, fill=WHITE,
                         font=_draw_font, angle=0,
+                        tags=("wheel_text", "wheel_all"),
                     )
                 elif _lay.direction == 1:
                     # 横表示2（常に水平）: center_r 位置を基点として垂直方向に各行を積む
@@ -136,6 +145,7 @@ class WheelRendererMixin:
                             _base_x, _base_y + _lp.stack_offset,
                             text=_lp.text, fill=WHITE,
                             font=_draw_font, angle=0,
+                            tags=("wheel_text", "wheel_all"),
                         )
                 elif _lay.direction == 0:
                     # 横表示1（内→外）: center_r 位置を基点として接線方向に各行を変位
@@ -152,6 +162,7 @@ class WheelRendererMixin:
                         self.cv.create_text(
                             _lx, _ly, text=_lp.text, fill=WHITE,
                             font=_draw_font, angle=mid_deg,
+                            tags=("wheel_text", "wheel_all"),
                         )
                 else:
                     # 縦表示1/2: stack_offset=放射方向, extra_offset=接線方向（複数列）
@@ -167,14 +178,17 @@ class WheelRendererMixin:
                         self.cv.create_text(
                             _lx, _ly, text=_lp.text, fill=WHITE,
                             font=_draw_font, angle=_angle,
+                            tags=("wheel_text", "wheel_all"),
                         )
 
         self.cv.create_oval(cx - r, cy - r, cx + r, cy + r,
-                            fill="", outline=WHITE, width=4)
+                            fill="", outline=WHITE, width=4,
+                            tags=("wheel_outline", "wheel_all"))
         if getattr(self, "_donut_hole", False):
             hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else BG
             self.cv.create_oval(cx - 13, cy - 13, cx + 13, cy + 13,
-                                fill=hole_fill, outline=WHITE, width=3)
+                                fill=hole_fill, outline=WHITE, width=3,
+                                tags=("wheel_hole", "wheel_all"))
         t   = math.radians(self._pointer_angle)
         st, ct = math.sin(t), math.cos(t)
         tip_x  = cx + st * (r - 12)
@@ -185,10 +199,12 @@ class WheelRendererMixin:
         br_y   = cy - ct * (r + 28) + st * 14
         self.cv.create_polygon(
             bl_x, bl_y, br_x, br_y, tip_x, tip_y,
-            fill=GOLD, outline=WHITE, width=2, tags="pointer",
+            fill=GOLD, outline=WHITE, width=2,
+            tags=("pointer", "wheel_all"),
         )
 
-        self._draw_log_overlay()
+        if log_on_top:
+            self._draw_log_overlay()
 
     # ════════════════════════════════════════════════════════════════
     #  ログオーバーレイ描画
@@ -386,6 +402,8 @@ class WheelRendererMixin:
 
     def _on_cv_motion(self, event):
         """ポインター上でカーソルを hand2 に変更（スピン中ロック時は変更しない）"""
+        if getattr(self, "_flashing", False):
+            return
         if self._dragging_pointer:
             return
         if self.spinning and self._pointer_lock_while_spinning:
