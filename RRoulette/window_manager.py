@@ -17,6 +17,11 @@ from constants import (
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY,
 )
+from config_utils import _is_on_any_monitor, _parse_geometry
+
+# 浮動ウィンドウの最小サイズ（px）
+_FLOAT_WIN_MIN_W = 150
+_FLOAT_WIN_MIN_H = 100
 
 
 class WindowManagerMixin:
@@ -412,7 +417,12 @@ class WindowManagerMixin:
         win.attributes("-topmost", self._topmost)
         if saved_geo:
             try:
-                win.geometry(saved_geo)
+                parsed = _parse_geometry(saved_geo)
+                if (parsed
+                        and parsed[0] >= _FLOAT_WIN_MIN_W
+                        and parsed[1] >= _FLOAT_WIN_MIN_H
+                        and _is_on_any_monitor(parsed[2], parsed[3], parsed[0], parsed[1])):
+                    win.geometry(saved_geo)
             except Exception:
                 pass
         return win

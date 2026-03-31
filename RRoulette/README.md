@@ -132,3 +132,5 @@ pyinstaller RRoulette.spec
 `roulette_settings.json` は EXE と同じフォルダ（`dist\`）に自動生成されます。
 Python から直接実行した場合も同じ `dist\` フォルダを参照します。
 削除すると初期設定にリセットされます。
+
+旧バージョンからの移行: `RRoulette\roulette_settings.json` が残っていても自動的に `dist\` へ移行されます（ウィンドウ位置を除く設定のみ引き継ぎ）。問題が残る場合は `dist\roulette_settings.json` を削除して起動してください。

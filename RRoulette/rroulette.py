@@ -287,19 +287,22 @@ class RouletteApp(
         if self._win_custom_file:
             self.snd.load_win_custom(self._win_custom_file)
 
-        # 初期ジオメトリ（オフスクリーンチェック付き）
+        # 初期ジオメトリ（サイズ妥当性・オフスクリーンチェック付き）
         saved_geo = cfg.get("geometry")
         if saved_geo:
             try:
                 parsed = _parse_geometry(saved_geo)
                 if parsed:
                     w, h, x, y = parsed
-                    if _is_on_any_monitor(x, y, w, h):
+                    if w < MIN_W or h < MIN_H:
+                        # サイズが最小値未満の壊れた geometry は無視
+                        self._apply_profile(self._profile_idx)
+                    elif _is_on_any_monitor(x, y, w, h):
                         root.geometry(saved_geo)
                     else:
                         self._apply_profile(self._profile_idx)
                 else:
-                    root.geometry(saved_geo)
+                    self._apply_profile(self._profile_idx)
             except Exception:
                 self._apply_profile(self._profile_idx)
         else:

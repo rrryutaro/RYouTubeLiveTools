@@ -30,12 +30,20 @@ AUTO_LOG_FILE = os.path.join(EXPORT_DIR, "roulette_autosave_log.json")
 # Python実行時の旧保存先（RRoulette/roulette_settings.json）が存在し、
 # 新保存先（dist/roulette_settings.json）がまだない場合のみ1回だけ移行する。
 # 新保存先が既に存在する場合はレガシーファイルを無視する。
+# geometry 系キーは環境依存で壊れている可能性があるため移行しない。
+_LEGACY_GEO_KEYS = ("geometry", "item_list_float_geo", "cfg_panel_float_geo")
+
 if not getattr(sys, "frozen", False):
     _legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "roulette_settings.json")
     if os.path.exists(_legacy) and not os.path.exists(CONFIG_FILE):
         try:
-            import shutil as _shutil
-            _shutil.copy2(_legacy, CONFIG_FILE)
+            import json as _json
+            with open(_legacy, encoding="utf-8") as _f:
+                _data = _json.load(_f)
+            for _k in _LEGACY_GEO_KEYS:
+                _data.pop(_k, None)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as _f:
+                _json.dump(_data, _f)
         except Exception:
             pass
     del _legacy
