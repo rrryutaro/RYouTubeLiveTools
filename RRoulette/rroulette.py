@@ -21,7 +21,7 @@ from config_utils import BASE_DIR, CONFIG_FILE, _is_on_any_monitor, _parse_geome
 from constants import (
     BG, PANEL, ACCENT, DARK2, WHITE,
     SIZE_PROFILES, MIN_W, MIN_H,
-    SIDEBAR_W, CFG_PANEL_W,
+    SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
 )
 from wheel_renderer import WheelRendererMixin
@@ -265,15 +265,17 @@ class RouletteApp(
         self._build_listbox()
 
         # ── サイドバー幅リサイズグリップ（右下角）──────────────────
-        _sg = tk.Canvas(self.sidebar, width=16, height=16,
-                        bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
-        for _i in range(3):
-            _x = 4 + _i * 4
-            _sg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
-        _sg.bind("<ButtonPress-1>",   self._sash_start)
-        _sg.bind("<B1-Motion>",       self._sash_move)
-        _sg.bind("<ButtonRelease-1>", self._sash_end)
-        _sg.place(relx=1.0, rely=1.0, anchor="se")
+        # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
+        if not self._item_list_float:
+            _sg = tk.Canvas(self.sidebar, width=16, height=16,
+                            bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
+            for _i in range(3):
+                _x = 4 + _i * 4
+                _sg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
+            _sg.bind("<ButtonPress-1>",   self._sash_start)
+            _sg.bind("<B1-Motion>",       self._sash_move)
+            _sg.bind("<ButtonRelease-1>", self._sash_end)
+            _sg.place(relx=1.0, rely=1.0, anchor="se")
 
         self.sidebar.bind("<Button-3>", self._show_context_menu)
 
@@ -288,7 +290,8 @@ class RouletteApp(
 
         # ── メインエリア ──────────────────────────────────
         self.main_frame = tk.Frame(self.content, bg=BG)
-        self.main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                             padx=MAIN_PANEL_PAD, pady=MAIN_PANEL_PAD)
 
         self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)

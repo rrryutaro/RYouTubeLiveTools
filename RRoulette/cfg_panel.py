@@ -174,15 +174,17 @@ class CfgPanelMixin:
         self.root.after(100, lambda: _bind_wheel(p))
 
         # ── 設定パネル幅リサイズグリップ（右下角）─────────────────
-        _cg = tk.Canvas(self.cfg_panel, width=16, height=16,
-                        bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
-        for _i in range(3):
-            _x = 4 + _i * 4
-            _cg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
-        _cg.bind("<ButtonPress-1>",   self._cfg_resize_start)
-        _cg.bind("<B1-Motion>",       self._cfg_resize_move)
-        _cg.bind("<ButtonRelease-1>", self._cfg_resize_end)
-        _cg.place(relx=1.0, rely=1.0, anchor="se")
+        # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
+        if not self._cfg_panel_float:
+            _cg = tk.Canvas(self.cfg_panel, width=16, height=16,
+                            bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
+            for _i in range(3):
+                _x = 4 + _i * 4
+                _cg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
+            _cg.bind("<ButtonPress-1>",   self._cfg_resize_start)
+            _cg.bind("<B1-Motion>",       self._cfg_resize_move)
+            _cg.bind("<ButtonRelease-1>", self._cfg_resize_end)
+            _cg.place(relx=1.0, rely=1.0, anchor="se")
 
         # ── 折りたたみグループヘルパー ────────────────────────
         def make_group(parent, title, expanded=False):

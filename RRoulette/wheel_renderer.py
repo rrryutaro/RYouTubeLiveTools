@@ -12,6 +12,7 @@ import math
 from constants import (
     SEGMENT_COLORS, BG, PANEL, ACCENT, DARK2, WHITE, GOLD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, MIN_R, TRANSPARENT_KEY,
+    WHEEL_OUTER_MARGIN,
 )
 
 
@@ -21,9 +22,12 @@ class WheelRendererMixin:
     #  キャンバスサイズ変化時のホイール再計算
     # ════════════════════════════════════════════════════════════════
     def _on_canvas_resize(self, event):
+        # サイドバー幅 / 設定パネル幅のドラッグ中は描画をスキップ（軽量プレビュー）
+        if getattr(self, "_sashing", False) or getattr(self, "_cfg_resizing", False):
+            return
         cw, ch = event.width, event.height
-        # ポインターが縁から 28px 飛び出すため余白を 48px 確保
-        r = max(MIN_R, min(cw, ch) // 2 - 48)
+        # ポインターが縁から POINTER_OVERHANG px 飛び出すため WHEEL_OUTER_MARGIN px 確保
+        r = max(MIN_R, min(cw, ch) // 2 - WHEEL_OUTER_MARGIN)
         self.CX = cw // 2
         self.CY = ch // 2
         self.R  = r
