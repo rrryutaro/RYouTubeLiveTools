@@ -33,6 +33,7 @@ _SETTINGS_KEYS = [
     "text_direction", "text_size_mode", "donut_hole",
     "pointer_preset", "pointer_angle",
     "log_timestamp", "log_overlay_show", "log_box_border", "log_on_top",
+    "auto_shuffle",
 ]
 
 _SETTINGS_DEFAULTS = {
@@ -54,6 +55,7 @@ _SETTINGS_DEFAULTS = {
     "log_overlay_show": True,
     "log_box_border": False,
     "log_on_top": False,
+    "auto_shuffle": False,
 }
 
 
@@ -704,6 +706,43 @@ class CfgPanelMixin:
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(0, 6))
 
+        # ════════════════════════════════════════════════
+        #  配置設定グループ
+        # ════════════════════════════════════════════════
+        g_arr = make_group(p, "配置設定")
+
+        tk.Button(g_arr, text="標準配置に戻す",
+                  command=self._reset_to_standard_arrangement,
+                  bg=DARK2, fg=WHITE, font=("Meiryo", 9),
+                  relief=tk.FLAT, cursor="hand2",
+                  padx=6, pady=2).pack(fill=tk.X, padx=12, pady=(6, 2))
+
+        tk.Button(g_arr, text="今すぐランダム配置",
+                  command=self._apply_random_arrangement,
+                  bg=DARK2, fg=WHITE, font=("Meiryo", 9),
+                  relief=tk.FLAT, cursor="hand2",
+                  padx=6, pady=2).pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        self._cfg_auto_shuffle_var  = tk.BooleanVar(value=getattr(self, '_auto_shuffle', False))
+        self._auto_shuffle_hint_lbl = tk.Label(
+            g_arr, text="", bg=PANEL, fg=GOLD, font=("Meiryo", 8))
+        self._auto_shuffle_hint_lbl.pack(anchor="w", padx=24, pady=(0, 4))
+
+        def on_auto_shuffle():
+            self._auto_shuffle = self._cfg_auto_shuffle_var.get()
+            hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
+            self._auto_shuffle_hint_lbl.config(text=hint)
+            self._save_config()
+
+        tk.Checkbutton(g_arr, text="spinごとにランダム配置",
+                       variable=self._cfg_auto_shuffle_var, command=on_auto_shuffle,
+                       bg=PANEL, fg=WHITE, selectcolor=DARK2,
+                       activebackground=PANEL, activeforeground=WHITE,
+                       font=("Meiryo", 9)).pack(anchor="w", padx=12, pady=(0, 2))
+
+        if getattr(self, '_auto_shuffle', False):
+            self._auto_shuffle_hint_lbl.config(text="ON（開始クリック直後に再配置）")
+
         # 末尾の余白
         tk.Frame(p, bg=PANEL, height=8).pack()
 
@@ -779,6 +818,11 @@ class CfgPanelMixin:
         self._cfg_overlay_var.set(self._log_overlay_show)
         self._cfg_box_border_var.set(self._log_box_border)
         self._cfg_log_on_top_var.set(self._log_on_top)
+        # 配置設定
+        if hasattr(self, '_cfg_auto_shuffle_var'):
+            self._cfg_auto_shuffle_var.set(self._auto_shuffle)
+            hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
+            self._auto_shuffle_hint_lbl.config(text=hint)
 
     # ════════════════════════════════════════════════════════════════
     #  設定リセット
@@ -812,6 +856,7 @@ class CfgPanelMixin:
         self._log_overlay_show = d["log_overlay_show"]
         self._log_box_border   = d["log_box_border"]
         self._log_on_top       = d["log_on_top"]
+        self._auto_shuffle     = d.get("auto_shuffle", False)
         self._apply_cfg_to_ui()
         self._apply_pointer_preset(self._pointer_preset)
         self._save_config()
@@ -871,6 +916,7 @@ class CfgPanelMixin:
         self._log_overlay_show = bool(d["log_overlay_show"])
         self._log_box_border   = bool(d["log_box_border"])
         self._log_on_top       = bool(d["log_on_top"])
+        self._auto_shuffle     = bool(d.get("auto_shuffle", False))
         self._apply_cfg_to_ui()
         self._apply_pointer_preset(self._pointer_preset)
         self._save_config()

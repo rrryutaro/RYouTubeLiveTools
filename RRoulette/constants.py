@@ -51,3 +51,18 @@ ITEM_MAX_LINES      = 4    # 多行項目の最大行数
 
 # ─── その他 ──────────────────────────────────────────────────────────
 _ADD_SENTINEL = "＋ 新規グループを追加..."   # コンボボックス末尾の追加用エントリ
+
+# ─── 確率・分割 ──────────────────────────────────────────────────────
+SPLIT_MAX = 10
+WEIGHT_BELOW_ONE = (0.75, 0.5, 0.25)
+
+
+class Segment:
+    """ルーレットの1セグメントを表すデータクラス。"""
+    __slots__ = ("item_text", "item_index", "arc", "start_angle")
+
+    def __init__(self, item_text, item_index, arc, start_angle=0.0):
+        self.item_text   = item_text
+        self.item_index  = item_index
+        self.arc         = arc
+        self.start_angle = start_angle

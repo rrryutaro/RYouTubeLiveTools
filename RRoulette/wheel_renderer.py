@@ -65,7 +65,9 @@ class WheelRendererMixin:
             donut_r=donut_r,
         )
         self._layout_cache_key = (
-            tuple(self.items), self.R, self._text_size_mode, self._text_direction
+            tuple(self.items),
+            tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
+            self.R, self._text_size_mode, self._text_direction,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -90,17 +92,20 @@ class WheelRendererMixin:
         if not log_on_top:
             self._draw_log_overlay()
 
+        segs = getattr(self, 'current_segments', [])
+        n = len(segs)
+
         if n == 0:
             self.cv.create_text(cx, cy, text="項目を追加してください",
                                 fill=WHITE, font=("Meiryo", 13),
                                 tags=("wheel_text", "wheel_all"))
         else:
-            arc = 360.0 / n
-
             # ── 新レイアウトエンジン: キャッシュ確認・再構築 ─────────────
             _cache_valid = True
             _cache_key = (
-                tuple(self.items), self.R, self._text_size_mode, self._text_direction
+                tuple(self.items),
+                tuple(int(seg.arc * 100) for seg in segs),
+                self.R, self._text_size_mode, self._text_direction,
             )
             if getattr(self, '_layout_cache_key', None) != _cache_key:
                 _drag = (getattr(self, '_resizing', False)
@@ -116,18 +121,19 @@ class WheelRendererMixin:
             ):
                 _cache_valid = False
 
-            for i in range(n):
-                seg_start = 90 - self.angle + i * arc
+            for i, seg in enumerate(segs):
+                seg_start = 90 - self.angle + seg.start_angle
+                seg_arc   = seg.arc
                 color = SEGMENT_COLORS[i % len(SEGMENT_COLORS)]
 
                 self.cv.create_arc(
                     cx - r, cy - r, cx + r, cy + r,
-                    start=seg_start, extent=arc,
+                    start=seg_start, extent=seg_arc,
                     fill=color, outline=WHITE, width=2,
                     tags=("wheel_sector", "wheel_all"),
                 )
 
-                mid_deg = seg_start + arc / 2
+                mid_deg = seg_start + seg_arc / 2
                 mid_rad = math.radians(mid_deg)
 
                 if not _cache_valid:
@@ -298,11 +304,16 @@ class WheelRendererMixin:
     #  ポインターが指しているセグメント番号
     # ════════════════════════════════════════════════════════════════
     def _seg_at_pointer(self) -> int:
-        n = len(self.items)
-        if n == 0:
+        segs = getattr(self, 'current_segments', None)
+        if not segs:
             return -1
-        arc = 360.0 / n
-        return int(((self.angle - self._pointer_angle) % 360) / arc) % n
+        offset = (self.angle - self._pointer_angle) % 360
+        cumulative = 0.0
+        for i, seg in enumerate(segs):
+            cumulative += seg.arc
+            if offset < cumulative:
+                return i
+        return len(segs) - 1
 
     # ════════════════════════════════════════════════════════════════
     #  ポインター操作ヘルパー

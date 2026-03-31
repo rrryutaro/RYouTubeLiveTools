@@ -33,6 +33,120 @@ from history_manager import HistoryManagerMixin
 
 
 # ════════════════════════════════════════════════════════════════════
+#  ItemEntry ヘルパー関数
+# ════════════════════════════════════════════════════════════════════
+
+def _make_entry(text):
+    """テキストからデフォルト設定の ItemEntry dict を作成する。"""
+    return {"text": text, "enabled": True, "prob_mode": None, "prob_value": None, "split_count": 1}
+
+
+def _ensure_entries(raw_items):
+    """旧 list[str] 形式を list[dict] (ItemEntry) 形式に変換する。"""
+    if not raw_items:
+        return []
+    if isinstance(raw_items[0], str):
+        return [_make_entry(t) for t in raw_items]
+    return [dict(e) for e in raw_items]
+
+
+def _calc_probs(entries):
+    """有効な entries リストの各エントリーの確率 (%) を計算して返す。"""
+    n = len(entries)
+    if n == 0:
+        return []
+
+    fixed_idx    = [i for i, e in enumerate(entries) if e.get("prob_mode") == "fixed"]
+    nonfixed_idx = [i for i, e in enumerate(entries) if e.get("prob_mode") != "fixed"]
+
+    sum_fixed = sum(entries[i].get("prob_value") or 0.0 for i in fixed_idx)
+    sum_fixed = min(sum_fixed, 99.999)
+    remaining = 100.0 - sum_fixed
+
+    weights = []
+    for i in nonfixed_idx:
+        e = entries[i]
+        if e.get("prob_mode") == "weight" and e.get("prob_value") is not None:
+            weights.append(max(0.0001, float(e["prob_value"])))
+        else:
+            weights.append(1.0)
+    total_w = sum(weights) or 1.0
+
+    probs = [0.0] * n
+    for i in fixed_idx:
+        probs[i] = float(entries[i].get("prob_value") or 0.0)
+    for j, i in enumerate(nonfixed_idx):
+        probs[i] = remaining * weights[j] / total_w
+    return probs
+
+
+def _apply_split(entries_with_probs):
+    """
+    entries_with_probs: list of (entry_dict, orig_idx_in_item_entries, prob_pct)
+    Returns: list of (text, orig_item_idx, arc_degrees)
+    """
+    raw = []
+    for entry, orig_idx, prob in entries_with_probs:
+        k = max(1, min(10, int(entry.get("split_count") or 1)))
+        sub_arc = prob * 360.0 / 100.0 / k
+        for _ in range(k):
+            raw.append((entry["text"], orig_idx, sub_arc))
+    return raw
+
+
+def _standard_order(raw_segs):
+    """
+    raw_segs: list of (text, item_idx, arc)
+    分割された項目を等間隔配置し、残りを順番に埋めた並び順を返す。
+    """
+    T = len(raw_segs)
+    if T == 0:
+        return []
+
+    seen   = []
+    by_idx = {}
+    for text, idx, arc in raw_segs:
+        if idx not in by_idx:
+            by_idx[idx] = []
+            seen.append(idx)
+        by_idx[idx].append((text, idx, arc))
+
+    split_idxs    = [i for i in seen if len(by_idx[i]) > 1]
+    nonsplit_idxs = [i for i in seen if len(by_idx[i]) == 1]
+
+    if not split_idxs:
+        return list(raw_segs)
+
+    result = [None] * T
+    placed = set()
+
+    for sidx in split_idxs:
+        subs = by_idx[sidx]
+        K    = len(subs)
+        step = T / K
+        positions = []
+        for j in range(K):
+            pos = int(j * step + 0.5)
+            pos = max(0, min(T - 1, pos))
+            tries = 0
+            while pos in placed and tries < T:
+                pos = (pos + 1) % T
+                tries += 1
+            placed.add(pos)
+            positions.append(pos)
+        sorted_pos = sorted(positions)
+        for p, sub in zip(sorted_pos, subs):
+            result[p] = sub
+
+    ns_iter = iter(by_idx[i][0] for i in nonsplit_idxs)
+    for i in range(T):
+        if result[i] is None:
+            result[i] = next(ns_iter, None)
+
+    return [r for r in result if r is not None]
+
+
+# ════════════════════════════════════════════════════════════════════
 #  RouletteApp
 # ════════════════════════════════════════════════════════════════════
 class RouletteApp(
@@ -129,13 +243,25 @@ class RouletteApp(
         self._pointer_lock_while_spinning = True
         self._pointer_preset_var = None   # UI構築後に設定
 
-        # 項目パターン管理
-        _default = {"デフォルト": ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]}
-        self._item_patterns: dict[str, list[str]] = cfg.get("item_patterns", _default)
+        # 項目パターン管理（ItemEntry 形式・後方互換読み込み）
+        _default_texts = ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]
+        raw_patterns = cfg.get("item_patterns", None)
+        if raw_patterns is None:
+            self._item_patterns: dict[str, list] = {
+                "デフォルト": [_make_entry(t) for t in _default_texts]
+            }
+        else:
+            self._item_patterns = {}
+            for pat_name, pat_items in raw_patterns.items():
+                self._item_patterns[pat_name] = _ensure_entries(pat_items)
         self._current_pattern: str = cfg.get("current_pattern", "デフォルト")
         if self._current_pattern not in self._item_patterns:
             self._current_pattern = next(iter(self._item_patterns))
-        self.items: list[str] = list(self._item_patterns[self._current_pattern])
+        self._item_entries: list[dict] = list(self._item_patterns[self._current_pattern])
+        self._auto_shuffle: bool = cfg.get("auto_shuffle", False)
+        # self.items と self.current_segments は _rebuild_segments() で設定
+        self.current_segments: list = []
+        self.items: list[str] = []
         self._log_timestamp    = cfg.get("log_timestamp", False)
         self._log_overlay_show = cfg.get("log_overlay_show", True)
         self._log_box_border   = cfg.get("log_box_border", False)
@@ -179,9 +305,68 @@ class RouletteApp(
         else:
             self._apply_profile(self._profile_idx)
 
+        self._rebuild_segments()
         self._redraw()
         self.root.after(10, self._set_appwindow)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ════════════════════════════════════════════════════════════════
+    #  セグメント再構築・配置操作
+    # ════════════════════════════════════════════════════════════════
+    def _rebuild_segments(self):
+        """_item_entries から current_segments を再計算する。self.items も更新する。"""
+        from constants import Segment
+
+        enabled = [(e, i) for i, e in enumerate(self._item_entries) if e.get("enabled", True)]
+        if not enabled:
+            self.current_segments = []
+            self.items = []
+            return
+
+        enabled_entries = [e for e, _ in enabled]
+        orig_indices    = [i for _, i in enabled]
+
+        probs = _calc_probs(enabled_entries)
+
+        entries_with_probs = [
+            (enabled_entries[j], orig_indices[j], probs[j])
+            for j in range(len(enabled_entries))
+        ]
+
+        raw_segs = _apply_split(entries_with_probs)
+        ordered  = _standard_order(raw_segs)
+
+        segments = []
+        angle = 0.0
+        for text, idx, arc in ordered:
+            seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle)
+            segments.append(seg)
+            angle += arc
+
+        self.current_segments = segments
+        self.items = [seg.item_text for seg in segments]
+        self._layout_cache_key = None  # レイアウトキャッシュを無効化
+
+    def _apply_random_arrangement(self):
+        """current_segments をランダムに並び替えて start_angle を更新する。"""
+        import random
+        if not self.current_segments:
+            return
+        segs = list(self.current_segments)
+        random.shuffle(segs)
+        angle = 0.0
+        for seg in segs:
+            seg.start_angle = angle
+            angle += seg.arc
+        self.current_segments = segs
+        self.items = [seg.item_text for seg in segs]
+        self._layout_cache_key = None
+        self._redraw()
+
+    def _reset_to_standard_arrangement(self):
+        """current_segments を標準配置順にリセットする。"""
+        self._rebuild_segments()
+        self._redraw()
 
     # ════════════════════════════════════════════════════════════════
     #  UI 構築
@@ -313,7 +498,7 @@ class RouletteApp(
     #  設定保存・読み込み
     # ════════════════════════════════════════════════════════════════
     def _save_config(self):
-        self._item_patterns[self._current_pattern] = list(self.items)
+        self._item_patterns[self._current_pattern] = list(self._item_entries)
         config = {
             "profile_idx": self._profile_idx,
             "settings_visible": self._settings_visible,
@@ -335,6 +520,7 @@ class RouletteApp(
             "geometry": self.root.geometry(),
             "item_patterns": self._item_patterns,
             "current_pattern": self._current_pattern,
+            "auto_shuffle": self._auto_shuffle,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
             "pointer_lock_while_spinning": self._pointer_lock_while_spinning,
