@@ -145,6 +145,20 @@ class HistoryManagerMixin:
         except Exception:
             pass
 
+    def _clear_log(self):
+        """ログを全件削除する。"""
+        if not self._history:
+            _msgbox.showinfo("ログ削除", "削除するログがありません。", parent=self.root)
+            return
+        if not _msgbox.askyesno(
+            "ログ削除",
+            f"ログ {len(self._history)} 件をすべて削除します。\nよろしいですか？",
+            parent=self.root,
+        ):
+            return
+        self._history.clear()
+        self._redraw()
+
     def _do_export_log(self, fmt: str):
         """ファイル保存ダイアログを開いてログを出力する。
 

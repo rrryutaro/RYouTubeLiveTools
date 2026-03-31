@@ -120,6 +120,10 @@ class WindowManagerMixin:
             label="  ログ出力（グループ・項目付き）",
             command=lambda: self._do_export_log("detailed"),
         )
+        self._ctx.add_command(
+            label="  ログ削除",
+            command=self._clear_log,
+        )
         self._ctx.add_separator()
         self._ctx.add_command(label="  最小化", command=self._minimize)
         self._ctx.add_command(label="  終了", command=self._on_close)
