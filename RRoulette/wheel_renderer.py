@@ -12,7 +12,7 @@ import math
 from constants import (
     SEGMENT_COLORS, BG, PANEL, ACCENT, DARK2, WHITE, GOLD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, MIN_R, TRANSPARENT_KEY,
-    WHEEL_OUTER_MARGIN,
+    WHEEL_OUTER_MARGIN, DONUT_DRAW_RADIUS,
 )
 
 
@@ -50,7 +50,7 @@ class WheelRendererMixin:
     def _rebuild_layout_cache(self):
         """新レイアウトエンジン用のレイアウトキャッシュを構築する。"""
         from layout_search import build_all_sector_layouts
-        donut_r = 13.0 if getattr(self, '_donut_hole', False) else 0.0
+        donut_r = float(DONUT_DRAW_RADIUS) if getattr(self, '_donut_hole', False) else 0.0
         self._layout_cache = build_all_sector_layouts(
             items=self.items,
             wheel_cx=self.CX,
@@ -68,6 +68,7 @@ class WheelRendererMixin:
             tuple(self.items),
             tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
             self.R, self._text_size_mode, self._text_direction,
+            self._donut_hole,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -106,6 +107,7 @@ class WheelRendererMixin:
                 tuple(self.items),
                 tuple(int(seg.arc * 100) for seg in segs),
                 self.R, self._text_size_mode, self._text_direction,
+                self._donut_hole,
             )
             if getattr(self, '_layout_cache_key', None) != _cache_key:
                 _drag = (getattr(self, '_resizing', False)

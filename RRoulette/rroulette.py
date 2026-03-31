@@ -26,7 +26,7 @@ from constants import (
 )
 from wheel_renderer import WheelRendererMixin
 from spin_engine import SpinEngineMixin
-from cfg_panel import CfgPanelMixin
+from cfg_panel import CfgPanelMixin, _SETTINGS_DEFAULTS
 from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
@@ -221,7 +221,7 @@ class RouletteApp(
         self._tick_custom_file = cfg.get("tick_custom_file", "")
         self._win_custom_file  = cfg.get("win_custom_file", "")
         self._text_direction = cfg.get("text_direction", 0)
-        self._text_size_mode = cfg.get("text_size_mode", 0)
+        self._text_size_mode = cfg.get("text_size_mode", _SETTINGS_DEFAULTS["text_size_mode"])
         self._sidebar_w   = cfg.get("sidebar_w", 216)
         self._cfg_panel_w = cfg.get("cfg_panel_w", CFG_PANEL_W)
         self._cfg_panel_visible   = cfg.get("cfg_panel_visible", False)
@@ -233,11 +233,11 @@ class RouletteApp(
         self._sash_start_w = 0
 
         # ポインター位置設定 (0=上, 1=右, 2=下, 3=左, 4=任意)
-        self._pointer_preset = cfg.get("pointer_preset", 0)
+        self._pointer_preset = cfg.get("pointer_preset", _SETTINGS_DEFAULTS["pointer_preset"])
         if self._pointer_preset < 4:
             self._pointer_angle = _POINTER_PRESET_ANGLES[self._pointer_preset]
         else:
-            self._pointer_angle = cfg.get("pointer_angle", 0.0)
+            self._pointer_angle = cfg.get("pointer_angle", _SETTINGS_DEFAULTS["pointer_angle"])
         self._dragging_pointer            = False
         self._suppress_window_drag        = False
         self._pointer_lock_while_spinning = True
@@ -523,7 +523,6 @@ class RouletteApp(
             "auto_shuffle": self._auto_shuffle,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
-            "pointer_lock_while_spinning": self._pointer_lock_while_spinning,
             "log_timestamp":     self._log_timestamp,
             "log_overlay_show":  self._log_overlay_show,
             "log_box_border":    self._log_box_border,

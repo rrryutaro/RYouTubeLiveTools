@@ -10,7 +10,7 @@ RRoulette — スピンエンジン Mixin
 import math
 import random
 
-from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS
+from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS, DONUT_HIT_RADIUS
 
 
 class SpinEngineMixin:
@@ -187,9 +187,9 @@ class SpinEngineMixin:
         dy = abs(event.y_root - self._click_start_y)
         if dx > 5 or dy > 5:
             return
-        # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブ26px超）のみ受け付ける
+        # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブDONUT_HIT_RADIUS超）のみ受け付ける
         dist = math.hypot(event.x - self.CX, event.y - self.CY)
-        if dist > self.R or dist <= 26:
+        if dist > self.R or dist <= DONUT_HIT_RADIUS:
             return
         self._handle_action()
 
