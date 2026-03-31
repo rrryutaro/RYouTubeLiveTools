@@ -17,7 +17,13 @@ from config_utils import EXPORT_DIR
 from constants import (
     PANEL, ACCENT, DARK2, WHITE, _ADD_SENTINEL,
     ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
+    SPLIT_MAX, WEIGHT_BELOW_ONE,
 )
+
+
+def _make_entry(text):
+    """テキストからデフォルト設定の ItemEntry dict を作成する。"""
+    return {"text": text, "enabled": True, "prob_mode": None, "prob_value": None, "split_count": 1}
 
 
 def _enforce_limits(items: list):
@@ -172,37 +178,321 @@ def _parse_items(raw: str) -> list:
 
 class ItemListMixin:
 
+    # 確率モード表示名 ↔ 内部値マッピング
+    _PM_MAP = {"デフォルト": None, "固定%": "fixed", "重み": "weight"}
+    _PM_INV = {None: "デフォルト", "fixed": "固定%", "weight": "重み"}
+
     # ════════════════════════════════════════════════════════════════
     #  項目リスト — 表示モード切り替え
     # ════════════════════════════════════════════════════════════════
     def _build_listbox(self):
         for w in self._lb_frm.winfo_children():
             w.destroy()
+        self._check_vars    = []
+        self._check_buttons = []
+        self._pm_vars       = []   # prob_mode StringVar per item
+        self._pm_cbs        = []   # prob_mode Combobox per item
+        self._pv_vars       = []   # fixed-prob Entry StringVar per item
+        self._pv_entries    = []   # fixed-prob Entry widget per item
+        self._pw_vars       = []   # weight Combobox StringVar per item
+        self._pw_cbs        = []   # weight Combobox widget per item
+        self._sp_vars       = []   # split_count StringVar per item
+        self._split_cbs     = []   # split_count Combobox widget per item
+
         sb = tk.Scrollbar(self._lb_frm)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.lb = tk.Listbox(
-            self._lb_frm, yscrollcommand=sb.set,
-            bg="#0f3460", fg=WHITE, selectbackground=ACCENT,
-            activestyle="none", font=("Meiryo", 10),
-            relief=tk.FLAT, bd=0,
+
+        cv = tk.Canvas(self._lb_frm, bg="#0f3460",
+                       yscrollcommand=sb.set, highlightthickness=0)
+        cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.config(command=cv.yview)
+        self._lb_canvas = cv
+
+        inner  = tk.Frame(cv, bg="#0f3460")
+        win_id = cv.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner(e):
+            cv.configure(scrollregion=cv.bbox("all"))
+        def _on_cv(e):
+            cv.itemconfig(win_id, width=e.width)
+        inner.bind("<Configure>", _on_inner)
+        cv.bind("<Configure>", _on_cv)
+
+        def _on_wheel(e):
+            cv.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        cv.bind("<MouseWheel>", _on_wheel)
+
+        _LBL_KW = dict(bg="#0f3460", fg="#8899cc", font=("Meiryo", 8))
+        _CB_KW  = dict(font=("Meiryo", 8), state="readonly")
+        _ENT_KW = dict(
+            font=("Meiryo", 8), bg="#1a3a6a", fg=WHITE,
+            insertbackground=WHITE, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground="#334466",
+            highlightcolor=ACCENT,
         )
-        self.lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.config(command=self.lb.yview)
-        for item in self.items:
-            self.lb.insert(tk.END, item)
-        self.lb.bind("<Double-Button-1>", self._on_lb_double_click)
+
+        for i, entry in enumerate(self._item_entries):
+            # ── Outer frame for entire item block ────────────────
+            outer = tk.Frame(inner, bg="#0f3460")
+            outer.pack(fill=tk.X)
+
+            # ── Row 1: Checkbox + item text ──────────────────────
+            row1 = tk.Frame(outer, bg="#0f3460")
+            row1.pack(fill=tk.X)
+
+            var = tk.BooleanVar(value=entry.get("enabled", True))
+            self._check_vars.append(var)
+            cb = tk.Checkbutton(
+                row1, variable=var,
+                bg="#0f3460", activebackground="#0f3460",
+                selectcolor="#1a3a6a", highlightthickness=0,
+                relief=tk.FLAT,
+                command=lambda idx=i: self._on_item_enabled_change(idx),
+            )
+            cb.pack(side=tk.LEFT)
+            self._check_buttons.append(cb)
+
+            display = entry["text"].replace("\n", "↵")
+            if len(display) > 18:
+                display = display[:17] + "…"
+            lbl = tk.Label(row1, text=display, bg="#0f3460", fg=WHITE,
+                           font=("Meiryo", 10), anchor="w")
+            lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            # ── Row 2: 確率設定 + 分割設定 ───────────────────────
+            row2 = tk.Frame(outer, bg="#0f3460")
+            row2.pack(fill=tk.X, padx=(22, 2), pady=(0, 3))
+
+            # 確率モード Combobox
+            pm_display = self._PM_INV.get(entry.get("prob_mode"), "デフォルト")
+            pm_var = tk.StringVar(value=pm_display)
+            self._pm_vars.append(pm_var)
+            tk.Label(row2, text="確率:", **_LBL_KW).pack(side=tk.LEFT)
+            pm_cb = ttk.Combobox(
+                row2, textvariable=pm_var,
+                values=list(self._PM_MAP.keys()),
+                width=6, **_CB_KW,
+            )
+            pm_cb.pack(side=tk.LEFT, padx=(0, 4))
+            self._pm_cbs.append(pm_cb)
+
+            # 確率値ホルダー（固定% Entry または 重み Combobox を切り替え）
+            val_holder = tk.Frame(row2, bg="#0f3460")
+            val_holder.pack(side=tk.LEFT, padx=(0, 6))
+
+            # 固定確率 Entry
+            pv_init = (
+                str(entry["prob_value"])
+                if entry.get("prob_mode") == "fixed" and entry.get("prob_value") is not None
+                else ""
+            )
+            pv_var = tk.StringVar(value=pv_init)
+            self._pv_vars.append(pv_var)
+            pv_ent = tk.Entry(val_holder, textvariable=pv_var, width=5, **_ENT_KW)
+            self._pv_entries.append(pv_ent)
+
+            # 重み係数 Combobox
+            pw_init = (
+                str(entry["prob_value"])
+                if entry.get("prob_mode") == "weight" and entry.get("prob_value") is not None
+                else "1"
+            )
+            pw_var = tk.StringVar(value=pw_init)
+            self._pw_vars.append(pw_var)
+            pw_cb_w = ttk.Combobox(val_holder, textvariable=pw_var, width=4, **_CB_KW)
+            self._pw_cbs.append(pw_cb_w)
+
+            # モードに応じて値ウィジェットを表示
+            _mode = entry.get("prob_mode")
+            if _mode == "fixed":
+                pv_ent.pack()
+            elif _mode == "weight":
+                pw_cb_w["values"] = self._weight_choices()
+                pw_cb_w.pack()
+
+            # 分割数 Combobox
+            tk.Label(row2, text="分割:", **_LBL_KW).pack(side=tk.LEFT)
+            sp_val = str(entry.get("split_count", 1))
+            sp_var = tk.StringVar(value=sp_val)
+            self._sp_vars.append(sp_var)
+            sp_cb_w = ttk.Combobox(
+                row2, textvariable=sp_var,
+                values=[str(j) for j in range(1, SPLIT_MAX + 1)],
+                width=2, **_CB_KW,
+            )
+            sp_cb_w.pack(side=tk.LEFT)
+            self._split_cbs.append(sp_cb_w)
+
+            # イベントバインド
+            pm_cb.bind("<<ComboboxSelected>>",
+                       lambda e, idx=i: self._on_prob_mode_change(idx))
+            pv_ent.bind("<Return>",   lambda e, idx=i: self._on_prob_value_change(idx))
+            pv_ent.bind("<FocusOut>", lambda e, idx=i: self._on_prob_value_change(idx))
+            pw_cb_w.bind("<<ComboboxSelected>>",
+                         lambda e, idx=i: self._on_weight_change(idx))
+            sp_cb_w.bind("<<ComboboxSelected>>",
+                         lambda e, idx=i: self._on_split_change(idx))
+
+            # スクロール・ダブルクリックバインド
+            _scroll_targets = (outer, row1, row2, cb, lbl,
+                               pm_cb, val_holder, pv_ent, pw_cb_w, sp_cb_w)
+            for w in _scroll_targets:
+                w.bind("<MouseWheel>", _on_wheel)
+                w.bind("<Double-Button-1>", self._on_lb_double_click)
+
+        cv.bind("<Double-Button-1>", self._on_lb_double_click)
+
+    def _on_item_enabled_change(self, idx: int):
+        """チェックボックスのトグル時に enabled を更新してセグメントを再構築する。"""
+        if idx < len(self._item_entries) and idx < len(self._check_vars):
+            self._item_entries[idx]["enabled"] = self._check_vars[idx].get()
+            self._rebuild_segments()
+            self._refresh_weight_choices()
+            self._redraw()
+
+    # ════════════════════════════════════════════════════════════════
+    #  確率設定 / 分割設定 ハンドラ
+    # ════════════════════════════════════════════════════════════════
+    def _weight_choices(self) -> list:
+        """重み係数の選択肢リストを返す（ON item 数に応じて上限を変える）。"""
+        n_on = max(1, sum(1 for e in self._item_entries if e.get("enabled", True)))
+        below = sorted(str(w) for w in WEIGHT_BELOW_ONE)   # "0.25", "0.5", "0.75"
+        above = []
+        v = 1.5
+        while v <= n_on + 1e-9:
+            above.append(str(round(v, 1)))
+            v += 0.5
+        return below + ["1"] + above
+
+    def _refresh_weight_choices(self):
+        """全重み Combobox の選択肢を現在の ON item 数に合わせて更新する。"""
+        choices = self._weight_choices()
+        for pw_cb_w in getattr(self, "_pw_cbs", []):
+            try:
+                if pw_cb_w.winfo_exists():
+                    pw_cb_w["values"] = choices
+            except tk.TclError:
+                pass
+
+    def _on_prob_mode_change(self, i: int):
+        """確率モード Combobox 変更ハンドラ。"""
+        if i >= len(self._item_entries) or i >= len(self._pm_vars):
+            return
+        entry   = self._item_entries[i]
+        mode    = self._PM_MAP.get(self._pm_vars[i].get())
+        pv_ent  = self._pv_entries[i]
+        pw_cb_w = self._pw_cbs[i]
+
+        # 両方の値ウィジェットをいったん非表示
+        pv_ent.pack_forget()
+        pw_cb_w.pack_forget()
+
+        if mode == "fixed":
+            if entry.get("prob_mode") != "fixed":
+                # 他モードから切り替え時は値をリセット
+                entry["prob_value"] = None
+                self._pv_vars[i].set("")
+            pv_ent.pack()
+        elif mode == "weight":
+            if entry.get("prob_mode") != "weight":
+                entry["prob_value"] = 1.0
+                self._pw_vars[i].set("1")
+            pw_cb_w["values"] = self._weight_choices()
+            pw_cb_w.pack()
+        else:
+            # デフォルト（等確率）
+            entry["prob_value"] = None
+
+        entry["prob_mode"] = mode
+        self._hide_edit_warning()
+        self._rebuild_segments()
+        self._redraw()
+
+    def _on_prob_value_change(self, i: int):
+        """固定確率 Entry の FocusOut / Return ハンドラ。"""
+        if i >= len(self._item_entries) or i >= len(self._pv_vars):
+            return
+        entry = self._item_entries[i]
+        if entry.get("prob_mode") != "fixed":
+            return
+
+        raw = self._pv_vars[i].get().strip()
+        if not raw:
+            entry["prob_value"] = None
+            self._hide_edit_warning()
+            self._rebuild_segments()
+            self._redraw()
+            return
+
+        try:
+            val = float(raw)
+        except ValueError:
+            self._show_edit_warning("数値を入力してください（例: 30）")
+            self._pv_vars[i].set(
+                str(entry["prob_value"]) if entry.get("prob_value") is not None else ""
+            )
+            return
+
+        if not (0.0 < val < 100.0):
+            self._show_edit_warning("0より大きく100未満の値を入力してください")
+            self._pv_vars[i].set(
+                str(entry["prob_value"]) if entry.get("prob_value") is not None else ""
+            )
+            return
+
+        # Σ固定確率 の合計チェック（自分以外 かつ enabled のみ。_calc_probs と同条件）
+        sum_others = sum(
+            (e.get("prob_value") or 0.0)
+            for j, e in enumerate(self._item_entries)
+            if e.get("prob_mode") == "fixed" and j != i and e.get("enabled", True)
+        )
+        if sum_others + val >= 100.0:
+            self._show_edit_warning(
+                f"固定確率の合計が100以上になります（他の固定: {sum_others:.1f}%）"
+            )
+            self._pv_vars[i].set(
+                str(entry["prob_value"]) if entry.get("prob_value") is not None else ""
+            )
+            return
+
+        self._hide_edit_warning()
+        entry["prob_value"] = val
+        self._rebuild_segments()
+        self._redraw()
+
+    def _on_weight_change(self, i: int):
+        """重み係数 Combobox 変更ハンドラ。"""
+        if i >= len(self._item_entries) or i >= len(self._pw_vars):
+            return
+        entry = self._item_entries[i]
+        if entry.get("prob_mode") != "weight":
+            return
+        try:
+            val = float(self._pw_vars[i].get())
+        except ValueError:
+            val = 1.0
+            self._pw_vars[i].set("1")
+        entry["prob_value"] = val
+        self._rebuild_segments()
+        self._redraw()
+
+    def _on_split_change(self, i: int):
+        """分割数 Combobox 変更ハンドラ。"""
+        if i >= len(self._item_entries) or i >= len(self._sp_vars):
+            return
+        try:
+            val = int(self._sp_vars[i].get())
+        except ValueError:
+            val = 1
+        self._item_entries[i]["split_count"] = max(1, min(SPLIT_MAX, val))
+        self._rebuild_segments()
+        self._redraw()
 
     def _on_lb_double_click(self, event):
-        """リスト空白部分のダブルクリックで編集モードに入る。"""
+        """ダブルクリックで編集モードに入る。"""
         if self._edit_mode:
             return
-        size = self.lb.size()
-        if size == 0:
-            self._enter_edit_mode()
-            return
-        bbox = self.lb.bbox(size - 1)
-        if bbox and event.y > bbox[1] + bbox[3]:
-            self._enter_edit_mode()
+        self._enter_edit_mode()
 
     def _on_edit_focus_out(self, _event=None):
         """テキストボックスからフォーカスが外れたら自動保存する。"""
@@ -222,7 +512,7 @@ class ItemListMixin:
         )
         self._edit_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.config(command=self._edit_text.yview)
-        self._edit_text.insert(tk.END, _serialize_items(self.items))
+        self._edit_text.insert(tk.END, _serialize_items([e["text"] for e in self._item_entries]))
         self._edit_text.edit_reset()   # 初期挿入をundo履歴から除外
         self._edit_text.bind("<FocusOut>", self._on_edit_focus_out)
         self._edit_text.bind("<KeyRelease>", self._on_edit_key)
@@ -263,7 +553,19 @@ class ItemListMixin:
             self._show_edit_warning(warn)
         else:
             self._hide_edit_warning()
-        self.items = preview
+        # 既存の enabled 状態を維持しながらテキストを更新
+        old_entries = self._item_entries
+        new_entries = []
+        for j, text in enumerate(preview):
+            if j < len(old_entries) and old_entries[j]["text"] == text:
+                new_entries.append(old_entries[j])
+            else:
+                entry = _make_entry(text)
+                if j < len(old_entries):
+                    entry["enabled"] = old_entries[j].get("enabled", True)
+                new_entries.append(entry)
+        self._item_entries = new_entries
+        self._rebuild_segments()
         self._redraw()
 
     def _save_edit(self):
@@ -275,15 +577,28 @@ class ItemListMixin:
         raw = self._edit_text.get("1.0", tk.END)
         items = _parse_items(raw)
         items, _, _ = _enforce_limits(items)  # 保存時も制限を保証
-        self.items = items
+
+        # 既存の enabled 状態を維持しながら新しい ItemEntry リストを構築
+        old_entries = self._item_entries
+        new_entries = []
+        for j, text in enumerate(items):
+            if j < len(old_entries) and old_entries[j]["text"] == text:
+                new_entries.append(old_entries[j])
+            else:
+                entry = _make_entry(text)
+                if j < len(old_entries):
+                    entry["enabled"] = old_entries[j].get("enabled", True)
+                new_entries.append(entry)
+        self._item_entries = new_entries
 
         pat_name = self._pattern_var.get().strip() or "デフォルト"
-        self._item_patterns[pat_name] = list(self.items)
+        self._item_patterns[pat_name] = list(self._item_entries)
         self._current_pattern = pat_name
 
         self._pattern_cb.config(values=list(self._item_patterns.keys()))
         self._pattern_var.set(pat_name)
 
+        self._rebuild_segments()
         self._build_listbox()
         self._edit_btn.config(state=tk.NORMAL)
         self._save_btn.config(state=tk.DISABLED)
@@ -308,7 +623,8 @@ class ItemListMixin:
             return
         if val in self._item_patterns:
             self._current_pattern = val
-            self.items = list(self._item_patterns[val])
+            self._item_entries = list(self._item_patterns[val])
+            self._rebuild_segments()
             self._build_listbox()
             self._redraw()
 
@@ -322,7 +638,8 @@ class ItemListMixin:
             pass
         elif text in self._item_patterns:
             self._current_pattern = text
-            self.items = list(self._item_patterns[text])
+            self._item_entries = list(self._item_patterns[text])
+            self._rebuild_segments()
             self._build_listbox()
             self._redraw()
         else:
@@ -350,7 +667,8 @@ class ItemListMixin:
             name = f"{base} {i}"; i += 1
         self._item_patterns[name] = []
         self._current_pattern = name
-        self.items = []
+        self._item_entries = []
+        self._rebuild_segments()
         self._refresh_pattern_cb()
         self._build_listbox()
         self._save_config()
@@ -369,9 +687,11 @@ class ItemListMixin:
             parent=self.root,
         ):
             return
-        self._item_patterns = {"デフォルト": ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]}
+        _default_texts = ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]
+        self._item_patterns = {"デフォルト": [_make_entry(t) for t in _default_texts]}
         self._current_pattern = "デフォルト"
-        self.items = list(self._item_patterns[self._current_pattern])
+        self._item_entries = list(self._item_patterns[self._current_pattern])
+        self._rebuild_segments()
         self._refresh_pattern_cb()
         self._build_listbox()
         self._save_config()
@@ -392,7 +712,7 @@ class ItemListMixin:
         )
         if not path:
             return
-        self._item_patterns[self._current_pattern] = list(self.items)
+        self._item_patterns[self._current_pattern] = list(self._item_entries)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._item_patterns, f, ensure_ascii=False, indent=2)
@@ -418,7 +738,7 @@ class ItemListMixin:
             _msgbox.showerror("インポートエラー", f"ファイルを読み込めませんでした:\n{ex}", parent=self.root)
             return
 
-        # 形式チェック: dict[str, list[str]]
+        # 形式チェック: dict[str, list]
         if (not isinstance(data, dict)
                 or not all(isinstance(k, str) and isinstance(v, list) for k, v in data.items())):
             _msgbox.showerror(
@@ -429,13 +749,26 @@ class ItemListMixin:
             )
             return
 
-        self._item_patterns = {k: [str(i) for i in v] for k, v in data.items()}
+        # 旧 list[str] 形式と新 list[dict] 形式の両方に対応
+        converted = {}
+        for k, v in data.items():
+            if not v:
+                converted[k] = []
+            elif isinstance(v[0], str):
+                converted[k] = [_make_entry(s) for s in v]
+            elif isinstance(v[0], dict) and "text" in v[0]:
+                converted[k] = [dict(e) for e in v]
+            else:
+                converted[k] = []
+        self._item_patterns = converted
+
         if not self._item_patterns:
             _msgbox.showwarning("インポート", "グループが1件もありませんでした。", parent=self.root)
             return
 
         self._current_pattern = next(iter(self._item_patterns))
-        self.items = list(self._item_patterns[self._current_pattern])
+        self._item_entries = list(self._item_patterns[self._current_pattern])
+        self._rebuild_segments()
         self._refresh_pattern_cb()
         self._build_listbox()
         self._save_config()
@@ -451,16 +784,31 @@ class ItemListMixin:
     # ════════════════════════════════════════════════════════════════
     def set_item_spin_lock(self, locked: bool):
         """スピン中は項目リストパネルのすべての操作ウィジェットを無効化する。"""
-        state = tk.DISABLED if locked else tk.NORMAL
+        state    = tk.DISABLED if locked else tk.NORMAL
+        cb_state = "disabled" if locked else "readonly"
         self._pattern_cb.config(state="disabled" if locked else "normal")
         self._edit_btn.config(state=state)
         self._save_btn.config(state=tk.DISABLED)
         for btn in getattr(self, "_item_list_title_btns", []):
             btn.config(state=state)
-        if hasattr(self, "lb") and self.lb.winfo_exists():
-            self.lb.config(state=state)
+        for cb in getattr(self, "_check_buttons", []):
+            if cb.winfo_exists():
+                cb.config(state=state)
         if hasattr(self, "_edit_text") and self._edit_text.winfo_exists():
             self._edit_text.config(state=state)
+        # 確率設定 / 分割設定 コントロール
+        for cb in getattr(self, "_pm_cbs", []):
+            if cb.winfo_exists():
+                cb.config(state=cb_state)
+        for ent in getattr(self, "_pv_entries", []):
+            if ent.winfo_exists():
+                ent.config(state=state)
+        for cb in getattr(self, "_pw_cbs", []):
+            if cb.winfo_exists():
+                cb.config(state=cb_state)
+        for cb in getattr(self, "_split_cbs", []):
+            if cb.winfo_exists():
+                cb.config(state=cb_state)
 
     def _group_delete_silent(self):
         """確認ダイアログなしでグループを削除（1つしかない場合は元に戻す）"""
@@ -469,7 +817,8 @@ class ItemListMixin:
             return
         del self._item_patterns[self._current_pattern]
         self._current_pattern = next(iter(self._item_patterns))
-        self.items = list(self._item_patterns[self._current_pattern])
+        self._item_entries = list(self._item_patterns[self._current_pattern])
+        self._rebuild_segments()
         self._refresh_pattern_cb()
         self._build_listbox()
         self._save_config()

@@ -21,15 +21,129 @@ from config_utils import BASE_DIR, CONFIG_FILE, _is_on_any_monitor, _parse_geome
 from constants import (
     BG, PANEL, ACCENT, DARK2, WHITE,
     SIZE_PROFILES, MIN_W, MIN_H,
-    SIDEBAR_W, CFG_PANEL_W,
+    SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
 )
 from wheel_renderer import WheelRendererMixin
 from spin_engine import SpinEngineMixin
-from cfg_panel import CfgPanelMixin
+from cfg_panel import CfgPanelMixin, _SETTINGS_DEFAULTS
 from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
+
+
+# ════════════════════════════════════════════════════════════════════
+#  ItemEntry ヘルパー関数
+# ════════════════════════════════════════════════════════════════════
+
+def _make_entry(text):
+    """テキストからデフォルト設定の ItemEntry dict を作成する。"""
+    return {"text": text, "enabled": True, "prob_mode": None, "prob_value": None, "split_count": 1}
+
+
+def _ensure_entries(raw_items):
+    """旧 list[str] 形式を list[dict] (ItemEntry) 形式に変換する。"""
+    if not raw_items:
+        return []
+    if isinstance(raw_items[0], str):
+        return [_make_entry(t) for t in raw_items]
+    return [dict(e) for e in raw_items]
+
+
+def _calc_probs(entries):
+    """有効な entries リストの各エントリーの確率 (%) を計算して返す。"""
+    n = len(entries)
+    if n == 0:
+        return []
+
+    fixed_idx    = [i for i, e in enumerate(entries) if e.get("prob_mode") == "fixed"]
+    nonfixed_idx = [i for i, e in enumerate(entries) if e.get("prob_mode") != "fixed"]
+
+    sum_fixed = sum(entries[i].get("prob_value") or 0.0 for i in fixed_idx)
+    sum_fixed = min(sum_fixed, 99.999)
+    remaining = 100.0 - sum_fixed
+
+    weights = []
+    for i in nonfixed_idx:
+        e = entries[i]
+        if e.get("prob_mode") == "weight" and e.get("prob_value") is not None:
+            weights.append(max(0.0001, float(e["prob_value"])))
+        else:
+            weights.append(1.0)
+    total_w = sum(weights) or 1.0
+
+    probs = [0.0] * n
+    for i in fixed_idx:
+        probs[i] = float(entries[i].get("prob_value") or 0.0)
+    for j, i in enumerate(nonfixed_idx):
+        probs[i] = remaining * weights[j] / total_w
+    return probs
+
+
+def _apply_split(entries_with_probs):
+    """
+    entries_with_probs: list of (entry_dict, orig_idx_in_item_entries, prob_pct)
+    Returns: list of (text, orig_item_idx, arc_degrees)
+    """
+    raw = []
+    for entry, orig_idx, prob in entries_with_probs:
+        k = max(1, min(10, int(entry.get("split_count") or 1)))
+        sub_arc = prob * 360.0 / 100.0 / k
+        for _ in range(k):
+            raw.append((entry["text"], orig_idx, sub_arc))
+    return raw
+
+
+def _standard_order(raw_segs):
+    """
+    raw_segs: list of (text, item_idx, arc)
+    分割された項目を等間隔配置し、残りを順番に埋めた並び順を返す。
+    """
+    T = len(raw_segs)
+    if T == 0:
+        return []
+
+    seen   = []
+    by_idx = {}
+    for text, idx, arc in raw_segs:
+        if idx not in by_idx:
+            by_idx[idx] = []
+            seen.append(idx)
+        by_idx[idx].append((text, idx, arc))
+
+    split_idxs    = [i for i in seen if len(by_idx[i]) > 1]
+    nonsplit_idxs = [i for i in seen if len(by_idx[i]) == 1]
+
+    if not split_idxs:
+        return list(raw_segs)
+
+    result = [None] * T
+    placed = set()
+
+    for sidx in split_idxs:
+        subs = by_idx[sidx]
+        K    = len(subs)
+        step = T / K
+        positions = []
+        for j in range(K):
+            pos = int(j * step + 0.5)
+            pos = max(0, min(T - 1, pos))
+            tries = 0
+            while pos in placed and tries < T:
+                pos = (pos + 1) % T
+                tries += 1
+            placed.add(pos)
+            positions.append(pos)
+        sorted_pos = sorted(positions)
+        for p, sub in zip(sorted_pos, subs):
+            result[p] = sub
+
+    ns_iter = iter(by_idx[i][0] for i in nonsplit_idxs)
+    for i in range(T):
+        if result[i] is None:
+            result[i] = next(ns_iter, None)
+
+    return [r for r in result if r is not None]
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -107,7 +221,7 @@ class RouletteApp(
         self._tick_custom_file = cfg.get("tick_custom_file", "")
         self._win_custom_file  = cfg.get("win_custom_file", "")
         self._text_direction = cfg.get("text_direction", 0)
-        self._text_size_mode = cfg.get("text_size_mode", 0)
+        self._text_size_mode = cfg.get("text_size_mode", _SETTINGS_DEFAULTS["text_size_mode"])
         self._sidebar_w   = cfg.get("sidebar_w", 216)
         self._cfg_panel_w = cfg.get("cfg_panel_w", CFG_PANEL_W)
         self._cfg_panel_visible   = cfg.get("cfg_panel_visible", False)
@@ -119,23 +233,35 @@ class RouletteApp(
         self._sash_start_w = 0
 
         # ポインター位置設定 (0=上, 1=右, 2=下, 3=左, 4=任意)
-        self._pointer_preset = cfg.get("pointer_preset", 0)
+        self._pointer_preset = cfg.get("pointer_preset", _SETTINGS_DEFAULTS["pointer_preset"])
         if self._pointer_preset < 4:
             self._pointer_angle = _POINTER_PRESET_ANGLES[self._pointer_preset]
         else:
-            self._pointer_angle = cfg.get("pointer_angle", 0.0)
+            self._pointer_angle = cfg.get("pointer_angle", _SETTINGS_DEFAULTS["pointer_angle"])
         self._dragging_pointer            = False
         self._suppress_window_drag        = False
         self._pointer_lock_while_spinning = True
         self._pointer_preset_var = None   # UI構築後に設定
 
-        # 項目パターン管理
-        _default = {"デフォルト": ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]}
-        self._item_patterns: dict[str, list[str]] = cfg.get("item_patterns", _default)
+        # 項目パターン管理（ItemEntry 形式・後方互換読み込み）
+        _default_texts = ["項目A", "項目B", "項目C", "項目D", "項目E", "項目F"]
+        raw_patterns = cfg.get("item_patterns", None)
+        if raw_patterns is None:
+            self._item_patterns: dict[str, list] = {
+                "デフォルト": [_make_entry(t) for t in _default_texts]
+            }
+        else:
+            self._item_patterns = {}
+            for pat_name, pat_items in raw_patterns.items():
+                self._item_patterns[pat_name] = _ensure_entries(pat_items)
         self._current_pattern: str = cfg.get("current_pattern", "デフォルト")
         if self._current_pattern not in self._item_patterns:
             self._current_pattern = next(iter(self._item_patterns))
-        self.items: list[str] = list(self._item_patterns[self._current_pattern])
+        self._item_entries: list[dict] = list(self._item_patterns[self._current_pattern])
+        self._auto_shuffle: bool = cfg.get("auto_shuffle", False)
+        # self.items と self.current_segments は _rebuild_segments() で設定
+        self.current_segments: list = []
+        self.items: list[str] = []
         self._log_timestamp    = cfg.get("log_timestamp", False)
         self._log_overlay_show = cfg.get("log_overlay_show", True)
         self._log_box_border   = cfg.get("log_box_border", False)
@@ -161,27 +287,89 @@ class RouletteApp(
         if self._win_custom_file:
             self.snd.load_win_custom(self._win_custom_file)
 
-        # 初期ジオメトリ（オフスクリーンチェック付き）
+        # 初期ジオメトリ（サイズ妥当性・オフスクリーンチェック付き）
         saved_geo = cfg.get("geometry")
         if saved_geo:
             try:
                 parsed = _parse_geometry(saved_geo)
                 if parsed:
                     w, h, x, y = parsed
-                    if _is_on_any_monitor(x, y, w, h):
+                    if w < MIN_W or h < MIN_H:
+                        # サイズが最小値未満の壊れた geometry は無視
+                        self._apply_profile(self._profile_idx)
+                    elif _is_on_any_monitor(x, y, w, h):
                         root.geometry(saved_geo)
                     else:
                         self._apply_profile(self._profile_idx)
                 else:
-                    root.geometry(saved_geo)
+                    self._apply_profile(self._profile_idx)
             except Exception:
                 self._apply_profile(self._profile_idx)
         else:
             self._apply_profile(self._profile_idx)
 
+        self._rebuild_segments()
         self._redraw()
         self.root.after(10, self._set_appwindow)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ════════════════════════════════════════════════════════════════
+    #  セグメント再構築・配置操作
+    # ════════════════════════════════════════════════════════════════
+    def _rebuild_segments(self):
+        """_item_entries から current_segments を再計算する。self.items も更新する。"""
+        from constants import Segment
+
+        enabled = [(e, i) for i, e in enumerate(self._item_entries) if e.get("enabled", True)]
+        if not enabled:
+            self.current_segments = []
+            self.items = []
+            return
+
+        enabled_entries = [e for e, _ in enabled]
+        orig_indices    = [i for _, i in enabled]
+
+        probs = _calc_probs(enabled_entries)
+
+        entries_with_probs = [
+            (enabled_entries[j], orig_indices[j], probs[j])
+            for j in range(len(enabled_entries))
+        ]
+
+        raw_segs = _apply_split(entries_with_probs)
+        ordered  = _standard_order(raw_segs)
+
+        segments = []
+        angle = 0.0
+        for text, idx, arc in ordered:
+            seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle)
+            segments.append(seg)
+            angle += arc
+
+        self.current_segments = segments
+        self.items = [seg.item_text for seg in segments]
+        self._layout_cache_key = None  # レイアウトキャッシュを無効化
+
+    def _apply_random_arrangement(self):
+        """current_segments をランダムに並び替えて start_angle を更新する。"""
+        import random
+        if not self.current_segments:
+            return
+        segs = list(self.current_segments)
+        random.shuffle(segs)
+        angle = 0.0
+        for seg in segs:
+            seg.start_angle = angle
+            angle += seg.arc
+        self.current_segments = segs
+        self.items = [seg.item_text for seg in segs]
+        self._layout_cache_key = None
+        self._redraw()
+
+    def _reset_to_standard_arrangement(self):
+        """current_segments を標準配置順にリセットする。"""
+        self._rebuild_segments()
+        self._redraw()
 
     # ════════════════════════════════════════════════════════════════
     #  UI 構築
@@ -265,15 +453,17 @@ class RouletteApp(
         self._build_listbox()
 
         # ── サイドバー幅リサイズグリップ（右下角）──────────────────
-        _sg = tk.Canvas(self.sidebar, width=16, height=16,
-                        bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
-        for _i in range(3):
-            _x = 4 + _i * 4
-            _sg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
-        _sg.bind("<ButtonPress-1>",   self._sash_start)
-        _sg.bind("<B1-Motion>",       self._sash_move)
-        _sg.bind("<ButtonRelease-1>", self._sash_end)
-        _sg.place(relx=1.0, rely=1.0, anchor="se")
+        # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
+        if not self._item_list_float:
+            _sg = tk.Canvas(self.sidebar, width=16, height=16,
+                            bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
+            for _i in range(3):
+                _x = 4 + _i * 4
+                _sg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
+            _sg.bind("<ButtonPress-1>",   self._sash_start)
+            _sg.bind("<B1-Motion>",       self._sash_move)
+            _sg.bind("<ButtonRelease-1>", self._sash_end)
+            _sg.place(relx=1.0, rely=1.0, anchor="se")
 
         self.sidebar.bind("<Button-3>", self._show_context_menu)
 
@@ -288,7 +478,8 @@ class RouletteApp(
 
         # ── メインエリア ──────────────────────────────────
         self.main_frame = tk.Frame(self.content, bg=BG)
-        self.main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                             padx=MAIN_PANEL_PAD, pady=MAIN_PANEL_PAD)
 
         self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
@@ -310,7 +501,7 @@ class RouletteApp(
     #  設定保存・読み込み
     # ════════════════════════════════════════════════════════════════
     def _save_config(self):
-        self._item_patterns[self._current_pattern] = list(self.items)
+        self._item_patterns[self._current_pattern] = list(self._item_entries)
         config = {
             "profile_idx": self._profile_idx,
             "settings_visible": self._settings_visible,
@@ -332,9 +523,9 @@ class RouletteApp(
             "geometry": self.root.geometry(),
             "item_patterns": self._item_patterns,
             "current_pattern": self._current_pattern,
+            "auto_shuffle": self._auto_shuffle,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
-            "pointer_lock_while_spinning": self._pointer_lock_while_spinning,
             "log_timestamp":     self._log_timestamp,
             "log_overlay_show":  self._log_overlay_show,
             "log_box_border":    self._log_box_border,

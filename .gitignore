@@ -1,46 +1,27 @@
-# PyInstaller
 build/
 dist/
 *.manifest
-
-# Python
 __pycache__/
 *.py[cod]
 *.pyd
 .Python
 *.egg-info/
 .eggs/
-
-# 仮想環境
 venv/
 .venv/
 env/
 ENV/
-
-# ユーザー設定ファイル（端末ごとに異なるため除外）
-# 命名規則: ツール名_settings.json（例: roulette_settings.json）
-*_settings.json
-*_config.json
-config.json
-
-# アーカイブ
 *.zip
-
-# 動画ファイル
 *.mp4
 *.mkv
 *.avi
-
-# IDE
 .vscode/
 .idea/
 *.suo
 *.user
-
-# Windows
 Thumbs.db
 Desktop.ini
 ehthumbs.db
-
-# 内部開発メモ（公開しない）
-Document/*.txt
+.claude/
+Document/
+*_settings.json

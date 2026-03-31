@@ -17,6 +17,11 @@ from constants import (
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY,
 )
+from config_utils import _is_on_any_monitor, _parse_geometry
+
+# 浮動ウィンドウの最小サイズ（px）
+_FLOAT_WIN_MIN_W = 150
+_FLOAT_WIN_MIN_H = 100
 
 
 class WindowManagerMixin:
@@ -217,25 +222,27 @@ class WindowManagerMixin:
         self._sashing = True
         self._sash_start_x = event.x_root
         self._sash_start_w = self._sidebar_w
+        self._sash_start_root_w = self.root.winfo_width()
 
     def _sash_move(self, event):
         if not getattr(self, "_sashing", False):
             return
         delta = event.x_root - self._sash_start_x
         new_w = max(120, self._sash_start_w + delta)
-        diff = new_w - self._sidebar_w
         self._sidebar_w = new_w
+        # ドラッグ中は widget 幅のみ更新（root.geometry は ButtonRelease 時に確定）
         self.sidebar.configure(width=new_w)
-        # メインパネルサイズを維持するため root 幅を差分だけ調整
-        cur_w = self.root.winfo_width()
-        cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
 
-    def _sash_end(self, event):
+    def _sash_end(self, _event):
         if not getattr(self, "_sashing", False):
             return
         self._sashing = False
+        # メインパネルサイズを維持するため root 幅を確定適用
+        diff = self._sidebar_w - self._sash_start_w
+        cur_h = self.root.winfo_height()
+        self.root.geometry(f"{max(MIN_W, self._sash_start_root_w + diff)}x{cur_h}")
         self._save_config()
+        self._redraw()
 
     def _main_to_root_extra_w(self) -> int:
         """メインパネル幅 → ウィンドウ全体幅の差分（右パネル + main_frame padding）"""
@@ -264,24 +271,27 @@ class WindowManagerMixin:
         self._cfg_resizing = True
         self._cfg_resize_start_x = event.x_root
         self._cfg_resize_start_w = self._cfg_panel_w
+        self._cfg_resize_start_root_w = self.root.winfo_width()
 
     def _cfg_resize_move(self, event):
         if not getattr(self, "_cfg_resizing", False):
             return
         delta = event.x_root - self._cfg_resize_start_x
         new_w = max(120, self._cfg_resize_start_w + delta)
-        diff = new_w - self._cfg_panel_w
         self._cfg_panel_w = new_w
+        # ドラッグ中は widget 幅のみ更新（root.geometry は ButtonRelease 時に確定）
         self.cfg_panel.configure(width=new_w)
-        cur_w = self.root.winfo_width()
-        cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
 
-    def _cfg_resize_end(self, event):
+    def _cfg_resize_end(self, _event):
         if not getattr(self, "_cfg_resizing", False):
             return
         self._cfg_resizing = False
+        # メインパネルサイズを維持するため root 幅を確定適用
+        diff = self._cfg_panel_w - self._cfg_resize_start_w
+        cur_h = self.root.winfo_height()
+        self.root.geometry(f"{max(MIN_W, self._cfg_resize_start_root_w + diff)}x{cur_h}")
         self._save_config()
+        self._redraw()
 
     def _clamp_sidebar_w(self):
         """ウィンドウ縮小時にサイドバー幅を上限に収める。"""
@@ -407,7 +417,12 @@ class WindowManagerMixin:
         win.attributes("-topmost", self._topmost)
         if saved_geo:
             try:
-                win.geometry(saved_geo)
+                parsed = _parse_geometry(saved_geo)
+                if (parsed
+                        and parsed[0] >= _FLOAT_WIN_MIN_W
+                        and parsed[1] >= _FLOAT_WIN_MIN_H
+                        and _is_on_any_monitor(parsed[2], parsed[3], parsed[0], parsed[1])):
+                    win.geometry(saved_geo)
             except Exception:
                 pass
         return win

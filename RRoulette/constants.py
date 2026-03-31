@@ -2,7 +2,7 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20
@@ -35,6 +35,11 @@ MIN_R = 100          # ルーレット半径の最小値（px）
 SIDEBAR_W = 224      # サイドバー幅 + パディング分
 CFG_PANEL_W = 290    # 設定パネル幅
 
+# ─── レイアウト余白 ──────────────────────────────────────────────────
+MAIN_PANEL_PAD    = 8   # main_frame の padx / pady
+WHEEL_OUTER_MARGIN = 48  # ホイール外周〜キャンバス端の余白（ポインター飛び出し分）
+POINTER_OVERHANG  = 28   # ポインターのホイール外周からの飛び出し量
+
 # ─── ポインター ───────────────────────────────────────────────────────
 POINTER_PRESET_NAMES   = ["上", "右", "下", "左", "任意"]
 _POINTER_PRESET_ANGLES = [0.0, 90.0, 180.0, 270.0]   # 上/右/下/左（時計回り・上基準）
@@ -46,3 +51,22 @@ ITEM_MAX_LINES      = 4    # 多行項目の最大行数
 
 # ─── その他 ──────────────────────────────────────────────────────────
 _ADD_SENTINEL = "＋ 新規グループを追加..."   # コンボボックス末尾の追加用エントリ
+
+# ─── 確率・分割 ──────────────────────────────────────────────────────
+SPLIT_MAX = 10
+WEIGHT_BELOW_ONE = (0.75, 0.5, 0.25)
+
+# ─── ドーナツ穴 ──────────────────────────────────────────────────────
+DONUT_DRAW_RADIUS = 13   # 描画上のドーナツ穴半径（px）
+DONUT_HIT_RADIUS  = 26   # クリック無効化半径（px）= DONUT_DRAW_RADIUS × 2
+
+
+class Segment:
+    """ルーレットの1セグメントを表すデータクラス。"""
+    __slots__ = ("item_text", "item_index", "arc", "start_angle")
+
+    def __init__(self, item_text, item_index, arc, start_angle=0.0):
+        self.item_text   = item_text
+        self.item_index  = item_index
+        self.arc         = arc
+        self.start_angle = start_angle

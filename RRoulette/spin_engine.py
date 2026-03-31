@@ -10,7 +10,7 @@ RRoulette — スピンエンジン Mixin
 import math
 import random
 
-from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS
+from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS, DONUT_HIT_RADIUS
 
 
 class SpinEngineMixin:
@@ -21,7 +21,7 @@ class SpinEngineMixin:
     #  スピン制御
     # ════════════════════════════════════════════════════════════════
     def _start_spin(self):
-        if self.spinning or len(self.items) < 2:
+        if self.spinning or len(getattr(self, 'current_segments', [])) < 2:
             return
         self.spinning      = True
         self._flashing     = False  # フラッシュを強制終了
@@ -33,14 +33,28 @@ class SpinEngineMixin:
             self.root.after_cancel(self._action_timer)
             self._action_timer = None
         self.cv.delete("result_overlay")
+
+        # auto_shuffle が有効なら先に配置をランダム化する
+        if getattr(self, '_auto_shuffle', False):
+            self._apply_random_arrangement()
+
         target_frames = max(1, self._spin_duration * 1000 / 16)
 
-        # ── 結果を先に完全ランダム決定し、そこへ着地する velocity を逆算 ──
-        n = len(self.items)
-        arc = 360.0 / n
-        target_seg   = random.randrange(n)
-        target_angle = arc * target_seg + self._pointer_angle + random.uniform(arc * 0.15, arc * 0.85)
-        self._final_angle = target_angle % 360
+        # ── 結果を先に確率比例でランダム決定し、そこへ着地する velocity を逆算 ──
+        segs = self.current_segments
+        r_val = random.uniform(0, 360)
+        cumulative = 0.0
+        target_seg = len(segs) - 1
+        for i, seg in enumerate(segs):
+            cumulative += seg.arc
+            if r_val < cumulative:
+                target_seg = i
+                break
+        seg_start  = cumulative - segs[target_seg].arc
+        seg_arc    = segs[target_seg].arc
+        target_offset = seg_start + seg_arc * random.uniform(0.15, 0.85)
+        target_angle  = (self._pointer_angle + target_offset) % 360
+        self._final_angle = target_angle
 
         # target_angle に着地するための総回転量を決める
         v_ref = 25.0
@@ -96,7 +110,7 @@ class SpinEngineMixin:
             self._action_timer = None
         seg = self._seg_at_pointer()
         if seg >= 0:
-            winner = self.items[seg]
+            winner = self.current_segments[seg].item_text
             self._record_result(winner)
             self.snd.play_win()
             seg_color = SEGMENT_COLORS[seg % len(SEGMENT_COLORS)]
@@ -173,9 +187,9 @@ class SpinEngineMixin:
         dy = abs(event.y_root - self._click_start_y)
         if dx > 5 or dy > 5:
             return
-        # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブ26px超）のみ受け付ける
+        # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブDONUT_HIT_RADIUS超）のみ受け付ける
         dist = math.hypot(event.x - self.CX, event.y - self.CY)
-        if dist > self.R or dist <= 26:
+        if dist > self.R or dist <= DONUT_HIT_RADIUS:
             return
         self._handle_action()
 
