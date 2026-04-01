@@ -11,7 +11,7 @@ YouTube ライブ配信向けのルーレットアプリです。
 
 | 方法 | 手順 |
 |------|------|
-| Python 直実行 | `python roulette.py`（RRoulette フォルダ内） |
+| Python 直実行 | `python rroulette.py`（RRoulette フォルダ内） |
 | EXE | `build_exe.bat` でビルド後、`dist\RRoulette.exe` を実行 |
 | ランチャー | `launcher.py` の「▶ Python」または「▶ EXE」ボタン |
 
