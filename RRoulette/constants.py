@@ -30,15 +30,15 @@ SIZE_PROFILES = [
     ("M", 860, 620),
     ("L", 1060, 740),
 ]
-MIN_W, MIN_H = 350, 300
+MIN_W, MIN_H = 300, 300
 MIN_R = 100          # ルーレット半径の最小値（px）
 SIDEBAR_W = 224      # サイドバー幅 + パディング分
 CFG_PANEL_W = 290    # 設定パネル幅
 
 # ─── レイアウト余白 ──────────────────────────────────────────────────
-MAIN_PANEL_PAD    = 8   # main_frame の padx / pady
-WHEEL_OUTER_MARGIN = 48  # ホイール外周〜キャンバス端の余白（ポインター飛び出し分）
+MAIN_PANEL_PAD    = 4   # main_frame の padx / pady
 POINTER_OVERHANG  = 28   # ポインターのホイール外周からの飛び出し量
+WHEEL_OUTER_MARGIN = POINTER_OVERHANG + 4  # ホイール外周〜キャンバス端の余白（POINTER_OVERHANG + 安全余白 4px）
 
 # ─── ポインター ───────────────────────────────────────────────────────
 POINTER_PRESET_NAMES   = ["上", "右", "下", "左", "任意"]

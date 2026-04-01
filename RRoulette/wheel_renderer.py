@@ -63,6 +63,7 @@ class WheelRendererMixin:
             min_size=6,
             max_size=72,
             donut_r=donut_r,
+            segments=getattr(self, 'current_segments', None),
         )
         self._layout_cache_key = (
             tuple(self.items),
@@ -126,7 +127,7 @@ class WheelRendererMixin:
             for i, seg in enumerate(segs):
                 seg_start = 90 - self.angle + seg.start_angle
                 seg_arc   = seg.arc
-                color = SEGMENT_COLORS[i % len(SEGMENT_COLORS)]
+                color = SEGMENT_COLORS[seg.item_index % len(SEGMENT_COLORS)]
 
                 self.cv.create_arc(
                     cx - r, cy - r, cx + r, cy + r,
@@ -166,17 +167,21 @@ class WheelRendererMixin:
                             tags=("wheel_text", "wheel_all"),
                         )
                 elif _lay.direction == 0:
-                    # 横表示1（内→外）: center_r 位置を基点として接線方向に各行を変位
+                    # 横表示1（内→外）: 行ごとの放射方向中心から接線方向に変位
+                    # LinePlacement.radial_center >= 0 なら行個別の放射中心を使用（外周端基準）
                     # キャンバス座標系(Y下向き)での接線方向単位ベクトル:
                     #   radial = (cos, -sin),  tangential = (sin, cos)
-                    _base_x = cx + _lay.center_r * math.cos(mid_rad)
-                    _base_y = cy - _lay.center_r * math.sin(mid_rad)
-                    _tan_x  = math.sin(mid_rad)
-                    _tan_y  = math.cos(mid_rad)
+                    _cos_m  = math.cos(mid_rad)
+                    _sin_m  = math.sin(mid_rad)
+                    _tan_x  = _sin_m
+                    _tan_y  = _cos_m
                     for _lp in _lay.lines:
+                        _r = _lp.radial_center if _lp.radial_center >= 0 else _lay.center_r
+                        _bx = cx + _r * _cos_m
+                        _by = cy - _r * _sin_m
                         _s  = _lp.stack_offset
-                        _lx = _base_x + _s * _tan_x
-                        _ly = _base_y + _s * _tan_y
+                        _lx = _bx + _s * _tan_x
+                        _ly = _by + _s * _tan_y
                         self.cv.create_text(
                             _lx, _ly, text=_lp.text, fill=WHITE,
                             font=_draw_font, angle=mid_deg,

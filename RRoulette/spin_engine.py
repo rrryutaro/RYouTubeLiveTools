@@ -23,6 +23,12 @@ class SpinEngineMixin:
     def _start_spin(self):
         if self.spinning or len(getattr(self, 'current_segments', [])) < 2:
             return
+        # auto_shuffle が有効なら spinning=True にする前に配置をランダム化する
+        # （spinning=True 後に呼ぶと _redraw() 内でキャッシュ再構築がスキップされ
+        #   文字が表示されなくなるため、必ず spinning=False の状態で実行する）
+        if getattr(self, '_auto_shuffle', False):
+            self._apply_random_arrangement()
+
         self.spinning      = True
         self._flashing     = False  # フラッシュを強制終了
         self.set_item_spin_lock(True)
@@ -33,10 +39,6 @@ class SpinEngineMixin:
             self.root.after_cancel(self._action_timer)
             self._action_timer = None
         self.cv.delete("result_overlay")
-
-        # auto_shuffle が有効なら先に配置をランダム化する
-        if getattr(self, '_auto_shuffle', False):
-            self._apply_random_arrangement()
 
         target_frames = max(1, self._spin_duration * 1000 / 16)
 

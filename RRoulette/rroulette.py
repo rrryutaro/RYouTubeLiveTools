@@ -98,6 +98,11 @@ def _standard_order(raw_segs):
     """
     raw_segs: list of (text, item_idx, arc)
     分割された項目を等間隔配置し、残りを順番に埋めた並び順を返す。
+
+    split 配置は最終累積 arc 基準のグリーディ方式:
+      全 split sub-segment に目標中心角（j * total_arc / K）を割り当て、
+      実際に並べながら累積 arc を追跡し、中心角が目標を超えたタイミングで
+      その sub-segment を挿入する。これにより最終 center angle が均等になる。
     """
     T = len(raw_segs)
     if T == 0:
@@ -117,33 +122,59 @@ def _standard_order(raw_segs):
     if not split_idxs:
         return list(raw_segs)
 
-    result = [None] * T
-    placed = set()
+    total_arc = sum(a for _, _, a in raw_segs)
 
+    # 全 split sub-segment を目標中心角順に並べる
+    split_queue = []  # (target_center_angle, sub_seg)
     for sidx in split_idxs:
         subs = by_idx[sidx]
         K    = len(subs)
-        step = T / K
-        positions = []
-        for j in range(K):
-            pos = int(j * step + 0.5)
-            pos = max(0, min(T - 1, pos))
-            tries = 0
-            while pos in placed and tries < T:
-                pos = (pos + 1) % T
-                tries += 1
-            placed.add(pos)
-            positions.append(pos)
-        sorted_pos = sorted(positions)
-        for p, sub in zip(sorted_pos, subs):
-            result[p] = sub
+        for j, sub in enumerate(subs):
+            split_queue.append((j * total_arc / K, sub))
+    split_queue.sort(key=lambda x: x[0])
 
-    ns_iter = iter(by_idx[i][0] for i in nonsplit_idxs)
-    for i in range(T):
-        if result[i] is None:
-            result[i] = next(ns_iter, None)
+    fillers = [by_idx[i][0] for i in nonsplit_idxs]
 
-    return [r for r in result if r is not None]
+    # グリーディ構築:
+    # 累積 arc を追いながら、split sub-segment の中心角が目標に達したら挿入
+    result = []
+    cum    = 0.0
+    fi     = 0   # filler index
+    si     = 0   # split_queue index
+
+    while si < len(split_queue) or fi < len(fillers):
+        if si >= len(split_queue):
+            result.extend(fillers[fi:])
+            break
+
+        target, split_seg = split_queue[si]
+        center_now        = cum + split_seg[2] / 2.0
+
+        if fi >= len(fillers):
+            # filler 枯渇 → split をそのまま追加
+            result.append(split_seg)
+            cum += split_seg[2]
+            si  += 1
+        elif center_now >= target:
+            # 今挿入すれば中心角が目標以上 → 挿入
+            result.append(split_seg)
+            cum += split_seg[2]
+            si  += 1
+        else:
+            # 1-step lookahead: 今挿入 vs filler 1つ置いてから挿入を比較
+            center_after = cum + fillers[fi][2] + split_seg[2] / 2.0
+            if abs(center_now - target) <= abs(center_after - target):
+                # 今の方が近い（または同等） → 挿入
+                result.append(split_seg)
+                cum += split_seg[2]
+                si  += 1
+            else:
+                # filler を先に置いた方が近い → filler を置く
+                result.append(fillers[fi])
+                cum += fillers[fi][2]
+                fi  += 1
+
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════

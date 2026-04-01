@@ -15,7 +15,7 @@ import tkinter as tk
 from constants import (
     BG, PANEL, DARK2, WHITE,
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-    CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY,
+    CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
 )
 from config_utils import _is_on_any_monitor, _parse_geometry
 
@@ -246,7 +246,7 @@ class WindowManagerMixin:
 
     def _main_to_root_extra_w(self) -> int:
         """メインパネル幅 → ウィンドウ全体幅の差分（右パネル + main_frame padding）"""
-        extra = 16  # main_frame padx=8 × 2
+        extra = MAIN_PANEL_PAD * 2  # main_frame padx 左右合計
         if not self._item_list_float and self._settings_visible:
             extra += self._sidebar_w + 4 + 8      # sash(4) + padx right(8)
         if not self._cfg_panel_float and self._cfg_panel_visible:
@@ -429,6 +429,7 @@ class WindowManagerMixin:
 
     def _toggle_item_list_float(self):
         """項目リストの埋め込み／浮動ウィンドウを切り替える。"""
+        before_extra = self._main_to_root_extra_w()
         if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
             self._item_list_float_geo = self._sidebar_toplevel.geometry()
             self._sidebar_toplevel.destroy()
@@ -440,10 +441,17 @@ class WindowManagerMixin:
         self._item_list_float = not self._item_list_float
         self._build_sidebar()
         self._apply_right_panel_layout()
+        after_extra = self._main_to_root_extra_w()
+        diff = after_extra - before_extra
+        if diff != 0:
+            cur_w = self.root.winfo_width()
+            cur_h = self.root.winfo_height()
+            self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
         self._save_config()
 
     def _toggle_cfg_panel_float(self):
         """設定パネルの埋め込み／浮動ウィンドウを切り替える。"""
+        before_extra = self._main_to_root_extra_w()
         if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
             self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
             self._cfg_panel_toplevel.destroy()
@@ -455,6 +463,12 @@ class WindowManagerMixin:
         self._cfg_panel_float = not self._cfg_panel_float
         self._build_cfg_panel()
         self._apply_right_panel_layout()
+        after_extra = self._main_to_root_extra_w()
+        diff = after_extra - before_extra
+        if diff != 0:
+            cur_w = self.root.winfo_width()
+            cur_h = self.root.winfo_height()
+            self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
         self._save_config()
 
     # ════════════════════════════════════════════════════════════════
