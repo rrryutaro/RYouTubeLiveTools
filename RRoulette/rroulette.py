@@ -270,7 +270,7 @@ class RouletteApp(
         self._win_custom_file  = cfg.get("win_custom_file", "")
         self._text_direction = cfg.get("text_direction", 0)
         self._text_size_mode = cfg.get("text_size_mode", _SETTINGS_DEFAULTS["text_size_mode"])
-        self._sidebar_w   = cfg.get("sidebar_w", 240)
+        self._sidebar_w   = cfg.get("sidebar_w", 300)
         self._cfg_panel_w = cfg.get("cfg_panel_w", CFG_PANEL_W)
         self._cfg_panel_visible   = cfg.get("cfg_panel_visible", False)
         self._item_list_float     = cfg.get("item_list_float", False)
