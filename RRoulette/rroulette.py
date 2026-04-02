@@ -393,6 +393,15 @@ class RouletteApp(
         raw_segs = _apply_split(entries_with_probs)
         ordered  = _standard_order(raw_segs)
 
+        if ordered:
+            first_item_idx = min(idx for _, idx, _ in ordered)
+            pivot = next(
+                (i for i, (_, idx, _) in enumerate(ordered) if idx == first_item_idx),
+                0,
+            )
+            if pivot > 0:
+                ordered = ordered[pivot:] + ordered[:pivot]
+
         if getattr(self, '_arrangement_direction', 0) == 0:
             ordered = list(reversed(ordered))
 
