@@ -1238,8 +1238,7 @@ class ItemListMixin:
         self._item_patterns[pat_name] = list(self._item_entries)
         self._current_pattern = pat_name
 
-        self._pattern_cb.config(values=list(self._item_patterns.keys()))
-        self._pattern_var.set(pat_name)
+        self._refresh_pattern_cb()
 
         self._rebuild_segments()
         self._build_listbox()
