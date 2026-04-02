@@ -245,6 +245,9 @@ class RouletteApp(
         self._resize_start_y = 0
         self._resize_start_w = 0
         self._resize_start_h = 0
+        self._resize_frame_pending = False
+        self._resize_pending_w = 0
+        self._resize_pending_h = 0
 
         # 浮動ウィンドウ参照（_build_sidebar / _build_cfg_panel で設定される）
         self._sidebar_toplevel    = None

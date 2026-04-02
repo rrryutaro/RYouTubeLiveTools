@@ -15,7 +15,8 @@ import tkinter as tk
 from constants import (
     BG, PANEL, DARK2, WHITE,
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-    CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
+    CFG_PANEL_W, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
+    MAIN_MIN_W, MAIN_MIN_H, SIDEBAR_MIN_W,
 )
 from config_utils import _is_on_any_monitor, _parse_geometry
 
@@ -191,24 +192,40 @@ class WindowManagerMixin:
             self._resizing = False
             return
         self._resizing = True
+        self._resize_frame_pending = False
         self._resize_start_x = event.x_root
         self._resize_start_y = event.y_root
         self._resize_start_w = self.root.winfo_width()
         self._resize_start_h = self.root.winfo_height()
+        self._resize_pending_w = self._resize_start_w
+        self._resize_pending_h = self._resize_start_h
 
     def _resize_move(self, event):
         if not getattr(self, "_resizing", False):
             return
         dw = event.x_root - self._resize_start_x
         dh = event.y_root - self._resize_start_y
-        new_w = max(MIN_W, self._resize_start_w + dw)
-        new_h = max(MIN_H, self._resize_start_h + dh)
-        self.root.geometry(f"{new_w}x{new_h}")
+        self._resize_pending_w = max(self._root_min_w(), self._resize_start_w + dw)
+        self._resize_pending_h = max(MAIN_MIN_H, self._resize_start_h + dh)
+        # geometry 適用を ~60fps にスロットル（マウスイベントが密集しても重くしない）
+        if not self._resize_frame_pending:
+            self._resize_frame_pending = True
+            self.root.after(16, self._apply_resize_frame)
+
+    def _apply_resize_frame(self):
+        """スロットルされた geometry 適用。"""
+        self._resize_frame_pending = False
+        if getattr(self, "_resizing", False):
+            self.root.geometry(f"{self._resize_pending_w}x{self._resize_pending_h}")
 
     def _resize_end(self, event):
         if not getattr(self, "_resizing", False):
             return
         self._resizing = False
+        self._resize_frame_pending = False
+        # ドラッグ中に保留されたサイズが残っていれば確定適用
+        if hasattr(self, "_resize_pending_w"):
+            self.root.geometry(f"{self._resize_pending_w}x{self._resize_pending_h}")
         self._save_config()
         self._redraw()
 
@@ -228,7 +245,7 @@ class WindowManagerMixin:
         if not getattr(self, "_sashing", False):
             return
         delta = event.x_root - self._sash_start_x
-        new_w = max(120, self._sash_start_w + delta)
+        new_w = max(SIDEBAR_MIN_W, self._sash_start_w + delta)
         self._sidebar_w = new_w
         # ドラッグ中は widget 幅のみ更新（root.geometry は ButtonRelease 時に確定）
         self.sidebar.configure(width=new_w)
@@ -240,7 +257,7 @@ class WindowManagerMixin:
         # メインパネルサイズを維持するため root 幅を確定適用
         diff = self._sidebar_w - self._sash_start_w
         cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, self._sash_start_root_w + diff)}x{cur_h}")
+        self.root.geometry(f"{max(self._root_min_w(), self._sash_start_root_w + diff)}x{cur_h}")
         self._save_config()
         self._redraw()
 
@@ -253,13 +270,23 @@ class WindowManagerMixin:
             extra += self._cfg_panel_w + 4 + 8    # sash(4) + padx right(8)
         return extra
 
+    def _root_min_w(self) -> int:
+        """表示中のパネル構成に基づくルートウィンドウの最小幅。
+        メインパネル最小幅 + 表示中の右パネル幅の合計を返す。"""
+        w = MAIN_MIN_W
+        if not self._item_list_float and self._settings_visible:
+            w += self._sidebar_w + 4 + 8   # sash(4) + padx右(8)
+        if not self._cfg_panel_float and self._cfg_panel_visible:
+            w += self._cfg_panel_w + 4 + 8
+        return w
+
     def _sidebar_max_w(self) -> int:
         """現在のウィンドウ幅に基づくサイドバーの最大幅を返す（_clamp_sidebar_w 用）。"""
         win_w = self.root.winfo_width()
         cfg_extra = (self._cfg_panel_w + 4 + 8) if (
             self._cfg_panel_visible and not self._cfg_panel_float
         ) else 0
-        return max(120, win_w - cfg_extra - 4 - 8 - 16 - 200)
+        return max(SIDEBAR_MIN_W, win_w - cfg_extra - 4 - 8 - 16 - MAIN_MIN_W)
 
     # ════════════════════════════════════════════════════════════════
     #  設定パネル幅リサイズ
@@ -289,7 +316,7 @@ class WindowManagerMixin:
         # メインパネルサイズを維持するため root 幅を確定適用
         diff = self._cfg_panel_w - self._cfg_resize_start_w
         cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, self._cfg_resize_start_root_w + diff)}x{cur_h}")
+        self.root.geometry(f"{max(self._root_min_w(), self._cfg_resize_start_root_w + diff)}x{cur_h}")
         self._save_config()
         self._redraw()
 
@@ -302,7 +329,7 @@ class WindowManagerMixin:
             return
         max_w = self._sidebar_max_w()
         if self._sidebar_w > max_w:
-            self._sidebar_w = max(120, max_w)
+            self._sidebar_w = max(SIDEBAR_MIN_W, max_w)
             self.sidebar.configure(width=self._sidebar_w)
 
     # ════════════════════════════════════════════════════════════════
@@ -348,7 +375,8 @@ class WindowManagerMixin:
         total = self._sidebar_w + 4 + 8
         if self._settings_visible:
             self._settings_visible = False
-            self.root.geometry(f"{max(MIN_W, w - total)}x{h}")
+            # サイドバー非表示後: min は MAIN_MIN_W（+ 他のパネル分）
+            self.root.geometry(f"{max(self._root_min_w(), w - total)}x{h}")
         else:
             self._settings_visible = True
             self.root.geometry(f"{w + total}x{h}")
@@ -446,7 +474,7 @@ class WindowManagerMixin:
         if diff != 0:
             cur_w = self.root.winfo_width()
             cur_h = self.root.winfo_height()
-            self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
+            self.root.geometry(f"{max(self._root_min_w(), cur_w + diff)}x{cur_h}")
         self._save_config()
 
     def _toggle_cfg_panel_float(self):
@@ -468,7 +496,7 @@ class WindowManagerMixin:
         if diff != 0:
             cur_w = self.root.winfo_width()
             cur_h = self.root.winfo_height()
-            self.root.geometry(f"{max(MIN_W, cur_w + diff)}x{cur_h}")
+            self.root.geometry(f"{max(self._root_min_w(), cur_w + diff)}x{cur_h}")
         self._save_config()
 
     # ════════════════════════════════════════════════════════════════
