@@ -305,6 +305,8 @@ class RouletteApp(
         self._auto_shuffle: bool = cfg.get("auto_shuffle", False)
         self._arrangement_direction: int = cfg.get("arrangement_direction", 0)
         self._spin_direction: int = cfg.get("spin_direction", 0)
+        self._confirm_reset: bool = cfg.get("confirm_reset", True)
+        self._detail_collapsed: bool = True  # 起動時は詳細設定カードを折りたたむ
         # self.items と self.current_segments は _rebuild_segments() で設定
         self.current_segments: list = []
         self.items: list[str] = []
@@ -475,7 +477,7 @@ class RouletteApp(
         self._pattern_cb.bind("<Escape>",              self._on_cb_escape)
 
         btn_row = tk.Frame(self.sidebar, bg=PANEL)
-        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(5, 10))
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 4))
         self._edit_btn = tk.Button(
             btn_row, text="編集", command=self._enter_edit_mode,
             bg=DARK2, fg=WHITE, font=("Meiryo", 9),
@@ -494,7 +496,7 @@ class RouletteApp(
             font=("Meiryo", 8), wraplength=self._sidebar_w - 20,
             justify=tk.LEFT, anchor="w",
         )
-        self._edit_warn_lbl.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
+        # 警告がある時だけ pack する（_show_edit_warning / _hide_edit_warning で制御）
 
         self._edit_mode = False
         self._lb_frm = tk.Frame(self.sidebar, bg=PANEL)
@@ -575,6 +577,7 @@ class RouletteApp(
             "auto_shuffle": self._auto_shuffle,
             "arrangement_direction": self._arrangement_direction,
             "spin_direction": self._spin_direction,
+            "confirm_reset": self._confirm_reset,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
             "log_timestamp":     self._log_timestamp,

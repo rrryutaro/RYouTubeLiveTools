@@ -34,6 +34,7 @@ _SETTINGS_KEYS = [
     "pointer_preset", "pointer_angle",
     "log_timestamp", "log_overlay_show", "log_box_border", "log_on_top",
     "auto_shuffle", "arrangement_direction", "spin_direction",
+    "confirm_reset",
 ]
 
 _SETTINGS_DEFAULTS = {
@@ -58,6 +59,7 @@ _SETTINGS_DEFAULTS = {
     "auto_shuffle": False,
     "arrangement_direction": 0,
     "spin_direction": 0,
+    "confirm_reset": True,
 }
 
 
@@ -734,6 +736,17 @@ class CfgPanelMixin:
             self._auto_shuffle = self._cfg_auto_shuffle_var.get()
             hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
             self._auto_shuffle_hint_lbl.config(text=hint)
+            # クイック操作帯のボタンと同期
+            if hasattr(self, '_qs_auto_btn'):
+                try:
+                    from constants import ACCENT, DARK2, WHITE
+                    on = self._auto_shuffle
+                    self._qs_auto_btn.config(
+                        bg=ACCENT if on else DARK2,
+                        fg=WHITE if on else "#778899",
+                    )
+                except Exception:
+                    pass
             self._save_config()
 
         tk.Checkbutton(g_arr, text="spinごとにランダム配置",
@@ -744,6 +757,23 @@ class CfgPanelMixin:
 
         if getattr(self, '_auto_shuffle', False):
             self._auto_shuffle_hint_lbl.config(text="ON（開始クリック直後に再配置）")
+
+        # 全リセット確認
+        self._cfg_confirm_reset_var = tk.BooleanVar(
+            value=getattr(self, '_confirm_reset', True))
+
+        def on_confirm_reset():
+            self._confirm_reset = self._cfg_confirm_reset_var.get()
+            self._save_config()
+
+        tk.Checkbutton(g_arr, text="一括リセット前に確認ダイアログを表示",
+                       variable=self._cfg_confirm_reset_var, command=on_confirm_reset,
+                       bg=PANEL, fg=WHITE, selectcolor=DARK2,
+                       activebackground=PANEL, activeforeground=WHITE,
+                       font=("Meiryo", 9)).pack(anchor="w", padx=12, pady=(4, 0))
+        tk.Label(g_arr, text="※ OFF にすると確認なしで即実行されます",
+                 bg=PANEL, fg="#667788", font=("Meiryo", 8),
+                 ).pack(anchor="w", padx=24, pady=(0, 4))
 
         _ARR_DIR_NAMES  = ["時計回り", "反時計回り"]
         _SPIN_DIR_NAMES = ["時計回り", "反時計回り"]
@@ -856,6 +886,15 @@ class CfgPanelMixin:
             self._cfg_auto_shuffle_var.set(self._auto_shuffle)
             hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
             self._auto_shuffle_hint_lbl.config(text=hint)
+            if hasattr(self, '_qs_auto_btn'):
+                try:
+                    on = self._auto_shuffle
+                    self._qs_auto_btn.config(
+                        bg=ACCENT if on else DARK2,
+                        fg=WHITE if on else "#778899",
+                    )
+                except Exception:
+                    pass
         if hasattr(self, '_cfg_arr_dir_cb'):
             self._cfg_arr_dir_cb.current(self._arrangement_direction)
         if hasattr(self, '_cfg_spin_dir_cb'):
