@@ -120,7 +120,7 @@ class SpinEngineMixin:
             winner = self.current_segments[seg].item_text
             self._record_result(winner)
             self.snd.play_win()
-            seg_color = SEGMENT_COLORS[seg % len(SEGMENT_COLORS)]
+            seg_color = SEGMENT_COLORS[self.current_segments[seg].item_index % len(SEGMENT_COLORS)]
             self._flash(4, winner, seg_color)
         else:
             self.set_item_spin_lock(False)
