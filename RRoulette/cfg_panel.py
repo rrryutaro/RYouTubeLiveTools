@@ -241,44 +241,13 @@ class CfgPanelMixin:
         btn_rst.pack(side=tk.RIGHT, padx=(2, 0))
         _SimpleTooltip(btn_rst, "設定をリセット", self.root)
 
-        # ════════════════════════════════════════════════
-        #  パネルグループ
-        # ════════════════════════════════════════════════
-        g_panel = make_group(p, "パネル", expanded=True)
-
-        _BTN_ROW = dict(
-            bg=DARK2, fg=WHITE,
-            font=("Meiryo", 9),
-            relief=tk.FLAT, cursor="hand2",
-            padx=6, pady=3,
-        )
-
-        # 項目リストを表示 / 非表示
-        self._cfg_items_vis_var = tk.BooleanVar(value=self._settings_visible)
-
-        def on_items_vis():
-            self._toggle_settings()
-            self._cfg_items_vis_var.set(self._settings_visible)
-
-        tk.Checkbutton(
-            g_panel, text="項目リストを表示",
-            variable=self._cfg_items_vis_var, command=on_items_vis,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(6, 2))
-
-        # 項目リストを独立表示 / メインに戻す
-        _il_float_lbl = "項目リスト  ▶  メインに戻す" if self._item_list_float else "項目リスト  ▶  独立表示"
-        tk.Button(g_panel, text=_il_float_lbl,
-                  command=self._toggle_item_list_float, **_BTN_ROW
-                  ).pack(fill=tk.X, padx=12, pady=(0, 2))
-
-        # 設定パネルを独立表示 / メインに戻す
-        _cp_float_lbl = "設定パネル  ▶  メインに戻す" if self._cfg_panel_float else "設定パネル  ▶  独立表示"
-        tk.Button(g_panel, text=_cp_float_lbl,
-                  command=self._toggle_cfg_panel_float, **_BTN_ROW
-                  ).pack(fill=tk.X, padx=12, pady=(0, 6))
+        # 独立表示 / メインに戻す
+        _cfg_float_lbl = "メインに戻す" if self._cfg_panel_float else "独立表示"
+        _cfg_float_tip = "設定パネルをメインに組み込む" if self._cfg_panel_float else "設定パネルを独立ウィンドウにする"
+        btn_float = tk.Button(title_row, text=_cfg_float_lbl,
+                              command=self._toggle_cfg_panel_float, **_BTN)
+        btn_float.pack(side=tk.RIGHT, padx=(2, 4))
+        _SimpleTooltip(btn_float, _cfg_float_tip, self.root)
 
         # ════════════════════════════════════════════════
         #  ウィンドウ表示グループ
@@ -313,70 +282,7 @@ class CfgPanelMixin:
             bg=PANEL, fg=WHITE, selectcolor=DARK2,
             activebackground=PANEL, activeforeground=WHITE,
             font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 2))
-
-        # コントロールボックス表示
-        self._cfg_ctrl_box_var = tk.BooleanVar(value=self._ctrl_box_visible)
-
-        def on_ctrl_box():
-            if self._cfg_ctrl_box_var.get() != self._ctrl_box_visible:
-                self._toggle_ctrl_box()
-
-        tk.Checkbutton(
-            g_winvis, text="コントロールボックス表示",
-            variable=self._cfg_ctrl_box_var, command=on_ctrl_box,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 2))
-
-        # リサイズグリップ表示
-        self._cfg_grip_var = tk.BooleanVar(value=self._grip_visible)
-
-        def on_grip():
-            if self._cfg_grip_var.get() != self._grip_visible:
-                self._toggle_grip()
-
-        tk.Checkbutton(
-            g_winvis, text="リサイズグリップ表示",
-            variable=self._cfg_grip_var, command=on_grip,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 2))
-
-        # ログ表示（ルーレット上のオーバーレイ表示）
-        self._cfg_overlay_var = tk.BooleanVar(value=self._log_overlay_show)
-
-        def on_log_overlay():
-            self._log_overlay_show = self._cfg_overlay_var.get()
-            self._save_config()
-            self._redraw()
-
-        tk.Checkbutton(
-            g_winvis, text="ログ表示",
-            variable=self._cfg_overlay_var, command=on_log_overlay,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(0, 6))
-
-        # ════════════════════════════════════════════════
-        #  ウィンドウ操作グループ
-        # ════════════════════════════════════════════════
-        g_winop = make_group(p, "ウィンドウ操作")
-
-        tk.Button(g_winop, text="最小化",
-                  command=self._minimize, **_BTN_ROW
-                  ).pack(fill=tk.X, padx=12, pady=(6, 2))
-
-        tk.Button(g_winop, text="最大化 / 元に戻す",
-                  command=self._maximize_restore, **_BTN_ROW
-                  ).pack(fill=tk.X, padx=12, pady=(0, 2))
-
-        tk.Button(g_winop, text="終了",
-                  command=self._on_close, **_BTN_ROW
-                  ).pack(fill=tk.X, padx=12, pady=(0, 6))
 
         # ════════════════════════════════════════════════
         #  ルーレット文字表示グループ
@@ -518,7 +424,22 @@ class CfgPanelMixin:
             bg=PANEL, fg=WHITE, selectcolor=DARK2,
             activebackground=PANEL, activeforeground=WHITE,
             font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 6))
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        _BTN_ROW = dict(bg=DARK2, fg=WHITE, font=("Meiryo", 9),
+                        relief=tk.FLAT, cursor="hand2", padx=6, pady=2)
+
+        tk.Button(g_log, text="ログ出力（結果のみ）",
+                  command=lambda: self._do_export_log("simple"), **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(4, 2))
+
+        tk.Button(g_log, text="ログ出力（グループ・項目付き）",
+                  command=lambda: self._do_export_log("detailed"), **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 2))
+
+        tk.Button(g_log, text="ログ削除",
+                  command=self._clear_log, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 6))
 
         # ════════════════════════════════════════════════
         #  音量グループ
@@ -808,49 +729,6 @@ class CfgPanelMixin:
         # ════════════════════════════════════════════════
         g_arr = make_group(p, "配置設定")
 
-        tk.Button(g_arr, text="標準配置に戻す",
-                  command=self._reset_to_standard_arrangement,
-                  bg=DARK2, fg=WHITE, font=("Meiryo", 9),
-                  relief=tk.FLAT, cursor="hand2",
-                  padx=6, pady=2).pack(fill=tk.X, padx=12, pady=(6, 2))
-
-        tk.Button(g_arr, text="今すぐランダム配置",
-                  command=self._apply_random_arrangement,
-                  bg=DARK2, fg=WHITE, font=("Meiryo", 9),
-                  relief=tk.FLAT, cursor="hand2",
-                  padx=6, pady=2).pack(fill=tk.X, padx=12, pady=(0, 4))
-
-        self._cfg_auto_shuffle_var  = tk.BooleanVar(value=getattr(self, '_auto_shuffle', False))
-        self._auto_shuffle_hint_lbl = tk.Label(
-            g_arr, text="", bg=PANEL, fg=GOLD, font=("Meiryo", 8))
-        self._auto_shuffle_hint_lbl.pack(anchor="w", padx=24, pady=(0, 4))
-
-        def on_auto_shuffle():
-            self._auto_shuffle = self._cfg_auto_shuffle_var.get()
-            hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
-            self._auto_shuffle_hint_lbl.config(text=hint)
-            # クイック操作帯のボタンと同期
-            if hasattr(self, '_qs_auto_btn'):
-                try:
-                    from constants import ACCENT, DARK2, WHITE
-                    on = self._auto_shuffle
-                    self._qs_auto_btn.config(
-                        bg=ACCENT if on else DARK2,
-                        fg=WHITE if on else "#778899",
-                    )
-                except Exception:
-                    pass
-            self._save_config()
-
-        tk.Checkbutton(g_arr, text="spinごとにランダム配置",
-                       variable=self._cfg_auto_shuffle_var, command=on_auto_shuffle,
-                       bg=PANEL, fg=WHITE, selectcolor=DARK2,
-                       activebackground=PANEL, activeforeground=WHITE,
-                       font=("Meiryo", 9)).pack(anchor="w", padx=12, pady=(0, 2))
-
-        if getattr(self, '_auto_shuffle', False):
-            self._auto_shuffle_hint_lbl.config(text="ON（開始クリック直後に再配置）")
-
         # 全リセット確認
         self._cfg_confirm_reset_var = tk.BooleanVar(
             value=getattr(self, '_confirm_reset', True))
@@ -986,20 +864,6 @@ class CfgPanelMixin:
         self._cfg_ts_var.set(self._log_timestamp)
         self._cfg_box_border_var.set(self._log_box_border)
         self._cfg_log_on_top_var.set(self._log_on_top)
-        # 配置設定
-        if hasattr(self, '_cfg_auto_shuffle_var'):
-            self._cfg_auto_shuffle_var.set(self._auto_shuffle)
-            hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
-            self._auto_shuffle_hint_lbl.config(text=hint)
-            if hasattr(self, '_qs_auto_btn'):
-                try:
-                    on = self._auto_shuffle
-                    self._qs_auto_btn.config(
-                        bg=ACCENT if on else DARK2,
-                        fg=WHITE if on else "#778899",
-                    )
-                except Exception:
-                    pass
         if hasattr(self, '_cfg_arr_dir_cb'):
             self._cfg_arr_dir_cb.current(self._arrangement_direction)
         if hasattr(self, '_cfg_spin_dir_cb'):

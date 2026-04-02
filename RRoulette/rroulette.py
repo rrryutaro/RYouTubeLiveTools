@@ -472,10 +472,10 @@ class RouletteApp(
         _SimpleTooltip(_btn_rst_items, "項目リストをリセット", self.root)
         # 独立表示 / メインに戻す
         if self._item_list_float:
-            _float_label = "⬡ メインに戻す"
+            _float_label = "メインに戻す"
             _float_tip   = "メインパネルに組み込む"
         else:
-            _float_label = "⬡ 独立表示"
+            _float_label = "独立表示"
             _float_tip   = "独立ウィンドウにする"
         _btn_float = tk.Button(_title_row, text=_float_label,
                                command=self._toggle_item_list_float, **_BTN)
