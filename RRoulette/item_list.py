@@ -1,5 +1,5 @@
 """
-RRoulette — 項目リスト Mixin (v0.3.0 UI再設計)
+RRoulette — 項目リスト Mixin (v0.3.1 UI再設計)
   3ブロック構成:
     上部: クイック操作帯 (_build_quick_bar)
     中央: 項目カード一覧 (_build_card_list)
