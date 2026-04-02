@@ -30,6 +30,7 @@ from cfg_panel import CfgPanelMixin, _SETTINGS_DEFAULTS
 from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
+from tooltip_utils import _SimpleTooltip
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -460,10 +461,13 @@ class RouletteApp(
         )
         _btn_exp_items = tk.Button(_title_row, text="↑", command=self._export_item_patterns, **_BTN)
         _btn_exp_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_exp_items, "項目リストをエクスポート", self.root)
         _btn_imp_items = tk.Button(_title_row, text="↓", command=self._import_item_patterns, **_BTN)
         _btn_imp_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_imp_items, "項目リストをインポート", self.root)
         _btn_rst_items = tk.Button(_title_row, text="↺", command=self._reset_item_patterns, **_BTN)
         _btn_rst_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_rst_items, "項目リストをリセット", self.root)
         self._item_list_title_btns = [_btn_exp_items, _btn_imp_items, _btn_rst_items]
 
         pat_frm = tk.Frame(self.sidebar, bg=PANEL)

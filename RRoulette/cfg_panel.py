@@ -23,6 +23,7 @@ from constants import (
     CFG_PANEL_W, MIN_W, POINTER_PRESET_NAMES,
 )
 from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
+from tooltip_utils import _SimpleTooltip
 
 
 # ─── 設定項目キー・デフォルト値 ─────────────────────────────────────────
@@ -61,35 +62,6 @@ _SETTINGS_DEFAULTS = {
     "spin_direction": 0,
     "confirm_reset": True,
 }
-
-
-def _make_tooltip(widget, text):
-    """ウィジェットにホバーポップアップツールチップを追加する。"""
-    tip_win = [None]
-
-    def _show(e):
-        if tip_win[0]:
-            return
-        t = tk.Toplevel(widget)
-        t.wm_overrideredirect(True)
-        t.wm_geometry(f"+{e.x_root + 10}+{e.y_root + 16}")
-        t.attributes("-topmost", True)
-        tk.Label(
-            t, text=text,
-            bg="#2e2e4a", fg=WHITE,
-            font=("Meiryo", 8),
-            relief=tk.FLAT, padx=7, pady=4,
-        ).pack()
-        tip_win[0] = t
-
-    def _hide(e):
-        if tip_win[0]:
-            tip_win[0].destroy()
-            tip_win[0] = None
-
-    widget.bind("<Enter>", _show, add="+")
-    widget.bind("<Leave>", _hide, add="+")
-    widget.bind("<ButtonPress>", _hide, add="+")
 
 
 class CfgPanelMixin:
@@ -255,19 +227,19 @@ class CfgPanelMixin:
 
         btn_save = tk.Button(title_row, text="✔", command=self._save_cfg_settings_now, **_BTN)
         btn_save.pack(side=tk.RIGHT, padx=(2, 0))
-        _make_tooltip(btn_save, "設定を今すぐ保存")
+        _SimpleTooltip(btn_save, "設定を今すぐ保存", self.root)
 
         btn_exp = tk.Button(title_row, text="↑", command=self._export_cfg_settings, **_BTN)
         btn_exp.pack(side=tk.RIGHT, padx=(2, 0))
-        _make_tooltip(btn_exp, "設定をエクスポート")
+        _SimpleTooltip(btn_exp, "設定をエクスポート", self.root)
 
         btn_imp = tk.Button(title_row, text="↓", command=self._import_cfg_settings, **_BTN)
         btn_imp.pack(side=tk.RIGHT, padx=(2, 0))
-        _make_tooltip(btn_imp, "設定をインポート")
+        _SimpleTooltip(btn_imp, "設定をインポート", self.root)
 
         btn_rst = tk.Button(title_row, text="↺", command=self._reset_cfg_settings, **_BTN)
         btn_rst.pack(side=tk.RIGHT, padx=(2, 0))
-        _make_tooltip(btn_rst, "設定をリセット")
+        _SimpleTooltip(btn_rst, "設定をリセット", self.root)
 
         # ════════════════════════════════════════════════
         #  操作設定グループ
