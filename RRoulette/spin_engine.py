@@ -63,7 +63,11 @@ class SpinEngineMixin:
         d_ref = (0.06 / v_ref) ** (1.0 / target_frames)
         ref_total = (v_ref - 0.06) / (1.0 - d_ref)
         base_rots  = max(3, int(ref_total / 360))
-        needed_residual = (target_angle - self.angle) % 360
+        _spin_sign  = -1 if getattr(self, '_spin_direction', 0) == 1 else 1
+        if _spin_sign == 1:
+            needed_residual = (target_angle - self.angle) % 360
+        else:
+            needed_residual = (self.angle - target_angle) % 360
         adjusted_total  = base_rots * 360 + needed_residual
 
         # adjusted_total を実現する velocity を二分探索
@@ -87,7 +91,8 @@ class SpinEngineMixin:
     def _frame(self):
         if not self.spinning:
             return
-        self.angle     = (self.angle + self.velocity) % 360
+        _spin_sign = -1 if getattr(self, '_spin_direction', 0) == 1 else 1
+        self.angle     = (self.angle + _spin_sign * self.velocity) % 360
         self.velocity *= self.decel
 
         seg = self._seg_at_pointer()
@@ -175,8 +180,9 @@ class SpinEngineMixin:
     def _calc_final_angle(self) -> float:
         """現在の velocity / decel から自然停止する最終角度をシミュレートして返す"""
         a, v, d = self.angle, self.velocity, self.decel
+        sign = -1 if getattr(self, '_spin_direction', 0) == 1 else 1
         while v >= 0.06:
-            a = (a + v) % 360
+            a = (a + sign * v) % 360
             v *= d
         return a
 

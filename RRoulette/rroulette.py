@@ -97,12 +97,16 @@ def _apply_split(entries_with_probs):
 def _standard_order(raw_segs):
     """
     raw_segs: list of (text, item_idx, arc)
-    分割された項目を等間隔配置し、残りを順番に埋めた並び順を返す。
+    分割された項目を均等分散配置し、残りを順番に埋めた並び順を返す。
 
-    split 配置は最終累積 arc 基準のグリーディ方式:
-      全 split sub-segment に目標中心角（j * total_arc / K）を割り当て、
-      実際に並べながら累積 arc を追跡し、中心角が目標を超えたタイミングで
-      その sub-segment を挿入する。これにより最終 center angle が均等になる。
+    単一 split — Bresenham 法:
+      F 個のフィラーを K 個のギャップへ floor((k+1)*F/K) - floor(k*F/K) で均等割りし、
+      split 片を最大限均等に散らす。1-step lookahead より大域的に最適。
+
+    複数 split — 位相ずらし greedy:
+      複数 split 項目がある場合、各項目に total_arc 上での位相オフセットを与え
+      目標中心角が重ならないよう分散させる。
+      タイブレーク時は filler を優先して split 片の局所集中を防ぐ。
     """
     T = len(raw_segs)
     if T == 0:
@@ -122,25 +126,39 @@ def _standard_order(raw_segs):
     if not split_idxs:
         return list(raw_segs)
 
-    total_arc = sum(a for _, _, a in raw_segs)
-
-    # 全 split sub-segment を目標中心角順に並べる
-    split_queue = []  # (target_center_angle, sub_seg)
-    for sidx in split_idxs:
-        subs = by_idx[sidx]
-        K    = len(subs)
-        for j, sub in enumerate(subs):
-            split_queue.append((j * total_arc / K, sub))
-    split_queue.sort(key=lambda x: x[0])
-
     fillers = [by_idx[i][0] for i in nonsplit_idxs]
 
-    # グリーディ構築:
-    # 累積 arc を追いながら、split sub-segment の中心角が目標に達したら挿入
+    # ── 単一 split: Bresenham 法で最適配置 ──────────────────────────
+    if len(split_idxs) == 1:
+        subs = by_idx[split_idxs[0]]
+        K, F = len(subs), len(fillers)
+        result = []
+        fi = 0
+        for k in range(K):
+            n_fill = (k + 1) * F // K - k * F // K
+            result.extend(fillers[fi:fi + n_fill])
+            fi += n_fill
+            result.append(subs[k])
+        return result
+
+    # ── 複数 split: 位相ずらし greedy（タイブレーク filler 優先）──────
+    total_arc         = sum(a for _, _, a in raw_segs)
+    total_split_count = sum(len(by_idx[i]) for i in split_idxs)
+
+    split_queue = []  # (target_center_angle, sub_seg)
+    for i_idx, sidx in enumerate(split_idxs):
+        subs  = by_idx[sidx]
+        K     = len(subs)
+        phase = i_idx * total_arc / total_split_count
+        for j, sub in enumerate(subs):
+            target = (phase + j * total_arc / K) % total_arc
+            split_queue.append((target, sub))
+    split_queue.sort(key=lambda x: x[0])
+
     result = []
     cum    = 0.0
-    fi     = 0   # filler index
-    si     = 0   # split_queue index
+    fi     = 0
+    si     = 0
 
     while si < len(split_queue) or fi < len(fillers):
         if si >= len(split_queue):
@@ -151,25 +169,20 @@ def _standard_order(raw_segs):
         center_now        = cum + split_seg[2] / 2.0
 
         if fi >= len(fillers):
-            # filler 枯渇 → split をそのまま追加
             result.append(split_seg)
             cum += split_seg[2]
             si  += 1
         elif center_now >= target:
-            # 今挿入すれば中心角が目標以上 → 挿入
             result.append(split_seg)
             cum += split_seg[2]
             si  += 1
         else:
-            # 1-step lookahead: 今挿入 vs filler 1つ置いてから挿入を比較
             center_after = cum + fillers[fi][2] + split_seg[2] / 2.0
-            if abs(center_now - target) <= abs(center_after - target):
-                # 今の方が近い（または同等） → 挿入
+            if abs(center_now - target) < abs(center_after - target):
                 result.append(split_seg)
                 cum += split_seg[2]
                 si  += 1
             else:
-                # filler を先に置いた方が近い → filler を置く
                 result.append(fillers[fi])
                 cum += fillers[fi][2]
                 fi  += 1
@@ -290,6 +303,8 @@ class RouletteApp(
             self._current_pattern = next(iter(self._item_patterns))
         self._item_entries: list[dict] = list(self._item_patterns[self._current_pattern])
         self._auto_shuffle: bool = cfg.get("auto_shuffle", False)
+        self._arrangement_direction: int = cfg.get("arrangement_direction", 0)
+        self._spin_direction: int = cfg.get("spin_direction", 0)
         # self.items と self.current_segments は _rebuild_segments() で設定
         self.current_segments: list = []
         self.items: list[str] = []
@@ -369,6 +384,9 @@ class RouletteApp(
 
         raw_segs = _apply_split(entries_with_probs)
         ordered  = _standard_order(raw_segs)
+
+        if getattr(self, '_arrangement_direction', 0) == 0:
+            ordered = list(reversed(ordered))
 
         segments = []
         angle = 0.0
@@ -555,6 +573,8 @@ class RouletteApp(
             "item_patterns": self._item_patterns,
             "current_pattern": self._current_pattern,
             "auto_shuffle": self._auto_shuffle,
+            "arrangement_direction": self._arrangement_direction,
+            "spin_direction": self._spin_direction,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
             "log_timestamp":     self._log_timestamp,

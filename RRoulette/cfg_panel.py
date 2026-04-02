@@ -33,7 +33,7 @@ _SETTINGS_KEYS = [
     "text_direction", "text_size_mode", "donut_hole",
     "pointer_preset", "pointer_angle",
     "log_timestamp", "log_overlay_show", "log_box_border", "log_on_top",
-    "auto_shuffle",
+    "auto_shuffle", "arrangement_direction", "spin_direction",
 ]
 
 _SETTINGS_DEFAULTS = {
@@ -56,6 +56,8 @@ _SETTINGS_DEFAULTS = {
     "log_box_border": False,
     "log_on_top": False,
     "auto_shuffle": False,
+    "arrangement_direction": 0,
+    "spin_direction": 0,
 }
 
 
@@ -743,6 +745,37 @@ class CfgPanelMixin:
         if getattr(self, '_auto_shuffle', False):
             self._auto_shuffle_hint_lbl.config(text="ON（開始クリック直後に再配置）")
 
+        _ARR_DIR_NAMES  = ["時計回り", "反時計回り"]
+        _SPIN_DIR_NAMES = ["時計回り", "反時計回り"]
+
+        tk.Label(g_arr, text="項目配置順方向", bg=PANEL, fg=WHITE,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
+        self._cfg_arr_dir_cb = ttk.Combobox(g_arr, values=_ARR_DIR_NAMES, state="readonly",
+                                             font=("Meiryo", 9))
+        self._cfg_arr_dir_cb.current(getattr(self, '_arrangement_direction', 0))
+        self._cfg_arr_dir_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def on_arr_dir(e=None):
+            self._arrangement_direction = self._cfg_arr_dir_cb.current()
+            self._rebuild_segments()
+            self._save_config()
+            self._redraw()
+
+        self._cfg_arr_dir_cb.bind("<<ComboboxSelected>>", on_arr_dir)
+
+        tk.Label(g_arr, text="ルーレット回転方向", bg=PANEL, fg=WHITE,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
+        self._cfg_spin_dir_cb = ttk.Combobox(g_arr, values=_SPIN_DIR_NAMES, state="readonly",
+                                              font=("Meiryo", 9))
+        self._cfg_spin_dir_cb.current(getattr(self, '_spin_direction', 0))
+        self._cfg_spin_dir_cb.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        def on_spin_dir(e=None):
+            self._spin_direction = self._cfg_spin_dir_cb.current()
+            self._save_config()
+
+        self._cfg_spin_dir_cb.bind("<<ComboboxSelected>>", on_spin_dir)
+
         # 末尾の余白
         tk.Frame(p, bg=PANEL, height=8).pack()
 
@@ -823,6 +856,10 @@ class CfgPanelMixin:
             self._cfg_auto_shuffle_var.set(self._auto_shuffle)
             hint = "ON（開始クリック直後に再配置）" if self._auto_shuffle else ""
             self._auto_shuffle_hint_lbl.config(text=hint)
+        if hasattr(self, '_cfg_arr_dir_cb'):
+            self._cfg_arr_dir_cb.current(self._arrangement_direction)
+        if hasattr(self, '_cfg_spin_dir_cb'):
+            self._cfg_spin_dir_cb.current(self._spin_direction)
 
     # ════════════════════════════════════════════════════════════════
     #  設定リセット
@@ -856,9 +893,12 @@ class CfgPanelMixin:
         self._log_overlay_show = d["log_overlay_show"]
         self._log_box_border   = d["log_box_border"]
         self._log_on_top       = d["log_on_top"]
-        self._auto_shuffle     = d.get("auto_shuffle", False)
+        self._auto_shuffle          = d.get("auto_shuffle", False)
+        self._arrangement_direction = d.get("arrangement_direction", 0)
+        self._spin_direction        = d.get("spin_direction", 0)
         self._apply_cfg_to_ui()
         self._apply_pointer_preset(self._pointer_preset)
+        self._rebuild_segments()
         self._save_config()
         self._redraw()
 
@@ -916,9 +956,12 @@ class CfgPanelMixin:
         self._log_overlay_show = bool(d["log_overlay_show"])
         self._log_box_border   = bool(d["log_box_border"])
         self._log_on_top       = bool(d["log_on_top"])
-        self._auto_shuffle     = bool(d.get("auto_shuffle", False))
+        self._auto_shuffle          = bool(d.get("auto_shuffle", False))
+        self._arrangement_direction = int(d.get("arrangement_direction", 0))
+        self._spin_direction        = int(d.get("spin_direction", 0))
         self._apply_cfg_to_ui()
         self._apply_pointer_preset(self._pointer_preset)
+        self._rebuild_segments()
         self._save_config()
         self._redraw()
         _msgbox.showinfo("インポート完了", "設定を読み込みました。", parent=self.root)
