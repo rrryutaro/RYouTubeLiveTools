@@ -57,24 +57,28 @@ class WindowManagerMixin:
     def _show_context_menu(self, event):
         self._ctx.delete(0, tk.END)
 
-        if self._settings_visible:
-            self._ctx.add_command(label="  項目リストを非表示", command=self._toggle_settings)
-        else:
-            self._ctx.add_command(label="  項目リストを表示", command=self._toggle_settings)
+        # ── A. 表示 ──────────────────────────────────────
+        ctrl_mark = "●" if self._ctrl_box_visible else "  "
+        self._ctx.add_command(
+            label=f"{ctrl_mark} コントロールボックスを表示",
+            command=self._toggle_ctrl_box,
+        )
 
-        if self._item_list_float:
-            self._ctx.add_command(
-                label="● 項目リストを独立ウィンドウにする",
-                command=self._toggle_item_list_float,
-            )
-        else:
-            self._ctx.add_command(
-                label="  項目リストを独立ウィンドウにする",
-                command=self._toggle_item_list_float,
-            )
+        grip_mark = "●" if self._grip_visible else "  "
+        self._ctx.add_command(
+            label=f"{grip_mark} リサイズグリップを表示",
+            command=self._toggle_grip,
+        )
+
+        log_mark = "●" if self._log_overlay_show else "  "
+        self._ctx.add_command(
+            label=f"{log_mark} ログを表示",
+            command=self._toggle_log_overlay,
+        )
 
         self._ctx.add_separator()
 
+        # ── B. サイズ ─────────────────────────────────────
         for i, (name, w, h) in enumerate(SIZE_PROFILES):
             marker = "●" if i == self._profile_idx else "  "
             self._ctx.add_command(
@@ -84,54 +88,7 @@ class WindowManagerMixin:
 
         self._ctx.add_separator()
 
-        topmost_mark = "●" if self._topmost else "  "
-        self._ctx.add_command(
-            label=f"{topmost_mark} 最前面に表示",
-            command=self._toggle_topmost,
-        )
-
-        trans_mark = "●" if self._transparent else "  "
-        self._ctx.add_command(
-            label=f"{trans_mark} 背景を透過",
-            command=self._toggle_transparent,
-        )
-
-        grip_mark = "●" if self._grip_visible else "  "
-        self._ctx.add_command(
-            label=f"{grip_mark} リサイズグリップを表示",
-            command=self._toggle_grip,
-        )
-
-        self._ctx.add_separator()
-        cfg_label = "  設定パネルを非表示" if self._cfg_panel_visible else "  設定を表示"
-        self._ctx.add_command(label=cfg_label, command=self._toggle_cfg_panel)
-
-        if self._cfg_panel_float:
-            self._ctx.add_command(
-                label="● 設定を独立ウィンドウにする",
-                command=self._toggle_cfg_panel_float,
-            )
-        else:
-            self._ctx.add_command(
-                label="  設定を独立ウィンドウにする",
-                command=self._toggle_cfg_panel_float,
-            )
-
-        self._ctx.add_separator()
-        self._ctx.add_command(
-            label="  ログ出力（結果のみ）",
-            command=lambda: self._do_export_log("simple"),
-        )
-        self._ctx.add_command(
-            label="  ログ出力（グループ・項目付き）",
-            command=lambda: self._do_export_log("detailed"),
-        )
-        self._ctx.add_command(
-            label="  ログ削除",
-            command=self._clear_log,
-        )
-        self._ctx.add_separator()
-        self._ctx.add_command(label="  最小化", command=self._minimize)
+        # ── C. 終了 ───────────────────────────────────────
         self._ctx.add_command(label="  終了", command=self._on_close)
 
         x, y = event.x_root, event.y_root
@@ -396,6 +353,8 @@ class WindowManagerMixin:
         for win in (self._sidebar_toplevel, self._cfg_panel_toplevel):
             if win and win.winfo_exists():
                 win.attributes("-topmost", self._topmost)
+        if hasattr(self, "_cfg_topmost_var"):
+            self._cfg_topmost_var.set(self._topmost)
         self._save_config()
 
     # ════════════════════════════════════════════════════════════════
@@ -404,6 +363,8 @@ class WindowManagerMixin:
     def _toggle_transparent(self):
         self._transparent = not self._transparent
         self._apply_transparency()
+        if hasattr(self, "_cfg_transparent_var"):
+            self._cfg_transparent_var.set(self._transparent)
         self._save_config()
 
     def _apply_transparency(self):
@@ -435,7 +396,51 @@ class WindowManagerMixin:
             self._resize_grip.place(relx=1.0, rely=1.0, anchor="se")
         else:
             self._resize_grip.place_forget()
+        if hasattr(self, "_cfg_grip_var"):
+            self._cfg_grip_var.set(self._grip_visible)
         self._save_config()
+
+    # ════════════════════════════════════════════════════════════════
+    #  コントロールボックス 表示/非表示
+    # ════════════════════════════════════════════════════════════════
+    def _toggle_ctrl_box(self):
+        self._ctrl_box_visible = not self._ctrl_box_visible
+        if hasattr(self, "_ctrl_box"):
+            if self._ctrl_box_visible:
+                self._ctrl_box.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+            else:
+                self._ctrl_box.place_forget()
+        if hasattr(self, "_cfg_ctrl_box_var"):
+            self._cfg_ctrl_box_var.set(self._ctrl_box_visible)
+        self._save_config()
+
+    # ════════════════════════════════════════════════════════════════
+    #  ログ表示トグル
+    # ════════════════════════════════════════════════════════════════
+    def _toggle_log_overlay(self):
+        self._log_overlay_show = not self._log_overlay_show
+        if hasattr(self, "_cfg_overlay_var"):
+            self._cfg_overlay_var.set(self._log_overlay_show)
+        self._save_config()
+        self._redraw()
+
+    # ════════════════════════════════════════════════════════════════
+    #  最大化 / 元に戻す
+    # ════════════════════════════════════════════════════════════════
+    def _maximize_restore(self):
+        if getattr(self, "_maximized", False):
+            if hasattr(self, "_pre_maximize_geo"):
+                self.root.geometry(self._pre_maximize_geo)
+            self._maximized = False
+        else:
+            self._pre_maximize_geo = self.root.geometry()
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            self.root.geometry(f"{sw}x{sh}+0+0")
+            self._maximized = True
+        if hasattr(self, "_ctrl_max_btn"):
+            self._ctrl_max_btn.config(text="❐" if self._maximized else "□")
+        self._redraw()
 
     # ════════════════════════════════════════════════════════════════
     #  浮動ウィンドウ管理

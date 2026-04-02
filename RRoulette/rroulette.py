@@ -323,6 +323,8 @@ class RouletteApp(
         self._layout_cache     = []
         self._layout_cache_key = None
         self._grip_visible     = cfg.get("grip_visible", True)
+        self._ctrl_box_visible = cfg.get("ctrl_box_visible", True)
+        self._maximized        = False
         root.attributes("-topmost", self._topmost)
 
         self._build_ui()
@@ -468,6 +470,17 @@ class RouletteApp(
         _btn_rst_items = tk.Button(_title_row, text="↺", command=self._reset_item_patterns, **_BTN)
         _btn_rst_items.pack(side=tk.RIGHT, padx=(2, 0))
         _SimpleTooltip(_btn_rst_items, "項目リストをリセット", self.root)
+        # 独立表示 / メインに戻す
+        if self._item_list_float:
+            _float_label = "⬡ メインに戻す"
+            _float_tip   = "メインパネルに組み込む"
+        else:
+            _float_label = "⬡ 独立表示"
+            _float_tip   = "独立ウィンドウにする"
+        _btn_float = tk.Button(_title_row, text=_float_label,
+                               command=self._toggle_item_list_float, **_BTN)
+        _btn_float.pack(side=tk.RIGHT, padx=(2, 4))
+        _SimpleTooltip(_btn_float, _float_tip, self.root)
         self._item_list_title_btns = [_btn_exp_items, _btn_imp_items, _btn_rst_items]
 
         pat_frm = tk.Frame(self.sidebar, bg=PANEL)
@@ -525,6 +538,40 @@ class RouletteApp(
 
         self.sidebar.bind("<Button-3>", self._show_context_menu)
 
+    def _build_ctrl_box(self):
+        """メインパネル右上のコントロールボックスを構築する。"""
+        self._ctrl_box = tk.Frame(self.main_frame, bg=DARK2)
+
+        _BTN = dict(
+            bg=DARK2, fg=WHITE, font=("Meiryo", 11),
+            relief=tk.FLAT, cursor="hand2", padx=5, pady=2, bd=0,
+        )
+
+        b_list = tk.Button(self._ctrl_box, text="≡", command=self._toggle_settings, **_BTN)
+        b_list.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_list, "項目リスト 表示/非表示", self.root)
+
+        b_cfg = tk.Button(self._ctrl_box, text="⚙", command=self._toggle_cfg_panel, **_BTN)
+        b_cfg.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_cfg, "設定 表示/非表示", self.root)
+
+        b_min = tk.Button(self._ctrl_box, text="━", command=self._minimize, **_BTN)
+        b_min.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_min, "最小化", self.root)
+
+        self._ctrl_max_btn = tk.Button(
+            self._ctrl_box, text="□", command=self._maximize_restore, **_BTN
+        )
+        self._ctrl_max_btn.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(self._ctrl_max_btn, "最大化 / 元に戻す", self.root)
+
+        b_close = tk.Button(self._ctrl_box, text="✕", command=self._on_close, **_BTN)
+        b_close.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_close, "閉じる", self.root)
+
+        if self._ctrl_box_visible:
+            self._ctrl_box.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+
     def _build_ui(self):
         self.content = tk.Frame(self.root, bg=BG)
         self.content.pack(fill=tk.BOTH, expand=True)
@@ -541,6 +588,8 @@ class RouletteApp(
 
         self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
+
+        self._build_ctrl_box()
 
         self.cv.bind("<Configure>", self._on_canvas_resize)
 
@@ -594,6 +643,7 @@ class RouletteApp(
             "transparent":       self._transparent,
             "donut_hole":        self._donut_hole,
             "grip_visible":      self._grip_visible,
+            "ctrl_box_visible":  self._ctrl_box_visible,
             "item_list_float":   self._item_list_float,
             "cfg_panel_float":   self._cfg_panel_float,
             "item_list_float_geo": (

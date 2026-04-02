@@ -242,84 +242,283 @@ class CfgPanelMixin:
         _SimpleTooltip(btn_rst, "設定をリセット", self.root)
 
         # ════════════════════════════════════════════════
-        #  操作設定グループ
+        #  パネルグループ
         # ════════════════════════════════════════════════
-        g_op = make_group(p, "操作設定")
+        g_panel = make_group(p, "パネル", expanded=True)
 
-        def fmt_sec(v):
-            return "即時" if v == 0 else f"{v} 秒"
+        _BTN_ROW = dict(
+            bg=DARK2, fg=WHITE,
+            font=("Meiryo", 9),
+            relief=tk.FLAT, cursor="hand2",
+            padx=6, pady=3,
+        )
 
-        def make_slider_row(label, val):
-            row = tk.Frame(g_op, bg=PANEL)
-            row.pack(fill=tk.X, padx=12, pady=(2, 0))
-            tk.Label(row, text=label, bg=PANEL, fg=WHITE,
-                     font=("Meiryo", 9)).pack(side=tk.LEFT)
-            lbl = tk.Label(row, text=fmt_sec(val), bg=PANEL, fg=GOLD,
-                           font=("Meiryo", 9), width=5)
-            lbl.pack(side=tk.RIGHT)
-            return lbl
+        # 項目リストを表示 / 非表示
+        self._cfg_items_vis_var = tk.BooleanVar(value=self._settings_visible)
 
-        self._cfg_spin_lbl   = make_slider_row("▶  スピン開始（通常）", self._spin_duration)
-        self._cfg_spin_var   = tk.IntVar(value=self._spin_duration)
-        self._cfg_spin_sc    = tk.Scale(g_op, variable=self._cfg_spin_var, from_=1, to=30,
-                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
-                                        highlightthickness=0, bd=0, sliderlength=14)
-        self._cfg_spin_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
+        def on_items_vis():
+            self._toggle_settings()
+            self._cfg_items_vis_var.set(self._settings_visible)
 
-        self._cfg_double_lbl = make_slider_row("✕2  ダブル停止", self._double_duration)
-        self._cfg_double_var = tk.IntVar(value=self._double_duration)
-        self._cfg_double_sc  = tk.Scale(g_op, variable=self._cfg_double_var, from_=0, to=30,
-                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
-                                        highlightthickness=0, bd=0, sliderlength=14)
-        self._cfg_double_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
+        tk.Checkbutton(
+            g_panel, text="項目リストを表示",
+            variable=self._cfg_items_vis_var, command=on_items_vis,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(6, 2))
 
-        self._cfg_triple_lbl = make_slider_row("✕3  トリプル停止", self._triple_duration)
-        self._cfg_triple_var = tk.IntVar(value=self._triple_duration)
-        self._cfg_triple_sc  = tk.Scale(g_op, variable=self._cfg_triple_var, from_=0, to=30,
-                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
-                                        highlightthickness=0, bd=0, sliderlength=14)
-        self._cfg_triple_sc.pack(fill=tk.X, padx=12, pady=(0, 6))
+        # 項目リストを独立表示 / メインに戻す
+        _il_float_lbl = "項目リスト  ▶  メインに戻す" if self._item_list_float else "項目リスト  ▶  独立表示"
+        tk.Button(g_panel, text=_il_float_lbl,
+                  command=self._toggle_item_list_float, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 2))
 
-        def on_spin(val):
-            v = int(val)
-            self._spin_duration = v
-            self._cfg_spin_lbl.config(text=fmt_sec(v))
-            if self._cfg_double_var.get() > v:
-                self._cfg_double_var.set(v)
-                on_double(v)
+        # 設定パネルを独立表示 / メインに戻す
+        _cp_float_lbl = "設定パネル  ▶  メインに戻す" if self._cfg_panel_float else "設定パネル  ▶  独立表示"
+        tk.Button(g_panel, text=_cp_float_lbl,
+                  command=self._toggle_cfg_panel_float, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
+        #  ウィンドウ表示グループ
+        # ════════════════════════════════════════════════
+        g_winvis = make_group(p, "ウィンドウ表示")
+
+        # 最前面
+        self._cfg_topmost_var = tk.BooleanVar(value=self._topmost)
+
+        def on_topmost():
+            if self._cfg_topmost_var.get() != self._topmost:
+                self._toggle_topmost()
+
+        tk.Checkbutton(
+            g_winvis, text="最前面",
+            variable=self._cfg_topmost_var, command=on_topmost,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(6, 2))
+
+        # 背景透過
+        self._cfg_transparent_var = tk.BooleanVar(value=self._transparent)
+
+        def on_transparent():
+            if self._cfg_transparent_var.get() != self._transparent:
+                self._toggle_transparent()
+
+        tk.Checkbutton(
+            g_winvis, text="背景透過",
+            variable=self._cfg_transparent_var, command=on_transparent,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+
+        # コントロールボックス表示
+        self._cfg_ctrl_box_var = tk.BooleanVar(value=self._ctrl_box_visible)
+
+        def on_ctrl_box():
+            if self._cfg_ctrl_box_var.get() != self._ctrl_box_visible:
+                self._toggle_ctrl_box()
+
+        tk.Checkbutton(
+            g_winvis, text="コントロールボックス表示",
+            variable=self._cfg_ctrl_box_var, command=on_ctrl_box,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+
+        # リサイズグリップ表示
+        self._cfg_grip_var = tk.BooleanVar(value=self._grip_visible)
+
+        def on_grip():
+            if self._cfg_grip_var.get() != self._grip_visible:
+                self._toggle_grip()
+
+        tk.Checkbutton(
+            g_winvis, text="リサイズグリップ表示",
+            variable=self._cfg_grip_var, command=on_grip,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+
+        # ログ表示（ルーレット上のオーバーレイ表示）
+        self._cfg_overlay_var = tk.BooleanVar(value=self._log_overlay_show)
+
+        def on_log_overlay():
+            self._log_overlay_show = self._cfg_overlay_var.get()
+            self._save_config()
+            self._redraw()
+
+        tk.Checkbutton(
+            g_winvis, text="ログ表示",
+            variable=self._cfg_overlay_var, command=on_log_overlay,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
+        #  ウィンドウ操作グループ
+        # ════════════════════════════════════════════════
+        g_winop = make_group(p, "ウィンドウ操作")
+
+        tk.Button(g_winop, text="最小化",
+                  command=self._minimize, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(6, 2))
+
+        tk.Button(g_winop, text="最大化 / 元に戻す",
+                  command=self._maximize_restore, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 2))
+
+        tk.Button(g_winop, text="終了",
+                  command=self._on_close, **_BTN_ROW
+                  ).pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
+        #  ルーレット文字表示グループ
+        # ════════════════════════════════════════════════
+        g_txt = make_group(p, "ルーレット文字表示")
+
+        DIR_NAMES = [
+            "横表示1（内→外）",
+            "横表示2（常に水平）",
+            "縦表示1（外→内）",
+            "縦表示2（内→外）",
+            "縦表示3（常に垂直）",
+        ]
+        SIZE_NAMES = [
+            "省略（…で省略）",
+            "収める（改行/拡大縮小）",
+            "縮小（全体を縮小）",
+        ]
+
+        tk.Label(g_txt, text="表示方向", bg=PANEL, fg=WHITE,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
+        self._cfg_dir_cb = ttk.Combobox(g_txt, values=DIR_NAMES, state="readonly",
+                                        font=("Meiryo", 9))
+        self._cfg_dir_cb.current(self._text_direction)
+        self._cfg_dir_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def on_dir(e=None):
+            self._text_direction = self._cfg_dir_cb.current()
+            self._save_config()
+            self._redraw()
+
+        self._cfg_dir_cb.bind("<<ComboboxSelected>>", on_dir)
+
+        tk.Label(g_txt, text="文字サイズの扱い", bg=PANEL, fg=WHITE,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
+        self._cfg_size_cb = ttk.Combobox(g_txt, values=SIZE_NAMES, state="readonly",
+                                         font=("Meiryo", 9))
+        self._cfg_size_cb.current(self._text_size_mode)
+        self._cfg_size_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def on_size(e=None):
+            self._text_size_mode = self._cfg_size_cb.current()
+            self._save_config()
+            self._redraw()
+
+        self._cfg_size_cb.bind("<<ComboboxSelected>>", on_size)
+
+        self._cfg_donut_var = tk.BooleanVar(value=self._donut_hole)
+
+        def on_donut_hole():
+            self._donut_hole = self._cfg_donut_var.get()
+            self._save_config()
+            self._redraw()
+
+        tk.Checkbutton(
+            g_txt, text="中心に穴を表示する（透過時は透明）",
+            variable=self._cfg_donut_var, command=on_donut_hole,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(4, 6))
+
+        # ════════════════════════════════════════════════
+        #  ポインター位置グループ
+        # ════════════════════════════════════════════════
+        g_mrk = make_group(p, "ポインター位置")
+
+        tk.Label(g_mrk, text="基準位置（ドラッグでも変更可）", bg=PANEL, fg=WHITE,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
+        self._pointer_preset_var = tk.StringVar(
+            value=POINTER_PRESET_NAMES[self._pointer_preset])
+        pointer_cb = ttk.Combobox(
+            g_mrk, textvariable=self._pointer_preset_var,
+            values=POINTER_PRESET_NAMES, state="readonly",
+            font=("Meiryo", 9))
+        pointer_cb.current(self._pointer_preset)
+        pointer_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def on_pointer_preset(e=None):
+            self._apply_pointer_preset(pointer_cb.current())
+
+        pointer_cb.bind("<<ComboboxSelected>>", on_pointer_preset)
+
+        lock_var = tk.BooleanVar(value=False)
+        lock_cb = tk.Checkbutton(
+            g_mrk, text="スピン中の操作を有効にする",
+            variable=lock_var, state=tk.DISABLED,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            disabledforeground="#aaaacc",
+            activebackground=PANEL,
+            font=("Meiryo", 9),
+        )
+        lock_cb.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
+        #  ログ設定グループ
+        # ════════════════════════════════════════════════
+        g_log = make_group(p, "ログ設定")
+
+        self._cfg_ts_var = tk.BooleanVar(value=self._log_timestamp)
+
+        def on_log_timestamp():
+            self._log_timestamp = self._cfg_ts_var.get()
             self._save_config()
 
-        def on_double(val):
-            v = int(val)
-            if v > self._cfg_spin_var.get():
-                v = self._cfg_spin_var.get()
-                self._cfg_double_var.set(v)
-            if self._cfg_triple_var.get() > v:
-                self._cfg_triple_var.set(v)
-                on_triple(v)
-            self._double_duration = v
-            self._cfg_double_lbl.config(text=fmt_sec(v))
-            self._cfg_double_sc.config(to=self._cfg_spin_var.get())
-            self._save_config()
+        tk.Checkbutton(
+            g_log, text="日時をログに記録する",
+            variable=self._cfg_ts_var, command=on_log_timestamp,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(6, 2))
 
-        def on_triple(val):
-            v = int(val)
-            if v > self._cfg_double_var.get():
-                v = self._cfg_double_var.get()
-                self._cfg_triple_var.set(v)
-            self._triple_duration = v
-            self._cfg_triple_lbl.config(text=fmt_sec(v))
-            self._cfg_triple_sc.config(to=self._cfg_double_var.get())
-            self._save_config()
+        self._cfg_box_border_var = tk.BooleanVar(value=self._log_box_border)
 
-        self._cfg_spin_sc.config(command=on_spin)
-        self._cfg_double_sc.config(command=on_double)
-        self._cfg_triple_sc.config(command=on_triple)
-        self._cfg_double_sc.config(to=self._spin_duration)
-        self._cfg_triple_sc.config(to=self._double_duration)
+        def on_log_box_border():
+            self._log_box_border = self._cfg_box_border_var.get()
+            self._save_config()
+            self._redraw()
+
+        tk.Checkbutton(
+            g_log, text="ログ項目を四角で囲む",
+            variable=self._cfg_box_border_var, command=on_log_box_border,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+
+        self._cfg_log_on_top_var = tk.BooleanVar(value=self._log_on_top)
+
+        def on_log_on_top():
+            self._log_on_top = self._cfg_log_on_top_var.get()
+            self._save_config()
+            self._redraw()
+
+        tk.Checkbutton(
+            g_log, text="結果表示時にログを前面に表示する",
+            variable=self._cfg_log_on_top_var, command=on_log_on_top,
+            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            activebackground=PANEL, activeforeground=WHITE,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 6))
 
         # ════════════════════════════════════════════════
         #  音量グループ
@@ -525,162 +724,84 @@ class CfgPanelMixin:
                   ).pack(anchor="w", pady=(4, 2))
 
         # ════════════════════════════════════════════════
-        #  ルーレット文字表示グループ
+        #  操作設定グループ
         # ════════════════════════════════════════════════
-        g_txt = make_group(p, "ルーレット文字表示")
+        g_op = make_group(p, "操作設定")
 
-        DIR_NAMES = [
-            "横表示1（内→外）",
-            "横表示2（常に水平）",
-            "縦表示1（外→内）",
-            "縦表示2（内→外）",
-            "縦表示3（常に垂直）",
-        ]
-        SIZE_NAMES = [
-            "省略（…で省略）",
-            "収める（改行/拡大縮小）",
-            "縮小（全体を縮小）",
-        ]
+        def fmt_sec(v):
+            return "即時" if v == 0 else f"{v} 秒"
 
-        tk.Label(g_txt, text="表示方向", bg=PANEL, fg=WHITE,
-                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
-        self._cfg_dir_cb = ttk.Combobox(g_txt, values=DIR_NAMES, state="readonly",
-                                        font=("Meiryo", 9))
-        self._cfg_dir_cb.current(self._text_direction)
-        self._cfg_dir_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+        def make_slider_row(label, val):
+            row = tk.Frame(g_op, bg=PANEL)
+            row.pack(fill=tk.X, padx=12, pady=(2, 0))
+            tk.Label(row, text=label, bg=PANEL, fg=WHITE,
+                     font=("Meiryo", 9)).pack(side=tk.LEFT)
+            lbl = tk.Label(row, text=fmt_sec(val), bg=PANEL, fg=GOLD,
+                           font=("Meiryo", 9), width=5)
+            lbl.pack(side=tk.RIGHT)
+            return lbl
 
-        def on_dir(e=None):
-            self._text_direction = self._cfg_dir_cb.current()
-            self._save_config()
-            self._redraw()
+        self._cfg_spin_lbl   = make_slider_row("▶  スピン開始（通常）", self._spin_duration)
+        self._cfg_spin_var   = tk.IntVar(value=self._spin_duration)
+        self._cfg_spin_sc    = tk.Scale(g_op, variable=self._cfg_spin_var, from_=1, to=30,
+                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
+                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        highlightthickness=0, bd=0, sliderlength=14)
+        self._cfg_spin_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
 
-        self._cfg_dir_cb.bind("<<ComboboxSelected>>", on_dir)
+        self._cfg_double_lbl = make_slider_row("✕2  ダブル停止", self._double_duration)
+        self._cfg_double_var = tk.IntVar(value=self._double_duration)
+        self._cfg_double_sc  = tk.Scale(g_op, variable=self._cfg_double_var, from_=0, to=30,
+                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
+                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        highlightthickness=0, bd=0, sliderlength=14)
+        self._cfg_double_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
 
-        tk.Label(g_txt, text="文字サイズの扱い", bg=PANEL, fg=WHITE,
-                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
-        self._cfg_size_cb = ttk.Combobox(g_txt, values=SIZE_NAMES, state="readonly",
-                                         font=("Meiryo", 9))
-        self._cfg_size_cb.current(self._text_size_mode)
-        self._cfg_size_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+        self._cfg_triple_lbl = make_slider_row("✕3  トリプル停止", self._triple_duration)
+        self._cfg_triple_var = tk.IntVar(value=self._triple_duration)
+        self._cfg_triple_sc  = tk.Scale(g_op, variable=self._cfg_triple_var, from_=0, to=30,
+                                        orient=tk.HORIZONTAL, resolution=1, showvalue=False,
+                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        highlightthickness=0, bd=0, sliderlength=14)
+        self._cfg_triple_sc.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-        def on_size(e=None):
-            self._text_size_mode = self._cfg_size_cb.current()
-            self._save_config()
-            self._redraw()
-
-        self._cfg_size_cb.bind("<<ComboboxSelected>>", on_size)
-
-        self._cfg_donut_var = tk.BooleanVar(value=self._donut_hole)
-
-        def on_donut_hole():
-            self._donut_hole = self._cfg_donut_var.get()
-            self._save_config()
-            self._redraw()
-
-        tk.Checkbutton(
-            g_txt, text="中心に穴を表示する（透過時は透明）",
-            variable=self._cfg_donut_var, command=on_donut_hole,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(4, 6))
-
-
-        # ════════════════════════════════════════════════
-        #  ポインター位置グループ
-        # ════════════════════════════════════════════════
-        g_mrk = make_group(p, "ポインター位置")
-
-        tk.Label(g_mrk, text="基準位置（ドラッグでも変更可）", bg=PANEL, fg=WHITE,
-                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
-        self._pointer_preset_var = tk.StringVar(
-            value=POINTER_PRESET_NAMES[self._pointer_preset])
-        pointer_cb = ttk.Combobox(
-            g_mrk, textvariable=self._pointer_preset_var,
-            values=POINTER_PRESET_NAMES, state="readonly",
-            font=("Meiryo", 9))
-        pointer_cb.current(self._pointer_preset)
-        pointer_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
-
-        def on_pointer_preset(e=None):
-            self._apply_pointer_preset(pointer_cb.current())
-
-        pointer_cb.bind("<<ComboboxSelected>>", on_pointer_preset)
-
-        lock_var = tk.BooleanVar(value=False)
-        lock_cb = tk.Checkbutton(
-            g_mrk, text="スピン中の操作を有効にする",
-            variable=lock_var, state=tk.DISABLED,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            disabledforeground="#aaaacc",
-            activebackground=PANEL,
-            font=("Meiryo", 9),
-        )
-        lock_cb.pack(anchor="w", padx=12, pady=(0, 6))
-
-        # ════════════════════════════════════════════════
-        #  ログ設定グループ
-        # ════════════════════════════════════════════════
-        g_log = make_group(p, "ログ設定")
-
-        self._cfg_ts_var = tk.BooleanVar(value=self._log_timestamp)
-
-        def on_log_timestamp():
-            self._log_timestamp = self._cfg_ts_var.get()
+        def on_spin(val):
+            v = int(val)
+            self._spin_duration = v
+            self._cfg_spin_lbl.config(text=fmt_sec(v))
+            if self._cfg_double_var.get() > v:
+                self._cfg_double_var.set(v)
+                on_double(v)
             self._save_config()
 
-        tk.Checkbutton(
-            g_log, text="日時をログに記録する",
-            variable=self._cfg_ts_var, command=on_log_timestamp,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(6, 2))
-
-        self._cfg_overlay_var = tk.BooleanVar(value=self._log_overlay_show)
-
-        def on_log_overlay():
-            self._log_overlay_show = self._cfg_overlay_var.get()
+        def on_double(val):
+            v = int(val)
+            if v > self._cfg_spin_var.get():
+                v = self._cfg_spin_var.get()
+                self._cfg_double_var.set(v)
+            if self._cfg_triple_var.get() > v:
+                self._cfg_triple_var.set(v)
+                on_triple(v)
+            self._double_duration = v
+            self._cfg_double_lbl.config(text=fmt_sec(v))
+            self._cfg_double_sc.config(to=self._cfg_spin_var.get())
             self._save_config()
-            self._redraw()
 
-        tk.Checkbutton(
-            g_log, text="ルーレット上にログを表示する",
-            variable=self._cfg_overlay_var, command=on_log_overlay,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 2))
-
-        self._cfg_box_border_var = tk.BooleanVar(value=self._log_box_border)
-
-        def on_log_box_border():
-            self._log_box_border = self._cfg_box_border_var.get()
+        def on_triple(val):
+            v = int(val)
+            if v > self._cfg_double_var.get():
+                v = self._cfg_double_var.get()
+                self._cfg_triple_var.set(v)
+            self._triple_duration = v
+            self._cfg_triple_lbl.config(text=fmt_sec(v))
+            self._cfg_triple_sc.config(to=self._cfg_double_var.get())
             self._save_config()
-            self._redraw()
 
-        tk.Checkbutton(
-            g_log, text="ログ項目を四角で囲む",
-            variable=self._cfg_box_border_var, command=on_log_box_border,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 2))
-
-        self._cfg_log_on_top_var = tk.BooleanVar(value=self._log_on_top)
-
-        def on_log_on_top():
-            self._log_on_top = self._cfg_log_on_top_var.get()
-            self._save_config()
-            self._redraw()
-
-        tk.Checkbutton(
-            g_log, text="結果表示時にログを前面に表示する",
-            variable=self._cfg_log_on_top_var, command=on_log_on_top,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
-            font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(0, 6))
+        self._cfg_spin_sc.config(command=on_spin)
+        self._cfg_double_sc.config(command=on_double)
+        self._cfg_triple_sc.config(command=on_triple)
+        self._cfg_double_sc.config(to=self._spin_duration)
+        self._cfg_triple_sc.config(to=self._double_duration)
 
         # ════════════════════════════════════════════════
         #  配置設定グループ
@@ -848,9 +969,21 @@ class CfgPanelMixin:
         # ポインター
         if 0 <= self._pointer_preset < len(POINTER_PRESET_NAMES):
             self._pointer_preset_var.set(POINTER_PRESET_NAMES[self._pointer_preset])
-        # ログ
+        # ウィンドウ表示系
+        if hasattr(self, '_cfg_topmost_var'):
+            self._cfg_topmost_var.set(self._topmost)
+        if hasattr(self, '_cfg_transparent_var'):
+            self._cfg_transparent_var.set(self._transparent)
+        if hasattr(self, '_cfg_ctrl_box_var'):
+            self._cfg_ctrl_box_var.set(self._ctrl_box_visible)
+        if hasattr(self, '_cfg_grip_var'):
+            self._cfg_grip_var.set(self._grip_visible)
+        if hasattr(self, '_cfg_overlay_var'):
+            self._cfg_overlay_var.set(self._log_overlay_show)
+        if hasattr(self, '_cfg_items_vis_var'):
+            self._cfg_items_vis_var.set(self._settings_visible)
+        # ログ設定
         self._cfg_ts_var.set(self._log_timestamp)
-        self._cfg_overlay_var.set(self._log_overlay_show)
         self._cfg_box_border_var.set(self._log_box_border)
         self._cfg_log_on_top_var.set(self._log_on_top)
         # 配置設定
