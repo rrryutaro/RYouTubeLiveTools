@@ -199,6 +199,8 @@ class WindowManagerMixin:
         self._resize_start_h = self.root.winfo_height()
         self._resize_pending_w = self._resize_start_w
         self._resize_pending_h = self._resize_start_h
+        # ドラッグ開始時にキャンバスをクリア（リサイズ中は空にして描画負荷をゼロにする）
+        self.cv.delete("all")
 
     def _resize_move(self, event):
         if not getattr(self, "_resizing", False):
@@ -207,10 +209,10 @@ class WindowManagerMixin:
         dh = event.y_root - self._resize_start_y
         self._resize_pending_w = max(self._root_min_w(), self._resize_start_w + dw)
         self._resize_pending_h = max(MAIN_MIN_H, self._resize_start_h + dh)
-        # geometry 適用を ~60fps にスロットル（マウスイベントが密集しても重くしない）
+        # geometry 適用を ~30fps にスロットル（マウスイベントが密集しても重くしない）
         if not self._resize_frame_pending:
             self._resize_frame_pending = True
-            self.root.after(16, self._apply_resize_frame)
+            self.root.after(33, self._apply_resize_frame)
 
     def _apply_resize_frame(self):
         """スロットルされた geometry 適用。"""
@@ -281,12 +283,14 @@ class WindowManagerMixin:
         return w
 
     def _sidebar_max_w(self) -> int:
-        """現在のウィンドウ幅に基づくサイドバーの最大幅を返す（_clamp_sidebar_w 用）。"""
+        """現在のウィンドウ幅に基づくサイドバーの最大幅を返す（_clamp_sidebar_w 用）。
+        root_w = canvas_w + sidebar_w + 20 の関係から
+        sidebar_max = root_w - cfg_extra - 12 - MAIN_MIN_W"""
         win_w = self.root.winfo_width()
         cfg_extra = (self._cfg_panel_w + 4 + 8) if (
             self._cfg_panel_visible and not self._cfg_panel_float
         ) else 0
-        return max(SIDEBAR_MIN_W, win_w - cfg_extra - 4 - 8 - 16 - MAIN_MIN_W)
+        return max(SIDEBAR_MIN_W, win_w - cfg_extra - 12 - MAIN_MIN_W)
 
     # ════════════════════════════════════════════════════════════════
     #  設定パネル幅リサイズ

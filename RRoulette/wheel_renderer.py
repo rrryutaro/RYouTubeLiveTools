@@ -33,12 +33,11 @@ class WheelRendererMixin:
         self.R  = r
         # ウィンドウ縮小でサイドバーが溢れないようクランプ
         self._clamp_sidebar_w()
-        # グリップドラッグ中は簡略表示（テキストなし）、正式描画は _resize_end で一括
+        # グリップドラッグ中は再描画しない（_resize_start でクリア済み、_resize_end で正式描画）
         if getattr(self, "_resizing", False):
             if self._resize_redraw_id:
                 self.root.after_cancel(self._resize_redraw_id)
                 self._resize_redraw_id = None
-            self._redraw_simple()
             return
         # 連続 Configure をデバウンス（50ms）
         if self._resize_redraw_id:
