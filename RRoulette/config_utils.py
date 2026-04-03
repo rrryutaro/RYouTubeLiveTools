@@ -104,7 +104,10 @@ def _is_on_any_monitor(x, y, w=1, h=1):
 
 
 def _parse_geometry(geo_str):
-    """'WxH+X+Y' を (w, h, x, y) にパース。失敗時は None。"""
+    """'WxH+X+Y' を (w, h, x, y) にパース。失敗時は None。
+    Tkinter on Windows は画面外座標で '+-N' を返す場合があるため '-N' に正規化する。
+    """
+    geo_str = _re.sub(r'\+-', '-', geo_str)
     m = _re.match(r'(\d+)x(\d+)([+-]\d+)([+-]\d+)', geo_str)
     if m:
         return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))

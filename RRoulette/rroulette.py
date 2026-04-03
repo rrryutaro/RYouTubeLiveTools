@@ -20,7 +20,7 @@ from sound_manager import SoundManager
 from config_utils import BASE_DIR, CONFIG_FILE, INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 from constants import (
     BG, PANEL, ACCENT, DARK2, WHITE,
-    SIZE_PROFILES, MIN_W, MIN_H,
+    SIZE_PROFILES, MIN_W, MIN_H, MAIN_MIN_W, MAIN_MIN_H,
     SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
 )
@@ -349,7 +349,7 @@ class RouletteApp(
                 parsed = _parse_geometry(saved_geo)
                 if parsed:
                     w, h, x, y = parsed
-                    if w < MIN_W or h < MIN_H:
+                    if w < MAIN_MIN_W or h < MAIN_MIN_H:
                         # サイズが最小値未満の壊れた geometry は無視
                         self._apply_profile(self._profile_idx)
                     elif _is_on_any_monitor(x, y, w, h):
@@ -362,6 +362,11 @@ class RouletteApp(
                 self._apply_profile(self._profile_idx)
         else:
             self._apply_profile(self._profile_idx)
+
+        # 適用した geometry をウィジェット側に伝播させ、
+        # サイドバー幅が新しいウィンドウ幅に収まるよう整合する。
+        root.update_idletasks()
+        self._clamp_sidebar_w()
 
         self._rebuild_segments()
         self._redraw()
@@ -694,7 +699,12 @@ class RouletteApp(
 # ════════════════════════════════════════════════════════════════════
 def main():
     root = tk.Tk()
+    # 起動時フラッシュ防止・geometry 確実適用のため、初期化中は非表示にする。
+    # overrideredirect(True) ウィンドウは mainloop 前に mapped されると
+    # OS が geometry を上書きする場合があるため、withdraw → init → deiconify の順にする。
+    root.withdraw()
     RouletteApp(root)
+    root.deiconify()
     root.mainloop()
 
 
