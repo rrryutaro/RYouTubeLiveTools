@@ -24,7 +24,7 @@ from constants import (
 )
 from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
 from tooltip_utils import _SimpleTooltip
-from design_settings import DESIGN_PRESET_NAMES, SEGMENT_PRESET_NAMES, DESIGN_PRESETS
+from design_settings import DesignSettings, DESIGN_PRESET_NAMES, SEGMENT_PRESET_NAMES, DESIGN_PRESETS
 
 
 # ─── 設定項目キー・デフォルト値 ─────────────────────────────────────────
@@ -362,16 +362,16 @@ class CfgPanelMixin:
         # 保存済みの family が一覧にない場合は先頭に追加して見えるようにする
         if _cur_family not in _all_fonts:
             _all_fonts = [_cur_family] + _all_fonts
-        _cfg_font_fam_var = tk.StringVar(value=_cur_family)
+        self._cfg_font_fam_var = tk.StringVar(value=_cur_family)
         _cfg_font_fam_cb = ttk.Combobox(
-            g_txt, textvariable=_cfg_font_fam_var,
+            g_txt, textvariable=self._cfg_font_fam_var,
             values=_all_fonts, state="readonly",
             font=("Meiryo", 9),
         )
         _cfg_font_fam_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
 
         def _on_font_family(e=None):
-            v = _cfg_font_fam_var.get().strip()
+            v = self._cfg_font_fam_var.get().strip()
             if v:
                 self._design.fonts.wheel.family = v
                 self._save_config()
@@ -411,27 +411,27 @@ class CfgPanelMixin:
             sb.bind("<Return>", _apply)
             sb.bind("<FocusOut>", _apply)
 
-        _make_font_size_row(
+        self._cfg_font_omit_var = _make_font_size_row(
             g_txt, "省略基準サイズ",
             lambda: self._design.fonts.wheel.omit_base_size,
             lambda v: setattr(self._design.fonts.wheel, "omit_base_size", v),
         )
-        _make_font_size_row(
+        self._cfg_font_fit_var = _make_font_size_row(
             g_txt, "収める基準サイズ",
             lambda: self._design.fonts.wheel.fit_base_size,
             lambda v: setattr(self._design.fonts.wheel, "fit_base_size", v),
         )
-        _make_font_size_row(
+        self._cfg_font_shrink_var = _make_font_size_row(
             g_txt, "縮小基準サイズ",
             lambda: self._design.fonts.wheel.shrink_base_size,
             lambda v: setattr(self._design.fonts.wheel, "shrink_base_size", v),
         )
-        _make_font_size_row(
+        self._cfg_font_min_var = _make_font_size_row(
             g_txt, "最小サイズ",
             lambda: self._design.fonts.wheel.min_size,
             lambda v: setattr(self._design.fonts.wheel, "min_size", v),
         )
-        _make_font_size_row(
+        self._cfg_font_max_var = _make_font_size_row(
             g_txt, "最大サイズ",
             lambda: self._design.fonts.wheel.max_size,
             lambda v: setattr(self._design.fonts.wheel, "max_size", v),
@@ -1002,6 +1002,24 @@ class CfgPanelMixin:
             self._cfg_arr_dir_cb.current(self._arrangement_direction)
         if hasattr(self, '_cfg_spin_dir_cb'):
             self._cfg_spin_dir_cb.current(self._spin_direction)
+        # デザイン・フォント系 UI 反映
+        if hasattr(self, '_cfg_design_preset_var'):
+            self._cfg_design_preset_var.set(self._design.preset_name)
+        if hasattr(self, '_cfg_seg_preset_var'):
+            self._cfg_seg_preset_var.set(self._design.segment.preset_name)
+        _wf = self._design.fonts.wheel
+        if hasattr(self, '_cfg_font_fam_var'):
+            self._cfg_font_fam_var.set(_wf.family)
+        if hasattr(self, '_cfg_font_omit_var'):
+            self._cfg_font_omit_var.set(_wf.omit_base_size)
+        if hasattr(self, '_cfg_font_fit_var'):
+            self._cfg_font_fit_var.set(_wf.fit_base_size)
+        if hasattr(self, '_cfg_font_shrink_var'):
+            self._cfg_font_shrink_var.set(_wf.shrink_base_size)
+        if hasattr(self, '_cfg_font_min_var'):
+            self._cfg_font_min_var.set(_wf.min_size)
+        if hasattr(self, '_cfg_font_max_var'):
+            self._cfg_font_max_var.set(_wf.max_size)
 
     # ════════════════════════════════════════════════════════════════
     #  設定リセット
@@ -1038,11 +1056,13 @@ class CfgPanelMixin:
         self._auto_shuffle          = d.get("auto_shuffle", False)
         self._arrangement_direction = d.get("arrangement_direction", 0)
         self._spin_direction        = d.get("spin_direction", 0)
-        self._apply_cfg_to_ui()
+        # デザイン設定もデフォルトへ戻す
+        self._design = DesignSettings()
         self._apply_pointer_preset(self._pointer_preset)
         self._rebuild_segments()
         self._save_config()
-        self._redraw()
+        # パネル全体を再構築してデザイン・フォント UI を含めてすべて反映する
+        self._apply_design_to_all()
 
     # ════════════════════════════════════════════════════════════════
     #  設定インポート（設定項目のみ）
@@ -1101,11 +1121,19 @@ class CfgPanelMixin:
         self._auto_shuffle          = bool(d.get("auto_shuffle", False))
         self._arrangement_direction = int(d.get("arrangement_direction", 0))
         self._spin_direction        = int(d.get("spin_direction", 0))
-        self._apply_cfg_to_ui()
+        # design キーが含まれていれば design 設定も復元する
+        _has_design = "design" in data
+        if _has_design:
+            self._design = DesignSettings.from_dict(data["design"])
         self._apply_pointer_preset(self._pointer_preset)
         self._rebuild_segments()
         self._save_config()
-        self._redraw()
+        if _has_design:
+            # デザイン含む場合はパネル全体を再構築して全 UI を反映する
+            self._apply_design_to_all()
+        else:
+            self._apply_cfg_to_ui()
+            self._redraw()
         _msgbox.showinfo("インポート完了", "設定を読み込みました。", parent=self.root)
 
     # ════════════════════════════════════════════════════════════════
@@ -1124,6 +1152,8 @@ class CfgPanelMixin:
         if not path:
             return
         data = {k: getattr(self, f"_{k}") for k in _SETTINGS_KEYS}
+        # design 設定も含める（将来のデザイン専用 import/export とは "design" キーで区別）
+        data["design"] = self._design.to_dict()
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
