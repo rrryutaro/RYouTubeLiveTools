@@ -17,7 +17,7 @@ import tkinter.ttk as ttk
 import json
 
 from sound_manager import SoundManager
-from config_utils import BASE_DIR, CONFIG_FILE, _is_on_any_monitor, _parse_geometry
+from config_utils import BASE_DIR, CONFIG_FILE, INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 from constants import (
     BG, PANEL, ACCENT, DARK2, WHITE,
     SIZE_PROFILES, MIN_W, MIN_H,
@@ -206,7 +206,8 @@ class RouletteApp(
     def __init__(self, root: tk.Tk):
         self.root = root
 
-        root.title("RRoulette")
+        _title = "RRoulette" if INSTANCE_NUM == 1 else f"RRoulette #{INSTANCE_NUM}"
+        root.title(_title)
         root.overrideredirect(True)
         root.configure(bg=BG)
 
