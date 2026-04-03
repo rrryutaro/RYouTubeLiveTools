@@ -201,8 +201,23 @@ class SpinEngineMixin:
             return
         self._handle_action()
 
+    def _is_global_key_blocked(self) -> bool:
+        """グローバルショートカットを無効にすべき状況なら True を返す。
+        Entry / Text / Spinbox / Combobox などの入力系ウィジェットにフォーカスが
+        ある場合は、文字入力を妨げないようにグローバル操作を抑制する。"""
+        try:
+            w = self.root.focus_get()
+            if w is None:
+                return False
+            return w.winfo_class() in ("Entry", "Text", "Spinbox", "TCombobox")
+        except Exception:
+            return False
+
     def _on_space_press(self, event):
-        """スペースキー押下: スピン開始 / 連打で停止操作"""
+        """スペースキー押下: スピン開始 / 連打で停止操作
+        入力系ウィジェットにフォーカスがある場合は何もしない（文字入力を優先）。"""
+        if self._is_global_key_blocked():
+            return
         self._handle_action()
 
     def _handle_action(self):

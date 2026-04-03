@@ -1,5 +1,5 @@
 """
-RRoulette — デザイン設定基盤 (v0.4.1)
+RRoulette — デザイン設定基盤 (v0.4.2)
 
 将来の完全自由編集に耐えるデザイン設定コンテナ。
 
@@ -162,9 +162,13 @@ class SegmentDesign:
     # 将来の個別上書き: {item_index: color_str}
     # 優先順: overrides > preset > デフォルト
     overrides: Dict[int, str] = field(default_factory=dict)
+    # ユーザー作成プリセット用カスタム配色（非空の場合 preset_name より優先）
+    custom_colors: List[str] = field(default_factory=list)
 
     def resolve_colors(self) -> List[str]:
-        """現在のプリセット名から色リストを返す"""
+        """現在の配色リストを返す。custom_colors が設定されていればそれを優先する"""
+        if self.custom_colors:
+            return self.custom_colors
         return SEGMENT_COLOR_PRESETS.get(
             self.preset_name, SEGMENT_COLOR_PRESETS["デフォルト"]
         )
@@ -307,6 +311,7 @@ class DesignSettings:
                 segment=SegmentDesign(
                     preset_name=seg_raw.get("preset_name", "デフォルト"),
                     overrides=overrides,
+                    custom_colors=seg_raw.get("custom_colors", []) or [],
                 ),
                 pointer=_safe_from_dict(PointerDesign, d.get("pointer", {})),
                 log=_safe_from_dict(LogDesign, d.get("log", {})),
@@ -478,3 +483,184 @@ DESIGN_PRESETS: Dict[str, DesignSettings] = {
 }
 
 DESIGN_PRESET_NAMES: List[str] = list(DESIGN_PRESETS.keys())
+
+
+# ════════════════════════════════════════════════════════════════════
+#  DesignPresetManager — プリセット管理
+# ════════════════════════════════════════════════════════════════════
+
+class DesignPresetManager:
+    """デザインプリセットとセグメント配色プリセットの管理クラス。
+
+    組み込みプリセット（DESIGN_PRESETS / SEGMENT_COLOR_PRESETS）はコード側に保持し、
+    ユーザーが作成・編集したプリセットは別管理で永続化する。
+
+    ルール:
+      - 組み込みプリセット: 編集可、リセット可（コード基準値へ）、名前変更・削除は不可
+      - ユーザー作成プリセット: 名前変更可、削除可
+    """
+
+    def __init__(self) -> None:
+        # key = プリセット名, value = DesignSettings.to_dict()
+        # 組み込み名のエントリ = ユーザー上書き分
+        # 非組み込み名のエントリ = ユーザー作成プリセット
+        self._user_design: Dict[str, dict] = {}
+        # key = プリセット名, value = List[str]
+        self._user_segment: Dict[str, List[str]] = {}
+
+    # ── 全プリセット名 ──────────────────────────────────────────────
+
+    def all_design_names(self) -> List[str]:
+        """全デザインプリセット名（組み込み先頭、ユーザー作成を末尾に追加）"""
+        names: List[str] = list(DESIGN_PRESETS.keys())
+        for n in self._user_design:
+            if n not in DESIGN_PRESETS:
+                names.append(n)
+        return names
+
+    def all_segment_names(self) -> List[str]:
+        """全セグメント配色プリセット名"""
+        names: List[str] = list(SEGMENT_COLOR_PRESETS.keys())
+        for n in self._user_segment:
+            if n not in SEGMENT_COLOR_PRESETS:
+                names.append(n)
+        return names
+
+    # ── 種別判定 ─────────────────────────────────────────────────────
+
+    def is_builtin_design(self, name: str) -> bool:
+        return name in DESIGN_PRESETS
+
+    def is_builtin_segment(self, name: str) -> bool:
+        return name in SEGMENT_COLOR_PRESETS
+
+    # ── 取得 ──────────────────────────────────────────────────────────
+
+    def get_design(self, name: str) -> "DesignSettings":
+        """指定名のデザイン設定を返す（ユーザー上書きがあればそれを優先）"""
+        if name in self._user_design:
+            ds = DesignSettings.from_dict(self._user_design[name])
+            ds.preset_name = name
+            return ds
+        if name in DESIGN_PRESETS:
+            return DesignSettings.from_dict(DESIGN_PRESETS[name].to_dict())
+        return DesignSettings(preset_name=name)
+
+    def get_segment_colors(self, name: str) -> List[str]:
+        """指定名のセグメント配色リストを返す"""
+        if name in self._user_segment:
+            return list(self._user_segment[name])
+        if name in SEGMENT_COLOR_PRESETS:
+            return list(SEGMENT_COLOR_PRESETS[name])
+        return list(SEGMENT_COLOR_PRESETS["デフォルト"])
+
+    # ── 保存 ──────────────────────────────────────────────────────────
+
+    def save_design(self, name: str, design: "DesignSettings") -> None:
+        """指定名でデザイン設定を保存する"""
+        d = design.to_dict()
+        d["preset_name"] = name
+        self._user_design[name] = d
+
+    def save_segment(self, name: str, colors: List[str]) -> None:
+        """指定名でセグメント配色を保存する"""
+        self._user_segment[name] = list(colors)
+
+    # ── リセット ──────────────────────────────────────────────────────
+
+    def reset_design(self, name: str) -> "DesignSettings":
+        """ユーザー上書きを削除してコード基準値を返す"""
+        self._user_design.pop(name, None)
+        if name in DESIGN_PRESETS:
+            return DesignSettings.from_dict(DESIGN_PRESETS[name].to_dict())
+        return DesignSettings(preset_name=name)
+
+    def reset_segment(self, name: str) -> List[str]:
+        """ユーザー上書きを削除してコード基準値を返す"""
+        self._user_segment.pop(name, None)
+        if name in SEGMENT_COLOR_PRESETS:
+            return list(SEGMENT_COLOR_PRESETS[name])
+        return list(SEGMENT_COLOR_PRESETS["デフォルト"])
+
+    # ── 新規作成 / 複製 ───────────────────────────────────────────────
+
+    def create_design(self, name: str, base_name: str = "デフォルト") -> "DesignSettings":
+        """デフォルト（または指定）を基準に新規プリセットを作成する"""
+        ds = self.get_design(base_name)
+        ds.preset_name = name
+        self.save_design(name, ds)
+        return ds
+
+    def duplicate_design(self, src_name: str, new_name: str) -> "DesignSettings":
+        """既存プリセットを複製する"""
+        ds = self.get_design(src_name)
+        ds.preset_name = new_name
+        self.save_design(new_name, ds)
+        return ds
+
+    def create_segment(self, name: str, base_name: str = "デフォルト") -> List[str]:
+        """デフォルト（または指定）を基準に新規セグメント配色を作成する"""
+        colors = self.get_segment_colors(base_name)
+        self._user_segment[name] = list(colors)
+        return colors
+
+    def duplicate_segment(self, src_name: str, new_name: str) -> List[str]:
+        """既存セグメント配色を複製する"""
+        colors = self.get_segment_colors(src_name)
+        self._user_segment[new_name] = list(colors)
+        return colors
+
+    # ── 名前変更 / 削除（ユーザー作成のみ） ──────────────────────────
+
+    def rename_design(self, old: str, new: str) -> None:
+        if old in self._user_design and old not in DESIGN_PRESETS:
+            self._user_design[new] = self._user_design.pop(old)
+            self._user_design[new]["preset_name"] = new
+
+    def delete_design(self, name: str) -> None:
+        if name in self._user_design and name not in DESIGN_PRESETS:
+            del self._user_design[name]
+
+    def rename_segment(self, old: str, new: str) -> None:
+        if old in self._user_segment and old not in SEGMENT_COLOR_PRESETS:
+            self._user_segment[new] = self._user_segment.pop(old)
+
+    def delete_segment(self, name: str) -> None:
+        if name in self._user_segment and name not in SEGMENT_COLOR_PRESETS:
+            del self._user_segment[name]
+
+    # ── セグメント配色を DesignSettings に適用 ────────────────────────
+
+    def apply_segment_to_design(self, name: str, design: "DesignSettings") -> None:
+        """セグメント配色プリセットを design.segment に反映する。
+        ユーザーが編集した色がある場合（組み込み・ユーザー作成問わず）は
+        custom_colors に色リストを設定する。
+        未編集の組み込みプリセットは custom_colors をクリアして名前引きに委ねる。"""
+        design.segment.preset_name = name
+        if name in self._user_segment:
+            # ユーザーが保存した色（編集済み組み込み or ユーザー作成プリセット）
+            design.segment.custom_colors = list(self._user_segment[name])
+        else:
+            # 未編集の組み込みプリセット → preset_name での名前引きを使用
+            design.segment.custom_colors = []
+
+    # ── シリアライズ ──────────────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        return {
+            "user_design": dict(self._user_design),
+            "user_segment": {k: list(v) for k, v in self._user_segment.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DesignPresetManager":
+        mgr = cls()
+        if not d:
+            return mgr
+        ud = d.get("user_design", {})
+        us = d.get("user_segment", {})
+        if isinstance(ud, dict):
+            mgr._user_design = {str(k): v for k, v in ud.items() if isinstance(v, dict)}
+        if isinstance(us, dict):
+            mgr._user_segment = {str(k): list(v) for k, v in us.items() if isinstance(v, list)}
+        return mgr

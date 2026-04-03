@@ -31,7 +31,7 @@ from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
 from tooltip_utils import _SimpleTooltip
-from design_settings import DesignSettings
+from design_settings import DesignSettings, DesignPresetManager
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -329,6 +329,16 @@ class RouletteApp(
         self._maximized        = False
         # デザイン設定（config["design"] キー配下に保存）
         self._design = DesignSettings.from_dict(cfg.get("design", {}))
+        # デザインプリセット管理（ユーザー作成・編集プリセットを永続化）
+        self._design_preset_mgr = DesignPresetManager.from_dict(
+            cfg.get("design_preset_manager", {})
+        )
+        # セグメント配色: ユーザープリセットの場合 custom_colors を復元
+        _seg_name = self._design.segment.preset_name
+        if _seg_name and not self._design.segment.custom_colors:
+            self._design_preset_mgr.apply_segment_to_design(_seg_name, self._design)
+        # デザインエディタウィンドウ参照（None = 未表示）
+        self._design_editor = None
         root.attributes("-topmost", self._topmost)
 
         self._build_ui()
@@ -673,6 +683,24 @@ class RouletteApp(
         self._redraw()
 
     # ════════════════════════════════════════════════════════════════
+    #  デザインエディタ起動
+    # ════════════════════════════════════════════════════════════════
+    def _open_design_editor(self):
+        """デザインエディタ Toplevel を開く（既に開いている場合は前面に出す）"""
+        if self._design_editor is not None:
+            try:
+                if self._design_editor.winfo_exists():
+                    self._design_editor.deiconify()
+                    self._design_editor.lift()
+                    self._design_editor.focus_force()
+                    return
+            except Exception:
+                pass
+        self._design_editor = None
+        from design_editor import DesignEditor
+        self._design_editor = DesignEditor(self)
+
+    # ════════════════════════════════════════════════════════════════
     #  設定保存・読み込み
     # ════════════════════════════════════════════════════════════════
     def _save_config(self):
@@ -725,6 +753,7 @@ class RouletteApp(
                 else self._cfg_panel_float_geo
             ),
             "design": self._design.to_dict(),
+            "design_preset_manager": self._design_preset_mgr.to_dict(),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:

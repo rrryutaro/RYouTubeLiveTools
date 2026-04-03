@@ -20,7 +20,7 @@ import tkinter.messagebox as _msgbox
 
 from config_utils import EXPORT_DIR
 from constants import (
-    CFG_PANEL_W, MIN_W, POINTER_PRESET_NAMES,
+    CFG_PANEL_W, MIN_W, POINTER_PRESET_NAMES, VERSION,
 )
 from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
 from tooltip_utils import _SimpleTooltip
@@ -165,18 +165,26 @@ class CfgPanelMixin:
             _cg.bind("<ButtonRelease-1>", self._cfg_resize_end)
             _cg.place(relx=1.0, rely=1.0, anchor="se")
 
+        # ── グループ開閉状態の永続化辞書（再構築をまたいで保持）────
+        if not hasattr(self, '_cfg_group_states'):
+            self._cfg_group_states = {}
+
         # ── 折りたたみグループヘルパー ────────────────────────
         def make_group(parent, title, expanded=False):
             """折りたたみ可能なグループを作成する。
+            再構築時は _cfg_group_states に保存された開閉状態を優先する。
             Returns: content_frame（ウィジェットを追加するフレーム）
             """
+            # 保存済み状態があればそれを使う（初回はデフォルト値を使用）
+            is_expanded = self._cfg_group_states.get(title, expanded)
+
             container = tk.Frame(parent, bg=self._design.panel)
             container.pack(fill=tk.X, pady=(2, 0))
 
             header = tk.Frame(container, bg=self._design.separator, cursor="hand2")
             header.pack(fill=tk.X)
 
-            arrow_var = tk.StringVar(value="▼" if expanded else "▶")
+            arrow_var = tk.StringVar(value="▼" if is_expanded else "▶")
             arrow_lbl = tk.Label(
                 header, textvariable=arrow_var,
                 bg=self._design.separator, fg=self._design.gold,
@@ -194,16 +202,18 @@ class CfgPanelMixin:
             title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
             content = tk.Frame(container, bg=self._design.panel)
-            if expanded:
+            if is_expanded:
                 content.pack(fill=tk.X)
 
             def toggle(e=None):
                 if content.winfo_ismapped():
                     content.pack_forget()
                     arrow_var.set("▶")
+                    self._cfg_group_states[title] = False
                 else:
                     content.pack(fill=tk.X)
                     arrow_var.set("▼")
+                    self._cfg_group_states[title] = True
                 _update_scroll()
 
             header.bind("<Button-1>", toggle)
@@ -481,14 +491,23 @@ class CfgPanelMixin:
         self._cfg_design_preset_var = tk.StringVar(value=self._design.preset_name)
         _design_cb = ttk.Combobox(
             g_design, textvariable=self._cfg_design_preset_var,
-            values=DESIGN_PRESET_NAMES, state="readonly",
+            values=self._design_preset_mgr.all_design_names(), state="readonly",
             font=("Meiryo", 9),
         )
         _design_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+        self._cfg_design_cb = _design_cb
 
         def on_design_preset(e=None):
             name = self._cfg_design_preset_var.get()
-            self._design.apply_preset(name)
+            # apply_preset() は組み込みプリセットのみ対応のため、
+            # DesignPresetManager.get_design() を使ってユーザー作成プリセットにも対応する
+            ds = self._design_preset_mgr.get_design(name)
+            self._design.preset_name = name
+            self._design.global_colors = ds.global_colors
+            self._design.wheel = ds.wheel
+            self._design.pointer = ds.pointer
+            self._design.log = ds.log
+            # segment / fonts は維持（apply_preset と同じ方針）
             self._save_config()
             self.root.after(0, self._apply_design_to_all)
 
@@ -499,17 +518,27 @@ class CfgPanelMixin:
         self._cfg_seg_preset_var = tk.StringVar(value=self._design.segment.preset_name)
         _seg_cb = ttk.Combobox(
             g_design, textvariable=self._cfg_seg_preset_var,
-            values=SEGMENT_PRESET_NAMES, state="readonly",
+            values=self._design_preset_mgr.all_segment_names(), state="readonly",
             font=("Meiryo", 9),
         )
-        _seg_cb.pack(fill=tk.X, padx=12, pady=(0, 6))
+        _seg_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+        self._cfg_seg_cb = _seg_cb
 
         def on_seg_preset(e=None):
-            self._design.segment.preset_name = self._cfg_seg_preset_var.get()
+            name = self._cfg_seg_preset_var.get()
+            self._design_preset_mgr.apply_segment_to_design(name, self._design)
             self._save_config()
             self._redraw()
 
         _seg_cb.bind("<<ComboboxSelected>>", on_seg_preset)
+
+        tk.Button(
+            g_design, text="デザインエディタを開く",
+            command=self._open_design_editor,
+            bg=self._design.separator, fg=self._design.text,
+            font=("Meiryo", 9), relief=tk.FLAT, cursor="hand2",
+            padx=6, pady=3,
+        ).pack(fill=tk.X, padx=12, pady=(4, 6))
 
         # ════════════════════════════════════════════════
         #  ログ設定グループ
@@ -910,6 +939,11 @@ class CfgPanelMixin:
             self._save_config()
 
         self._cfg_spin_dir_cb.bind("<<ComboboxSelected>>", on_spin_dir)
+
+        # バージョン表示
+        tk.Label(p, text=f"Version: v{VERSION}",
+                 bg=self._design.panel, fg=self._design.text_sub,
+                 font=("Meiryo", 8)).pack(anchor="e", padx=12, pady=(8, 2))
 
         # 末尾の余白
         tk.Frame(p, bg=self._design.panel, height=8).pack()
