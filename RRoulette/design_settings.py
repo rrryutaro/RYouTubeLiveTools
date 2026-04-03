@@ -73,8 +73,8 @@ class WheelFontSettings:
     family: str = "Meiryo"
     # 「省略」モードの基準サイズ（表示できない場合は省略記号で切り捨て）
     omit_base_size: int = 12
-    # 「収める」モードの基準サイズ（改行・拡大縮小で収める）
-    fit_base_size: int = 12
+    # 「収める」モードの基準サイズ（探索上限として使用。大きく置く挙動を維持する）
+    fit_base_size: int = 72
     # 「縮小」モードの初期サイズ（収まらない場合のみ縮小する）
     shrink_base_size: int = 12
     min_size: int = 6

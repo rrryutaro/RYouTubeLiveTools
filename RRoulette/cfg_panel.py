@@ -343,7 +343,96 @@ class CfgPanelMixin:
             bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
             activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
-        ).pack(anchor="w", padx=12, pady=(4, 6))
+        ).pack(anchor="w", padx=12, pady=(4, 4))
+
+        # ── ルーレット文字フォント設定 ──────────────────────────────────
+        tk.Label(
+            g_txt, text="── フォント設定 ──",
+            bg=self._design.panel, fg=self._design.text_sub,
+            font=("Meiryo", 8),
+        ).pack(anchor="w", padx=16, pady=(2, 0))
+
+        tk.Label(g_txt, text="フォントファミリー", bg=self._design.panel,
+                 fg=self._design.text, font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(2, 0))
+        _wf_cfg = self._design.fonts.wheel
+        _cfg_font_fam_var = tk.StringVar(value=_wf_cfg.family)
+        _cfg_font_fam_ent = tk.Entry(
+            g_txt, textvariable=_cfg_font_fam_var,
+            font=("Meiryo", 9),
+            bg=self._design.separator, fg=self._design.text,
+            insertbackground=self._design.text, relief=tk.FLAT,
+        )
+        _cfg_font_fam_ent.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def _on_font_family(e=None):
+            v = _cfg_font_fam_var.get().strip()
+            if v:
+                self._design.fonts.wheel.family = v
+                self._save_config()
+                self._redraw()
+
+        _cfg_font_fam_ent.bind("<Return>", _on_font_family)
+        _cfg_font_fam_ent.bind("<FocusOut>", _on_font_family)
+
+        def _make_font_size_row(parent, label, getter, setter):
+            """フォントサイズ設定行（ラベル＋Spinbox）を作成する。"""
+            row = tk.Frame(parent, bg=self._design.panel)
+            row.pack(fill=tk.X, padx=12, pady=(0, 2))
+            tk.Label(row, text=label, bg=self._design.panel, fg=self._design.text,
+                     font=("Meiryo", 9), width=14, anchor="w").pack(side=tk.LEFT)
+            var = tk.IntVar(value=getter())
+            sb = tk.Spinbox(
+                row, textvariable=var, from_=1, to=200, width=5,
+                font=("Meiryo", 9),
+                bg=self._design.separator, fg=self._design.text,
+                buttonbackground=self._design.separator,
+                insertbackground=self._design.text,
+                relief=tk.FLAT,
+            )
+            sb.pack(side=tk.RIGHT)
+
+            def _apply(*_):
+                try:
+                    v = int(var.get())
+                except (ValueError, tk.TclError):
+                    return
+                v = max(1, min(200, v))
+                var.set(v)
+                setter(v)
+                self._save_config()
+                self._redraw()
+
+            sb.config(command=_apply)
+            sb.bind("<Return>", _apply)
+            sb.bind("<FocusOut>", _apply)
+
+        _make_font_size_row(
+            g_txt, "省略基準サイズ",
+            lambda: self._design.fonts.wheel.omit_base_size,
+            lambda v: setattr(self._design.fonts.wheel, "omit_base_size", v),
+        )
+        _make_font_size_row(
+            g_txt, "収める基準サイズ",
+            lambda: self._design.fonts.wheel.fit_base_size,
+            lambda v: setattr(self._design.fonts.wheel, "fit_base_size", v),
+        )
+        _make_font_size_row(
+            g_txt, "縮小基準サイズ",
+            lambda: self._design.fonts.wheel.shrink_base_size,
+            lambda v: setattr(self._design.fonts.wheel, "shrink_base_size", v),
+        )
+        _make_font_size_row(
+            g_txt, "最小サイズ",
+            lambda: self._design.fonts.wheel.min_size,
+            lambda v: setattr(self._design.fonts.wheel, "min_size", v),
+        )
+        _make_font_size_row(
+            g_txt, "最大サイズ",
+            lambda: self._design.fonts.wheel.max_size,
+            lambda v: setattr(self._design.fonts.wheel, "max_size", v),
+        )
+
+        tk.Frame(g_txt, bg=self._design.panel, height=4).pack()
 
         # ════════════════════════════════════════════════
         #  ポインター位置グループ

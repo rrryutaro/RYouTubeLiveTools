@@ -52,25 +52,45 @@ class WheelRendererMixin:
         from layout_search import build_all_sector_layouts
         donut_r = float(DONUT_DRAW_RADIUS) if getattr(self, '_donut_hole', False) else 0.0
         _wf = self._design.fonts.wheel
+        mode = self._text_size_mode
+
+        # WheelFontSettings のモード別基準サイズを実接続する
+        # mode 0 (省略): omit_base_size = 固定描画サイズ（収まらない場合は省略記号）
+        # mode 1 (収める): fit_base_size = 探索上限（この値まで大きく置こうとする）
+        # mode 2 (縮小): shrink_base_size = 初期基準サイズ（収まらない場合のみ縮小）
+        _min = _wf.min_size
+        _max = _wf.max_size
+        if mode == 0:   # 省略
+            fixed_size   = max(_min, min(_max, _wf.omit_base_size))
+            effective_max = _max
+        elif mode == 1: # 収める
+            fixed_size   = max(_min, min(_max, _wf.fit_base_size))
+            effective_max = max(_min, min(_max, _wf.fit_base_size))
+        else:           # 縮小
+            fixed_size   = max(_min, min(_max, _wf.shrink_base_size))
+            effective_max = _max
+
         self._layout_cache = build_all_sector_layouts(
             items=self.items,
             wheel_cx=self.CX,
             wheel_cy=self.CY,
             R=self.R,
-            text_size_mode=self._text_size_mode,
+            text_size_mode=mode,
             text_direction=self._text_direction,
             font_family=_wf.family,
-            fixed_font_size=max(7, min(12, int(160 / max(1, len(self.items))))),
-            min_size=_wf.min_size,
-            max_size=_wf.max_size,
+            fixed_font_size=fixed_size,
+            min_size=_min,
+            max_size=effective_max,
             donut_r=donut_r,
             segments=getattr(self, 'current_segments', None),
         )
         self._layout_cache_key = (
             tuple(self.items),
             tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
-            self.R, self._text_size_mode, self._text_direction,
+            self.R, mode, self._text_direction,
             self._donut_hole,
+            _wf.family, _wf.omit_base_size, _wf.fit_base_size, _wf.shrink_base_size,
+            _wf.min_size, _wf.max_size,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -147,11 +167,14 @@ class WheelRendererMixin:
         else:
             # ── 新レイアウトエンジン: キャッシュ確認・再構築 ─────────────
             _cache_valid = True
+            _wf_key = self._design.fonts.wheel
             _cache_key = (
                 tuple(self.items),
                 tuple(int(seg.arc * 100) for seg in segs),
                 self.R, self._text_size_mode, self._text_direction,
                 self._donut_hole,
+                _wf_key.family, _wf_key.omit_base_size, _wf_key.fit_base_size,
+                _wf_key.shrink_base_size, _wf_key.min_size, _wf_key.max_size,
             )
             if getattr(self, '_layout_cache_key', None) != _cache_key:
                 _drag = (getattr(self, '_resizing', False)
