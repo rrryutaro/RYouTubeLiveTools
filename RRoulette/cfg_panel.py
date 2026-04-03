@@ -19,11 +19,11 @@ import tkinter.messagebox as _msgbox
 
 from config_utils import EXPORT_DIR
 from constants import (
-    PANEL, ACCENT, DARK2, WHITE, GOLD,
     CFG_PANEL_W, MIN_W, POINTER_PRESET_NAMES,
 )
 from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
 from tooltip_utils import _SimpleTooltip
+from design_settings import DESIGN_PRESET_NAMES, SEGMENT_PRESET_NAMES, DESIGN_PRESETS
 
 
 # ─── 設定項目キー・デフォルト値 ─────────────────────────────────────────
@@ -106,7 +106,7 @@ class CfgPanelMixin:
                 "WM_DELETE_WINDOW", self._toggle_cfg_panel_float
             )
             self._cfg_panel_toplevel.minsize(CFG_PANEL_W, 400)
-            self.cfg_panel = tk.Frame(self._cfg_panel_toplevel, bg=PANEL)
+            self.cfg_panel = tk.Frame(self._cfg_panel_toplevel, bg=self._design.panel)
             self.cfg_panel.pack(fill=tk.BOTH, expand=True)
             self.cfg_panel.pack_propagate(False)
             self._cfg_sash_right = None
@@ -114,23 +114,23 @@ class CfgPanelMixin:
                 self._cfg_panel_toplevel.withdraw()
         else:
             self._cfg_panel_toplevel = None
-            self.cfg_panel = tk.Frame(self.content, bg=PANEL, width=self._cfg_panel_w)
+            self.cfg_panel = tk.Frame(self.content, bg=self._design.panel, width=self._cfg_panel_w)
             self.cfg_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=8)
             self.cfg_panel.pack_propagate(False)
 
-            self._cfg_sash_right = tk.Frame(self.content, bg=DARK2, width=4)
+            self._cfg_sash_right = tk.Frame(self.content, bg=self._design.separator, width=4)
             self._cfg_sash_right.pack(side=tk.RIGHT, fill=tk.Y, pady=8)
             self._cfg_sash_right.pack_propagate(False)
 
         # ── スクロール可能コンテナ ───────────────────────────
-        _scr = tk.Scrollbar(self.cfg_panel, orient=tk.VERTICAL, bg=PANEL)
+        _scr = tk.Scrollbar(self.cfg_panel, orient=tk.VERTICAL, bg=self._design.panel)
         _scr.pack(side=tk.RIGHT, fill=tk.Y)
-        _scv = tk.Canvas(self.cfg_panel, bg=PANEL, highlightthickness=0,
+        _scv = tk.Canvas(self.cfg_panel, bg=self._design.panel, highlightthickness=0,
                          yscrollcommand=_scr.set)
         _scv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         _scr.config(command=_scv.yview)
 
-        p = tk.Frame(_scv, bg=PANEL)
+        p = tk.Frame(_scv, bg=self._design.panel)
         _win = _scv.create_window((0, 0), window=p, anchor="nw")
 
         def _update_scroll(e=None):
@@ -155,7 +155,7 @@ class CfgPanelMixin:
         # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
         if not self._cfg_panel_float:
             _cg = tk.Canvas(self.cfg_panel, width=16, height=16,
-                            bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
+                            bg=self._design.panel, highlightthickness=0, cursor="sb_h_double_arrow")
             for _i in range(3):
                 _x = 4 + _i * 4
                 _cg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
@@ -169,16 +169,16 @@ class CfgPanelMixin:
             """折りたたみ可能なグループを作成する。
             Returns: content_frame（ウィジェットを追加するフレーム）
             """
-            container = tk.Frame(parent, bg=PANEL)
+            container = tk.Frame(parent, bg=self._design.panel)
             container.pack(fill=tk.X, pady=(2, 0))
 
-            header = tk.Frame(container, bg=DARK2, cursor="hand2")
+            header = tk.Frame(container, bg=self._design.separator, cursor="hand2")
             header.pack(fill=tk.X)
 
             arrow_var = tk.StringVar(value="▼" if expanded else "▶")
             arrow_lbl = tk.Label(
                 header, textvariable=arrow_var,
-                bg=DARK2, fg=GOLD,
+                bg=self._design.separator, fg=self._design.gold,
                 font=("Meiryo", 9, "bold"),
                 padx=6, pady=4,
             )
@@ -186,13 +186,13 @@ class CfgPanelMixin:
 
             title_lbl = tk.Label(
                 header, text=title,
-                bg=DARK2, fg=WHITE,
+                bg=self._design.separator, fg=self._design.text,
                 font=("Meiryo", 10, "bold"),
                 pady=4,
             )
             title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-            content = tk.Frame(container, bg=PANEL)
+            content = tk.Frame(container, bg=self._design.panel)
             if expanded:
                 content.pack(fill=tk.X)
 
@@ -212,14 +212,14 @@ class CfgPanelMixin:
             return content
 
         # ── タイトル行（リセット・インポート・エクスポート・保存ボタン） ─────
-        title_row = tk.Frame(p, bg=PANEL)
+        title_row = tk.Frame(p, bg=self._design.panel)
         title_row.pack(fill=tk.X, padx=8, pady=(10, 4))
 
-        tk.Label(title_row, text="設定", bg=PANEL, fg=GOLD,
+        tk.Label(title_row, text="設定", bg=self._design.panel, fg=self._design.gold,
                  font=("Meiryo", 11, "bold")).pack(side=tk.LEFT, padx=(4, 0))
 
         _BTN = dict(
-            bg=DARK2, fg=WHITE,
+            bg=self._design.separator, fg=self._design.text,
             font=("Meiryo", 10),
             relief=tk.FLAT, cursor="hand2",
             padx=5, pady=1, bd=0,
@@ -264,8 +264,8 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_winvis, text="最前面",
             variable=self._cfg_topmost_var, command=on_topmost,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(6, 2))
 
@@ -279,8 +279,8 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_winvis, text="背景透過",
             variable=self._cfg_transparent_var, command=on_transparent,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(0, 6))
 
@@ -302,7 +302,7 @@ class CfgPanelMixin:
             "縮小（全体を縮小）",
         ]
 
-        tk.Label(g_txt, text="表示方向", bg=PANEL, fg=WHITE,
+        tk.Label(g_txt, text="表示方向", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
         self._cfg_dir_cb = ttk.Combobox(g_txt, values=DIR_NAMES, state="readonly",
                                         font=("Meiryo", 9))
@@ -316,7 +316,7 @@ class CfgPanelMixin:
 
         self._cfg_dir_cb.bind("<<ComboboxSelected>>", on_dir)
 
-        tk.Label(g_txt, text="文字サイズの扱い", bg=PANEL, fg=WHITE,
+        tk.Label(g_txt, text="文字サイズの扱い", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
         self._cfg_size_cb = ttk.Combobox(g_txt, values=SIZE_NAMES, state="readonly",
                                          font=("Meiryo", 9))
@@ -340,8 +340,8 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_txt, text="中心に穴を表示する（透過時は透明）",
             variable=self._cfg_donut_var, command=on_donut_hole,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(4, 6))
 
@@ -350,7 +350,7 @@ class CfgPanelMixin:
         # ════════════════════════════════════════════════
         g_mrk = make_group(p, "ポインター位置")
 
-        tk.Label(g_mrk, text="基準位置（ドラッグでも変更可）", bg=PANEL, fg=WHITE,
+        tk.Label(g_mrk, text="基準位置（ドラッグでも変更可）", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
         self._pointer_preset_var = tk.StringVar(
             value=POINTER_PRESET_NAMES[self._pointer_preset])
@@ -370,12 +370,52 @@ class CfgPanelMixin:
         lock_cb = tk.Checkbutton(
             g_mrk, text="スピン中の操作を有効にする",
             variable=lock_var, state=tk.DISABLED,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
             disabledforeground="#aaaacc",
-            activebackground=PANEL,
+            activebackground=self._design.panel,
             font=("Meiryo", 9),
         )
         lock_cb.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
+        #  デザイングループ
+        # ════════════════════════════════════════════════
+        g_design = make_group(p, "デザイン")
+
+        tk.Label(g_design, text="デザインプリセット", bg=self._design.panel, fg=self._design.text,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
+        self._cfg_design_preset_var = tk.StringVar(value=self._design.preset_name)
+        _design_cb = ttk.Combobox(
+            g_design, textvariable=self._cfg_design_preset_var,
+            values=DESIGN_PRESET_NAMES, state="readonly",
+            font=("Meiryo", 9),
+        )
+        _design_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        def on_design_preset(e=None):
+            name = self._cfg_design_preset_var.get()
+            self._design.apply_preset(name)
+            self._save_config()
+            self.root.after(0, self._apply_design_to_all)
+
+        _design_cb.bind("<<ComboboxSelected>>", on_design_preset)
+
+        tk.Label(g_design, text="セグメント配色", bg=self._design.panel, fg=self._design.text,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
+        self._cfg_seg_preset_var = tk.StringVar(value=self._design.segment.preset_name)
+        _seg_cb = ttk.Combobox(
+            g_design, textvariable=self._cfg_seg_preset_var,
+            values=SEGMENT_PRESET_NAMES, state="readonly",
+            font=("Meiryo", 9),
+        )
+        _seg_cb.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        def on_seg_preset(e=None):
+            self._design.segment.preset_name = self._cfg_seg_preset_var.get()
+            self._save_config()
+            self._redraw()
+
+        _seg_cb.bind("<<ComboboxSelected>>", on_seg_preset)
 
         # ════════════════════════════════════════════════
         #  ログ設定グループ
@@ -391,8 +431,8 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_log, text="日時をログに記録する",
             variable=self._cfg_ts_var, command=on_log_timestamp,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(6, 2))
 
@@ -406,8 +446,8 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_log, text="ログ項目を四角で囲む",
             variable=self._cfg_box_border_var, command=on_log_box_border,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(0, 2))
 
@@ -421,12 +461,12 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_log, text="結果表示時にログを前面に表示する",
             variable=self._cfg_log_on_top_var, command=on_log_on_top,
-            bg=PANEL, fg=WHITE, selectcolor=DARK2,
-            activebackground=PANEL, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
         ).pack(anchor="w", padx=12, pady=(0, 4))
 
-        _BTN_ROW = dict(bg=DARK2, fg=WHITE, font=("Meiryo", 9),
+        _BTN_ROW = dict(bg=self._design.separator, fg=self._design.text, font=("Meiryo", 9),
                         relief=tk.FLAT, cursor="hand2", padx=6, pady=2)
 
         tk.Button(g_log, text="ログ出力（結果のみ）",
@@ -447,12 +487,12 @@ class CfgPanelMixin:
         g_vol = make_group(p, "音量")
 
         # スピン音量
-        tick_vol_row = tk.Frame(g_vol, bg=PANEL)
+        tick_vol_row = tk.Frame(g_vol, bg=self._design.panel)
         tick_vol_row.pack(fill=tk.X, padx=12, pady=(6, 0))
-        tk.Label(tick_vol_row, text="スピン音", bg=PANEL, fg=WHITE,
+        tk.Label(tick_vol_row, text="スピン音", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(side=tk.LEFT)
         self._cfg_tick_vol_lbl = tk.Label(tick_vol_row, text=f"{self._tick_volume} %",
-                                          bg=PANEL, fg=GOLD, font=("Meiryo", 10), width=6)
+                                          bg=self._design.panel, fg=self._design.gold, font=("Meiryo", 10), width=6)
         self._cfg_tick_vol_lbl.pack(side=tk.RIGHT)
         self._cfg_tick_vol_var = tk.IntVar(value=self._tick_volume)
 
@@ -465,17 +505,17 @@ class CfgPanelMixin:
 
         tk.Scale(g_vol, variable=self._cfg_tick_vol_var, from_=0, to=100, orient=tk.HORIZONTAL,
                  resolution=1, showvalue=False,
-                 bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                 bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
                  highlightthickness=0, bd=0, sliderlength=14,
                  command=on_tick_vol).pack(fill=tk.X, padx=12, pady=(0, 4))
 
         # 決定音量
-        win_vol_row = tk.Frame(g_vol, bg=PANEL)
+        win_vol_row = tk.Frame(g_vol, bg=self._design.panel)
         win_vol_row.pack(fill=tk.X, padx=12, pady=(2, 0))
-        tk.Label(win_vol_row, text="決定音", bg=PANEL, fg=WHITE,
+        tk.Label(win_vol_row, text="決定音", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(side=tk.LEFT)
         self._cfg_win_vol_lbl = tk.Label(win_vol_row, text=f"{self._win_volume} %",
-                                         bg=PANEL, fg=GOLD, font=("Meiryo", 10), width=6)
+                                         bg=self._design.panel, fg=self._design.gold, font=("Meiryo", 10), width=6)
         self._cfg_win_vol_lbl.pack(side=tk.RIGHT)
         self._cfg_win_vol_var = tk.IntVar(value=self._win_volume)
 
@@ -488,7 +528,7 @@ class CfgPanelMixin:
 
         tk.Scale(g_vol, variable=self._cfg_win_vol_var, from_=0, to=100, orient=tk.HORIZONTAL,
                  resolution=1, showvalue=False,
-                 bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                 bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
                  highlightthickness=0, bd=0, sliderlength=14,
                  command=on_win_vol).pack(fill=tk.X, padx=12, pady=(0, 6))
 
@@ -503,20 +543,20 @@ class CfgPanelMixin:
         _CUSTOM_IDX_TICK = len(TICK_PATTERN_NAMES) - 1
         _CUSTOM_IDX_WIN  = len(WIN_PATTERN_NAMES) - 1
 
-        patterns_row = tk.Frame(g_snd, bg=PANEL)
+        patterns_row = tk.Frame(g_snd, bg=self._design.panel)
         patterns_row.pack(fill=tk.X, padx=12, pady=(6, 6))
         patterns_row.columnconfigure(0, weight=1, uniform="snd_col")
         patterns_row.columnconfigure(2, weight=1, uniform="snd_col")
 
         # ── スピン音 列 ──────────────────────────────
-        tick_col = tk.Frame(patterns_row, bg=PANEL)
+        tick_col = tk.Frame(patterns_row, bg=self._design.panel)
         tick_col.grid(row=0, column=0, sticky="nsew")
-        tk.Label(tick_col, text="スピン音", bg=PANEL, fg=WHITE,
+        tk.Label(tick_col, text="スピン音", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9, "bold")).pack(anchor="w", pady=(2, 1))
         self._cfg_tick_var = tk.IntVar(value=self._tick_pattern)
         self._cfg_tick_btns = []
         self._cfg_tick_custom_lbl = tk.Label(
-            tick_col, text="", bg=PANEL, fg=GOLD,
+            tick_col, text="", bg=self._design.panel, fg=self._design.gold,
             font=("Meiryo", 7), wraplength=90, justify=tk.LEFT)
 
         def _pick_tick_custom():
@@ -536,7 +576,7 @@ class CfgPanelMixin:
                 self._tick_custom_file = path
                 self.snd.load_tick_custom(path)
                 for j, b in enumerate(self._cfg_tick_btns):
-                    b.config(bg=ACCENT if j == _CUSTOM_IDX_TICK else DARK2)
+                    b.config(bg=self._design.accent if j == _CUSTOM_IDX_TICK else self._design.separator)
                 self._cfg_tick_var.set(_CUSTOM_IDX_TICK)
                 self._tick_pattern = _CUSTOM_IDX_TICK
                 self.snd.set_tick_pattern(_CUSTOM_IDX_TICK)
@@ -548,7 +588,7 @@ class CfgPanelMixin:
                 _pick_tick_custom()
                 return
             for j, b in enumerate(self._cfg_tick_btns):
-                b.config(bg=ACCENT if j == idx else DARK2)
+                b.config(bg=self._design.accent if j == idx else self._design.separator)
             self._cfg_tick_var.set(idx)
             self._tick_pattern = idx
             self.snd.set_tick_pattern(idx)
@@ -557,8 +597,8 @@ class CfgPanelMixin:
         for i, name in enumerate(TICK_PATTERN_NAMES):
             btn = tk.Button(
                 tick_col, text=name,
-                bg=ACCENT if self._tick_pattern == i else DARK2,
-                fg=WHITE, font=("Meiryo", 9),
+                bg=self._design.accent if self._tick_pattern == i else self._design.separator,
+                fg=self._design.text, font=("Meiryo", 9),
                 relief=tk.FLAT, cursor="hand2", padx=4, pady=2,
                 command=lambda i=i: on_tick_btn(i),
             )
@@ -571,21 +611,21 @@ class CfgPanelMixin:
 
         tk.Button(tick_col, text="試聴",
                   command=lambda: self.snd.preview_tick(self._cfg_tick_var.get()),
-                  bg=DARK2, fg=WHITE, font=("Meiryo", 8),
+                  bg=self._design.separator, fg=self._design.text, font=("Meiryo", 8),
                   relief=tk.FLAT, cursor="hand2", padx=6
                   ).pack(anchor="w", pady=(4, 2))
 
-        tk.Frame(patterns_row, bg=DARK2, width=1).grid(row=0, column=1, sticky="ns", padx=8)
+        tk.Frame(patterns_row, bg=self._design.separator, width=1).grid(row=0, column=1, sticky="ns", padx=8)
 
         # ── 決定音 列 ──────────────────────────────
-        win_col = tk.Frame(patterns_row, bg=PANEL)
+        win_col = tk.Frame(patterns_row, bg=self._design.panel)
         win_col.grid(row=0, column=2, sticky="nsew")
-        tk.Label(win_col, text="決定音", bg=PANEL, fg=WHITE,
+        tk.Label(win_col, text="決定音", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9, "bold")).pack(anchor="w", pady=(2, 1))
         self._cfg_win_var = tk.IntVar(value=self._win_pattern)
         self._cfg_win_btns = []
         self._cfg_win_custom_lbl = tk.Label(
-            win_col, text="", bg=PANEL, fg=GOLD,
+            win_col, text="", bg=self._design.panel, fg=self._design.gold,
             font=("Meiryo", 7), wraplength=90, justify=tk.LEFT)
 
         def _pick_win_custom():
@@ -605,7 +645,7 @@ class CfgPanelMixin:
                 self._win_custom_file = path
                 self.snd.load_win_custom(path)
                 for j, b in enumerate(self._cfg_win_btns):
-                    b.config(bg=ACCENT if j == _CUSTOM_IDX_WIN else DARK2)
+                    b.config(bg=self._design.accent if j == _CUSTOM_IDX_WIN else self._design.separator)
                 self._cfg_win_var.set(_CUSTOM_IDX_WIN)
                 self._win_pattern = _CUSTOM_IDX_WIN
                 self.snd.set_win_pattern(_CUSTOM_IDX_WIN)
@@ -617,7 +657,7 @@ class CfgPanelMixin:
                 _pick_win_custom()
                 return
             for j, b in enumerate(self._cfg_win_btns):
-                b.config(bg=ACCENT if j == idx else DARK2)
+                b.config(bg=self._design.accent if j == idx else self._design.separator)
             self._cfg_win_var.set(idx)
             self._win_pattern = idx
             self.snd.set_win_pattern(idx)
@@ -626,8 +666,8 @@ class CfgPanelMixin:
         for i, name in enumerate(WIN_PATTERN_NAMES):
             btn = tk.Button(
                 win_col, text=name,
-                bg=ACCENT if self._win_pattern == i else DARK2,
-                fg=WHITE, font=("Meiryo", 9),
+                bg=self._design.accent if self._win_pattern == i else self._design.separator,
+                fg=self._design.text, font=("Meiryo", 9),
                 relief=tk.FLAT, cursor="hand2", padx=4, pady=2,
                 command=lambda i=i: on_win_btn(i),
             )
@@ -640,7 +680,7 @@ class CfgPanelMixin:
 
         tk.Button(win_col, text="試聴",
                   command=lambda: self.snd.preview_win(self._cfg_win_var.get()),
-                  bg=DARK2, fg=WHITE, font=("Meiryo", 8),
+                  bg=self._design.separator, fg=self._design.text, font=("Meiryo", 8),
                   relief=tk.FLAT, cursor="hand2", padx=6
                   ).pack(anchor="w", pady=(4, 2))
 
@@ -653,11 +693,11 @@ class CfgPanelMixin:
             return "即時" if v == 0 else f"{v} 秒"
 
         def make_slider_row(label, val):
-            row = tk.Frame(g_op, bg=PANEL)
+            row = tk.Frame(g_op, bg=self._design.panel)
             row.pack(fill=tk.X, padx=12, pady=(2, 0))
-            tk.Label(row, text=label, bg=PANEL, fg=WHITE,
+            tk.Label(row, text=label, bg=self._design.panel, fg=self._design.text,
                      font=("Meiryo", 9)).pack(side=tk.LEFT)
-            lbl = tk.Label(row, text=fmt_sec(val), bg=PANEL, fg=GOLD,
+            lbl = tk.Label(row, text=fmt_sec(val), bg=self._design.panel, fg=self._design.gold,
                            font=("Meiryo", 9), width=5)
             lbl.pack(side=tk.RIGHT)
             return lbl
@@ -666,7 +706,7 @@ class CfgPanelMixin:
         self._cfg_spin_var   = tk.IntVar(value=self._spin_duration)
         self._cfg_spin_sc    = tk.Scale(g_op, variable=self._cfg_spin_var, from_=1, to=30,
                                         orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
                                         highlightthickness=0, bd=0, sliderlength=14)
         self._cfg_spin_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
 
@@ -674,7 +714,7 @@ class CfgPanelMixin:
         self._cfg_double_var = tk.IntVar(value=self._double_duration)
         self._cfg_double_sc  = tk.Scale(g_op, variable=self._cfg_double_var, from_=0, to=30,
                                         orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
                                         highlightthickness=0, bd=0, sliderlength=14)
         self._cfg_double_sc.pack(fill=tk.X, padx=12, pady=(0, 2))
 
@@ -682,7 +722,7 @@ class CfgPanelMixin:
         self._cfg_triple_var = tk.IntVar(value=self._triple_duration)
         self._cfg_triple_sc  = tk.Scale(g_op, variable=self._cfg_triple_var, from_=0, to=30,
                                         orient=tk.HORIZONTAL, resolution=1, showvalue=False,
-                                        bg=PANEL, fg=WHITE, troughcolor=DARK2,
+                                        bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
                                         highlightthickness=0, bd=0, sliderlength=14)
         self._cfg_triple_sc.pack(fill=tk.X, padx=12, pady=(0, 6))
 
@@ -739,17 +779,17 @@ class CfgPanelMixin:
 
         tk.Checkbutton(g_arr, text="一括リセット前に確認ダイアログを表示",
                        variable=self._cfg_confirm_reset_var, command=on_confirm_reset,
-                       bg=PANEL, fg=WHITE, selectcolor=DARK2,
-                       activebackground=PANEL, activeforeground=WHITE,
+                       bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+                       activebackground=self._design.panel, activeforeground=self._design.text,
                        font=("Meiryo", 9)).pack(anchor="w", padx=12, pady=(4, 0))
         tk.Label(g_arr, text="※ OFF にすると確認なしで即実行されます",
-                 bg=PANEL, fg="#667788", font=("Meiryo", 8),
+                 bg=self._design.panel, fg="#667788", font=("Meiryo", 8),
                  ).pack(anchor="w", padx=24, pady=(0, 4))
 
         _ARR_DIR_NAMES  = ["時計回り", "反時計回り"]
         _SPIN_DIR_NAMES = ["時計回り", "反時計回り"]
 
-        tk.Label(g_arr, text="項目配置順方向", bg=PANEL, fg=WHITE,
+        tk.Label(g_arr, text="項目配置順方向", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(6, 0))
         self._cfg_arr_dir_cb = ttk.Combobox(g_arr, values=_ARR_DIR_NAMES, state="readonly",
                                              font=("Meiryo", 9))
@@ -764,7 +804,7 @@ class CfgPanelMixin:
 
         self._cfg_arr_dir_cb.bind("<<ComboboxSelected>>", on_arr_dir)
 
-        tk.Label(g_arr, text="ルーレット回転方向", bg=PANEL, fg=WHITE,
+        tk.Label(g_arr, text="ルーレット回転方向", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
         self._cfg_spin_dir_cb = ttk.Combobox(g_arr, values=_SPIN_DIR_NAMES, state="readonly",
                                               font=("Meiryo", 9))
@@ -778,7 +818,7 @@ class CfgPanelMixin:
         self._cfg_spin_dir_cb.bind("<<ComboboxSelected>>", on_spin_dir)
 
         # 末尾の余白
-        tk.Frame(p, bg=PANEL, height=8).pack()
+        tk.Frame(p, bg=self._design.panel, height=8).pack()
 
         # スピン中ロック対象ウィジェットを収集（Button / Scale / Checkbutton / Combobox）
         self._lockable_cfg_widgets = []
@@ -830,13 +870,13 @@ class CfgPanelMixin:
         # 音パターン（ボタン選択状態更新）
         self._cfg_tick_var.set(self._tick_pattern)
         for _j, _b in enumerate(self._cfg_tick_btns):
-            _b.config(bg=ACCENT if _j == self._tick_pattern else DARK2)
+            _b.config(bg=self._design.accent if _j == self._tick_pattern else self._design.separator)
         self.snd.set_tick_pattern(self._tick_pattern)
         self._cfg_tick_custom_lbl.config(
             text=os.path.basename(self._tick_custom_file) if self._tick_custom_file else "")
         self._cfg_win_var.set(self._win_pattern)
         for _j, _b in enumerate(self._cfg_win_btns):
-            _b.config(bg=ACCENT if _j == self._win_pattern else DARK2)
+            _b.config(bg=self._design.accent if _j == self._win_pattern else self._design.separator)
         self.snd.set_win_pattern(self._win_pattern)
         self._cfg_win_custom_lbl.config(
             text=os.path.basename(self._win_custom_file) if self._win_custom_file else "")

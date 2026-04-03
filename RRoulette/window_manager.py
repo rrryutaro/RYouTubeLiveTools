@@ -13,7 +13,6 @@ import ctypes
 import tkinter as tk
 
 from constants import (
-    BG, PANEL, DARK2, WHITE,
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     CFG_PANEL_W, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
     MAIN_MIN_W, MAIN_MIN_H, SIDEBAR_MIN_W,
@@ -32,7 +31,7 @@ class WindowManagerMixin:
     # ════════════════════════════════════════════════════════════════
     def _build_resize_grip(self):
         grip = tk.Canvas(self.main_frame, width=16, height=16,
-                         bg=BG, highlightthickness=0, cursor="size_nw_se")
+                         bg=self._design.bg, highlightthickness=0, cursor="size_nw_se")
         for i in range(3):
             offset = 4 + i * 4
             grip.create_line(16, offset, offset, 16, fill="#555577", width=1)
@@ -49,8 +48,8 @@ class WindowManagerMixin:
     def _build_context_menu(self):
         self._ctx = tk.Menu(
             self.root, tearoff=0,
-            bg=PANEL, fg=WHITE,
-            activebackground=DARK2, activeforeground=WHITE,
+            bg=self._design.panel, fg=self._design.text,
+            activebackground=self._design.separator, activeforeground=self._design.text,
             font=("Meiryo", 10), relief=tk.FLAT, bd=1,
         )
 
@@ -381,14 +380,14 @@ class WindowManagerMixin:
             self.cv.configure(bg=key)
             self.root.wm_attributes("-transparentcolor", key)
             # リサイズグリップだけは非透過色を維持して掴めるようにする
-            self._resize_grip.configure(bg=DARK2)
+            self._resize_grip.configure(bg=self._design.separator)
         else:
-            self.root.configure(bg=BG)
-            self.content.configure(bg=BG)
-            self.main_frame.configure(bg=BG)
-            self.cv.configure(bg=BG)
+            self.root.configure(bg=self._design.bg)
+            self.content.configure(bg=self._design.bg)
+            self.main_frame.configure(bg=self._design.bg)
+            self.cv.configure(bg=self._design.bg)
             self.root.wm_attributes("-transparentcolor", "")
-            self._resize_grip.configure(bg=BG)
+            self._resize_grip.configure(bg=self._design.bg)
         self._redraw()
 
     # ════════════════════════════════════════════════════════════════
@@ -453,7 +452,7 @@ class WindowManagerMixin:
         """モードレスの浮動ウィンドウを作成して返す。"""
         win = tk.Toplevel(self.root)
         win.title(f"RRoulette — {title}")
-        win.configure(bg=PANEL)
+        win.configure(bg=self._design.panel)
         win.resizable(True, True)
         win.attributes("-topmost", self._topmost)
         if saved_geo:
