@@ -1,5 +1,4 @@
 import ctypes
-import ctypes.wintypes as _wintypes
 import re as _re
 import sys
 import os
@@ -17,23 +16,63 @@ else:
 
 os.makedirs(BASE_DIR, exist_ok=True)
 
-CONFIG_FILE = os.path.join(BASE_DIR, "roulette_settings.json")
+# ─── 起動インスタンス番号の決定 ────────────────────────────────────────
+# Windows Named Mutex でインスタンス番号(1始まり)を決定する。
+# CreateMutex は原子的に動作するため、同時起動でも番号が衝突しない。
+# ハンドルはプロセス終了時に OS が自動解放するため残存状態が残らない。
+#
+# 注意: ctypes.windll 経由で GetLastError() を呼ぶと ctypes 内部処理が
+#       エラー値を上書きする場合がある。use_last_error=True の WinDLL と
+#       ctypes.get_last_error() を使うことで確実にエラー値を取得できる。
+_kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+_kernel32.CreateMutexW.restype = ctypes.c_void_p   # HANDLE はポインタサイズ
+_kernel32.CloseHandle.restype  = ctypes.c_int
+
+
+_INSTANCE_MUTEXES: list = []  # GC回避のためハンドルをモジュール変数で保持
+
+def _acquire_instance_number(max_instances: int = 9) -> int:
+    """起動中のインスタンス番号を1始まりで返す。"""
+    ERROR_ALREADY_EXISTS = 183
+    for n in range(1, max_instances + 1):
+        handle = _kernel32.CreateMutexW(None, False, f"RRoulette_Instance_{n}")
+        err = ctypes.get_last_error()   # use_last_error=True で安全に取得
+        if handle and err != ERROR_ALREADY_EXISTS:
+            _INSTANCE_MUTEXES.append(handle)
+            return n
+        if handle:
+            _kernel32.CloseHandle(handle)
+    return max_instances + 1  # フォールバック（上限超え）
+
+INSTANCE_NUM: int = _acquire_instance_number()
+
+# ─── インスタンスごとのファイル名 ─────────────────────────────────────
+# 1個目は従来ファイル名を維持（既存環境との互換性）
+# 2個目以降はインスタンス番号のサフィックスを付与
+if INSTANCE_NUM == 1:
+    CONFIG_FILE   = os.path.join(BASE_DIR, "roulette_settings.json")
+else:
+    CONFIG_FILE   = os.path.join(BASE_DIR, f"roulette_settings_{INSTANCE_NUM}.json")
 
 # ─── エクスポート保存先 ───────────────────────────────────────────────
 # Python/EXE共通で BASE_DIR（dist/）を使う
 EXPORT_DIR = BASE_DIR
 
 # ─── 自動保存ログファイル ──────────────────────────────────────────────
-AUTO_LOG_FILE = os.path.join(EXPORT_DIR, "roulette_autosave_log.json")
+if INSTANCE_NUM == 1:
+    AUTO_LOG_FILE = os.path.join(EXPORT_DIR, "roulette_autosave_log.json")
+else:
+    AUTO_LOG_FILE = os.path.join(EXPORT_DIR, f"roulette_autosave_log_{INSTANCE_NUM}.json")
 
 # ─── レガシー設定ファイルの1回移行 ────────────────────────────────────
 # Python実行時の旧保存先（RRoulette/roulette_settings.json）が存在し、
 # 新保存先（dist/roulette_settings.json）がまだない場合のみ1回だけ移行する。
 # 新保存先が既に存在する場合はレガシーファイルを無視する。
 # geometry 系キーは環境依存で壊れている可能性があるため移行しない。
+# インスタンス1のみ対象（2個目以降は別ファイルを使用するため移行不要）。
 _LEGACY_GEO_KEYS = ("geometry", "item_list_float_geo", "cfg_panel_float_geo")
 
-if not getattr(sys, "frozen", False):
+if not getattr(sys, "frozen", False) and INSTANCE_NUM == 1:
     _legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "roulette_settings.json")
     if os.path.exists(_legacy) and not os.path.exists(CONFIG_FILE):
         try:
@@ -52,15 +91,23 @@ if not getattr(sys, "frozen", False):
 def _is_on_any_monitor(x, y, w=1, h=1):
     """ウィンドウ中心がいずれかのモニター上にあるか確認"""
     try:
-        MONITOR_DEFAULTTONULL = 0
-        pt = _wintypes.POINT(x + w // 2, y + h // 2)
-        return ctypes.windll.user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != 0
+        cx = x + w // 2
+        cy = y + h // 2
+        _gm = ctypes.windll.user32.GetSystemMetrics
+        sx = _gm(76)   # SM_XVIRTUALSCREEN
+        sy = _gm(77)   # SM_YVIRTUALSCREEN
+        sw = _gm(78)   # SM_CXVIRTUALSCREEN
+        sh = _gm(79)   # SM_CYVIRTUALSCREEN
+        return sx <= cx < sx + sw and sy <= cy < sy + sh
     except Exception:
         return True
 
 
 def _parse_geometry(geo_str):
-    """'WxH+X+Y' を (w, h, x, y) にパース。失敗時は None。"""
+    """'WxH+X+Y' を (w, h, x, y) にパース。失敗時は None。
+    Tkinter on Windows は画面外座標で '+-N' を返す場合があるため '-N' に正規化する。
+    """
+    geo_str = _re.sub(r'\+-', '-', geo_str)
     m = _re.match(r'(\d+)x(\d+)([+-]\d+)([+-]\d+)', geo_str)
     if m:
         return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))

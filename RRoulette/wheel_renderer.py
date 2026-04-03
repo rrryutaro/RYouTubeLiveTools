@@ -33,11 +33,12 @@ class WheelRendererMixin:
         self.R  = r
         # ウィンドウ縮小でサイドバーが溢れないようクランプ
         self._clamp_sidebar_w()
-        # グリップドラッグ中は座標値更新のみ（再描画は _resize_end で一括実施）
+        # グリップドラッグ中: 軽量ホイール描画（セグメント色・外周・ポインター）
         if getattr(self, "_resizing", False):
             if self._resize_redraw_id:
                 self.root.after_cancel(self._resize_redraw_id)
                 self._resize_redraw_id = None
+            self._redraw_simple()
             return
         # 連続 Configure をデバウンス（50ms）
         if self._resize_redraw_id:
@@ -63,12 +64,49 @@ class WheelRendererMixin:
             min_size=6,
             max_size=72,
             donut_r=donut_r,
+            segments=getattr(self, 'current_segments', None),
         )
         self._layout_cache_key = (
             tuple(self.items),
             tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
             self.R, self._text_size_mode, self._text_direction,
             self._donut_hole,
+        )
+
+    # ════════════════════════════════════════════════════════════════
+    #  リサイズ中簡略描画（セグメント色・外周・ポインターのみ、テキスト/ログなし）
+    # ════════════════════════════════════════════════════════════════
+    def _redraw_simple(self):
+        """リサイズドラッグ中の軽量表示。レイアウト再計算なし。"""
+        self.cv.delete("all")
+        cx, cy, r = self.CX, self.CY, self.R
+        segs = getattr(self, 'current_segments', [])
+        if segs:
+            for seg in segs:
+                seg_start = 90 - self.angle + seg.start_angle
+                color = SEGMENT_COLORS[seg.item_index % len(SEGMENT_COLORS)]
+                self.cv.create_arc(
+                    cx - r, cy - r, cx + r, cy + r,
+                    start=seg_start, extent=seg.arc,
+                    fill=color, outline=WHITE, width=2,
+                )
+        self.cv.create_oval(cx - r, cy - r, cx + r, cy + r,
+                            fill="", outline=WHITE, width=4)
+        if getattr(self, "_donut_hole", False):
+            hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else BG
+            self.cv.create_oval(cx - 13, cy - 13, cx + 13, cy + 13,
+                                fill=hole_fill, outline=WHITE, width=3)
+        t = math.radians(self._pointer_angle)
+        st, ct = math.sin(t), math.cos(t)
+        tip_x = cx + st * (r - 12)
+        tip_y = cy - ct * (r - 12)
+        bl_x  = cx + st * (r + 28) - ct * 14
+        bl_y  = cy - ct * (r + 28) - st * 14
+        br_x  = cx + st * (r + 28) + ct * 14
+        br_y  = cy - ct * (r + 28) + st * 14
+        self.cv.create_polygon(
+            bl_x, bl_y, br_x, br_y, tip_x, tip_y,
+            fill=GOLD, outline=WHITE, width=2,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -126,7 +164,7 @@ class WheelRendererMixin:
             for i, seg in enumerate(segs):
                 seg_start = 90 - self.angle + seg.start_angle
                 seg_arc   = seg.arc
-                color = SEGMENT_COLORS[i % len(SEGMENT_COLORS)]
+                color = SEGMENT_COLORS[seg.item_index % len(SEGMENT_COLORS)]
 
                 self.cv.create_arc(
                     cx - r, cy - r, cx + r, cy + r,
@@ -166,17 +204,21 @@ class WheelRendererMixin:
                             tags=("wheel_text", "wheel_all"),
                         )
                 elif _lay.direction == 0:
-                    # 横表示1（内→外）: center_r 位置を基点として接線方向に各行を変位
+                    # 横表示1（内→外）: 行ごとの放射方向中心から接線方向に変位
+                    # LinePlacement.radial_center >= 0 なら行個別の放射中心を使用（外周端基準）
                     # キャンバス座標系(Y下向き)での接線方向単位ベクトル:
                     #   radial = (cos, -sin),  tangential = (sin, cos)
-                    _base_x = cx + _lay.center_r * math.cos(mid_rad)
-                    _base_y = cy - _lay.center_r * math.sin(mid_rad)
-                    _tan_x  = math.sin(mid_rad)
-                    _tan_y  = math.cos(mid_rad)
+                    _cos_m  = math.cos(mid_rad)
+                    _sin_m  = math.sin(mid_rad)
+                    _tan_x  = _sin_m
+                    _tan_y  = _cos_m
                     for _lp in _lay.lines:
+                        _r = _lp.radial_center if _lp.radial_center >= 0 else _lay.center_r
+                        _bx = cx + _r * _cos_m
+                        _by = cy - _r * _sin_m
                         _s  = _lp.stack_offset
-                        _lx = _base_x + _s * _tan_x
-                        _ly = _base_y + _s * _tan_y
+                        _lx = _bx + _s * _tan_x
+                        _ly = _by + _s * _tan_y
                         self.cv.create_text(
                             _lx, _ly, text=_lp.text, fill=WHITE,
                             font=_draw_font, angle=mid_deg,

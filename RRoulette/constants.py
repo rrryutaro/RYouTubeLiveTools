@@ -2,7 +2,7 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.2.0"
+VERSION = "0.4.0"
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20
@@ -24,21 +24,30 @@ GOLD   = "#f8d347"
 TRANSPARENT_KEY = "#000100"   # 透過クロマキー（他のカラーと絶対に重複させないこと）
 
 # ─── サイズ ──────────────────────────────────────────────────────────
-# サイズプロファイル: (ラベル, 幅, 高さ)
+# サイズプロファイル: (ラベル, メインパネル幅, 高さ)
+# main_w ≒ h に揃えてキャンバスを正方形に近づけ、余白を最小化する
 SIZE_PROFILES = [
-    ("S", 530, 580),
-    ("M", 860, 620),
-    ("L", 1060, 740),
+    ("S", 530, 530),
+    ("M", 620, 620),
+    ("L", 740, 740),
 ]
-MIN_W, MIN_H = 350, 300
+MIN_W, MIN_H = 300, 300
 MIN_R = 100          # ルーレット半径の最小値（px）
 SIDEBAR_W = 224      # サイドバー幅 + パディング分
 CFG_PANEL_W = 290    # 設定パネル幅
 
 # ─── レイアウト余白 ──────────────────────────────────────────────────
-MAIN_PANEL_PAD    = 8   # main_frame の padx / pady
-WHEEL_OUTER_MARGIN = 48  # ホイール外周〜キャンバス端の余白（ポインター飛び出し分）
+MAIN_PANEL_PAD    = 4   # main_frame の padx / pady
 POINTER_OVERHANG  = 28   # ポインターのホイール外周からの飛び出し量
+WHEEL_OUTER_MARGIN = POINTER_OVERHANG + 4  # ホイール外周〜キャンバス端の余白（POINTER_OVERHANG + 安全余白 4px）
+
+# ─── 各エリア独立最小サイズ ──────────────────────────────────────────
+# メインパネル（ホイールキャンバス）の最小幅/高さ
+# = 2 * (MIN_R + WHEEL_OUTER_MARGIN) + MAIN_PANEL_PAD * 2 = 272 px
+MAIN_MIN_W = 2 * (MIN_R + WHEEL_OUTER_MARGIN) + MAIN_PANEL_PAD * 2
+MAIN_MIN_H = MAIN_MIN_W
+# 項目リストサイドバーの最小幅: タイトル行（ラベル＋4ボタン）が収まるサイズ
+SIDEBAR_MIN_W = 300
 
 # ─── ポインター ───────────────────────────────────────────────────────
 POINTER_PRESET_NAMES   = ["上", "右", "下", "左", "任意"]

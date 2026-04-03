@@ -15,7 +15,8 @@ import tkinter as tk
 from constants import (
     BG, PANEL, DARK2, WHITE,
     GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-    CFG_PANEL_W, MIN_W, MIN_H, SIZE_PROFILES, TRANSPARENT_KEY,
+    CFG_PANEL_W, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
+    MAIN_MIN_W, MAIN_MIN_H, SIDEBAR_MIN_W,
 )
 from config_utils import _is_on_any_monitor, _parse_geometry
 
@@ -56,24 +57,28 @@ class WindowManagerMixin:
     def _show_context_menu(self, event):
         self._ctx.delete(0, tk.END)
 
-        if self._settings_visible:
-            self._ctx.add_command(label="  項目リストを非表示", command=self._toggle_settings)
-        else:
-            self._ctx.add_command(label="  項目リストを表示", command=self._toggle_settings)
+        # ── A. 表示 ──────────────────────────────────────
+        ctrl_mark = "●" if self._ctrl_box_visible else "  "
+        self._ctx.add_command(
+            label=f"{ctrl_mark} コントロールボックスを表示",
+            command=self._toggle_ctrl_box,
+        )
 
-        if self._item_list_float:
-            self._ctx.add_command(
-                label="● 項目リストを独立ウィンドウにする",
-                command=self._toggle_item_list_float,
-            )
-        else:
-            self._ctx.add_command(
-                label="  項目リストを独立ウィンドウにする",
-                command=self._toggle_item_list_float,
-            )
+        grip_mark = "●" if self._grip_visible else "  "
+        self._ctx.add_command(
+            label=f"{grip_mark} リサイズグリップを表示",
+            command=self._toggle_grip,
+        )
+
+        log_mark = "●" if self._log_overlay_show else "  "
+        self._ctx.add_command(
+            label=f"{log_mark} ログを表示",
+            command=self._toggle_log_overlay,
+        )
 
         self._ctx.add_separator()
 
+        # ── B. サイズ ─────────────────────────────────────
         for i, (name, w, h) in enumerate(SIZE_PROFILES):
             marker = "●" if i == self._profile_idx else "  "
             self._ctx.add_command(
@@ -83,54 +88,7 @@ class WindowManagerMixin:
 
         self._ctx.add_separator()
 
-        topmost_mark = "●" if self._topmost else "  "
-        self._ctx.add_command(
-            label=f"{topmost_mark} 最前面に表示",
-            command=self._toggle_topmost,
-        )
-
-        trans_mark = "●" if self._transparent else "  "
-        self._ctx.add_command(
-            label=f"{trans_mark} 背景を透過",
-            command=self._toggle_transparent,
-        )
-
-        grip_mark = "●" if self._grip_visible else "  "
-        self._ctx.add_command(
-            label=f"{grip_mark} リサイズグリップを表示",
-            command=self._toggle_grip,
-        )
-
-        self._ctx.add_separator()
-        cfg_label = "  設定パネルを非表示" if self._cfg_panel_visible else "  設定を表示"
-        self._ctx.add_command(label=cfg_label, command=self._toggle_cfg_panel)
-
-        if self._cfg_panel_float:
-            self._ctx.add_command(
-                label="● 設定を独立ウィンドウにする",
-                command=self._toggle_cfg_panel_float,
-            )
-        else:
-            self._ctx.add_command(
-                label="  設定を独立ウィンドウにする",
-                command=self._toggle_cfg_panel_float,
-            )
-
-        self._ctx.add_separator()
-        self._ctx.add_command(
-            label="  ログ出力（結果のみ）",
-            command=lambda: self._do_export_log("simple"),
-        )
-        self._ctx.add_command(
-            label="  ログ出力（グループ・項目付き）",
-            command=lambda: self._do_export_log("detailed"),
-        )
-        self._ctx.add_command(
-            label="  ログ削除",
-            command=self._clear_log,
-        )
-        self._ctx.add_separator()
-        self._ctx.add_command(label="  最小化", command=self._minimize)
+        # ── C. 終了 ───────────────────────────────────────
         self._ctx.add_command(label="  終了", command=self._on_close)
 
         x, y = event.x_root, event.y_root
@@ -191,24 +149,46 @@ class WindowManagerMixin:
             self._resizing = False
             return
         self._resizing = True
+        self._resize_frame_pending = False
+        lb = getattr(self, '_lb_canvas', None)
+        if lb and lb.winfo_exists():
+            lb._resize_pause = True
         self._resize_start_x = event.x_root
         self._resize_start_y = event.y_root
         self._resize_start_w = self.root.winfo_width()
         self._resize_start_h = self.root.winfo_height()
+        self._resize_pending_w = self._resize_start_w
+        self._resize_pending_h = self._resize_start_h
 
     def _resize_move(self, event):
         if not getattr(self, "_resizing", False):
             return
         dw = event.x_root - self._resize_start_x
         dh = event.y_root - self._resize_start_y
-        new_w = max(MIN_W, self._resize_start_w + dw)
-        new_h = max(MIN_H, self._resize_start_h + dh)
-        self.root.geometry(f"{new_w}x{new_h}")
+        self._resize_pending_w = max(self._root_min_w(), self._resize_start_w + dw)
+        self._resize_pending_h = max(MAIN_MIN_H, self._resize_start_h + dh)
+        # geometry 適用を ~30fps にスロットル（マウスイベントが密集しても重くしない）
+        if not self._resize_frame_pending:
+            self._resize_frame_pending = True
+            self.root.after(33, self._apply_resize_frame)
+
+    def _apply_resize_frame(self):
+        """スロットルされた geometry 適用。"""
+        self._resize_frame_pending = False
+        if getattr(self, "_resizing", False):
+            self.root.geometry(f"{self._resize_pending_w}x{self._resize_pending_h}")
 
     def _resize_end(self, event):
         if not getattr(self, "_resizing", False):
             return
         self._resizing = False
+        self._resize_frame_pending = False
+        lb = getattr(self, '_lb_canvas', None)
+        if lb and lb.winfo_exists():
+            lb._resize_pause = False
+        # ドラッグ中に保留されたサイズが残っていれば確定適用
+        if hasattr(self, "_resize_pending_w"):
+            self.root.geometry(f"{self._resize_pending_w}x{self._resize_pending_h}")
         self._save_config()
         self._redraw()
 
@@ -228,7 +208,7 @@ class WindowManagerMixin:
         if not getattr(self, "_sashing", False):
             return
         delta = event.x_root - self._sash_start_x
-        new_w = max(120, self._sash_start_w + delta)
+        new_w = max(SIDEBAR_MIN_W, self._sash_start_w + delta)
         self._sidebar_w = new_w
         # ドラッグ中は widget 幅のみ更新（root.geometry は ButtonRelease 時に確定）
         self.sidebar.configure(width=new_w)
@@ -240,26 +220,38 @@ class WindowManagerMixin:
         # メインパネルサイズを維持するため root 幅を確定適用
         diff = self._sidebar_w - self._sash_start_w
         cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, self._sash_start_root_w + diff)}x{cur_h}")
+        self.root.geometry(f"{max(self._root_min_w(), self._sash_start_root_w + diff)}x{cur_h}")
         self._save_config()
         self._redraw()
 
     def _main_to_root_extra_w(self) -> int:
         """メインパネル幅 → ウィンドウ全体幅の差分（右パネル + main_frame padding）"""
-        extra = 16  # main_frame padx=8 × 2
+        extra = MAIN_PANEL_PAD * 2  # main_frame padx 左右合計
         if not self._item_list_float and self._settings_visible:
             extra += self._sidebar_w + 4 + 8      # sash(4) + padx right(8)
         if not self._cfg_panel_float and self._cfg_panel_visible:
             extra += self._cfg_panel_w + 4 + 8    # sash(4) + padx right(8)
         return extra
 
+    def _root_min_w(self) -> int:
+        """表示中のパネル構成に基づくルートウィンドウの最小幅。
+        メインパネル最小幅 + 表示中の右パネル幅の合計を返す。"""
+        w = MAIN_MIN_W
+        if not self._item_list_float and self._settings_visible:
+            w += self._sidebar_w + 4 + 8   # sash(4) + padx右(8)
+        if not self._cfg_panel_float and self._cfg_panel_visible:
+            w += self._cfg_panel_w + 4 + 8
+        return w
+
     def _sidebar_max_w(self) -> int:
-        """現在のウィンドウ幅に基づくサイドバーの最大幅を返す（_clamp_sidebar_w 用）。"""
+        """現在のウィンドウ幅に基づくサイドバーの最大幅を返す（_clamp_sidebar_w 用）。
+        root_w = canvas_w + sidebar_w + 20 の関係から
+        sidebar_max = root_w - cfg_extra - 12 - MAIN_MIN_W"""
         win_w = self.root.winfo_width()
         cfg_extra = (self._cfg_panel_w + 4 + 8) if (
             self._cfg_panel_visible and not self._cfg_panel_float
         ) else 0
-        return max(120, win_w - cfg_extra - 4 - 8 - 16 - 200)
+        return max(SIDEBAR_MIN_W, win_w - cfg_extra - 12 - MAIN_MIN_W)
 
     # ════════════════════════════════════════════════════════════════
     #  設定パネル幅リサイズ
@@ -289,7 +281,7 @@ class WindowManagerMixin:
         # メインパネルサイズを維持するため root 幅を確定適用
         diff = self._cfg_panel_w - self._cfg_resize_start_w
         cur_h = self.root.winfo_height()
-        self.root.geometry(f"{max(MIN_W, self._cfg_resize_start_root_w + diff)}x{cur_h}")
+        self.root.geometry(f"{max(self._root_min_w(), self._cfg_resize_start_root_w + diff)}x{cur_h}")
         self._save_config()
         self._redraw()
 
@@ -302,7 +294,7 @@ class WindowManagerMixin:
             return
         max_w = self._sidebar_max_w()
         if self._sidebar_w > max_w:
-            self._sidebar_w = max(120, max_w)
+            self._sidebar_w = max(SIDEBAR_MIN_W, max_w)
             self.sidebar.configure(width=self._sidebar_w)
 
     # ════════════════════════════════════════════════════════════════
@@ -348,7 +340,8 @@ class WindowManagerMixin:
         total = self._sidebar_w + 4 + 8
         if self._settings_visible:
             self._settings_visible = False
-            self.root.geometry(f"{max(MIN_W, w - total)}x{h}")
+            # サイドバー非表示後: min は MAIN_MIN_W（+ 他のパネル分）
+            self.root.geometry(f"{max(self._root_min_w(), w - total)}x{h}")
         else:
             self._settings_visible = True
             self.root.geometry(f"{w + total}x{h}")
@@ -364,6 +357,8 @@ class WindowManagerMixin:
         for win in (self._sidebar_toplevel, self._cfg_panel_toplevel):
             if win and win.winfo_exists():
                 win.attributes("-topmost", self._topmost)
+        if hasattr(self, "_cfg_topmost_var"):
+            self._cfg_topmost_var.set(self._topmost)
         self._save_config()
 
     # ════════════════════════════════════════════════════════════════
@@ -372,6 +367,8 @@ class WindowManagerMixin:
     def _toggle_transparent(self):
         self._transparent = not self._transparent
         self._apply_transparency()
+        if hasattr(self, "_cfg_transparent_var"):
+            self._cfg_transparent_var.set(self._transparent)
         self._save_config()
 
     def _apply_transparency(self):
@@ -403,7 +400,51 @@ class WindowManagerMixin:
             self._resize_grip.place(relx=1.0, rely=1.0, anchor="se")
         else:
             self._resize_grip.place_forget()
+        if hasattr(self, "_cfg_grip_var"):
+            self._cfg_grip_var.set(self._grip_visible)
         self._save_config()
+
+    # ════════════════════════════════════════════════════════════════
+    #  コントロールボックス 表示/非表示
+    # ════════════════════════════════════════════════════════════════
+    def _toggle_ctrl_box(self):
+        self._ctrl_box_visible = not self._ctrl_box_visible
+        if hasattr(self, "_ctrl_box"):
+            if self._ctrl_box_visible:
+                self._ctrl_box.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+            else:
+                self._ctrl_box.place_forget()
+        if hasattr(self, "_cfg_ctrl_box_var"):
+            self._cfg_ctrl_box_var.set(self._ctrl_box_visible)
+        self._save_config()
+
+    # ════════════════════════════════════════════════════════════════
+    #  ログ表示トグル
+    # ════════════════════════════════════════════════════════════════
+    def _toggle_log_overlay(self):
+        self._log_overlay_show = not self._log_overlay_show
+        if hasattr(self, "_cfg_overlay_var"):
+            self._cfg_overlay_var.set(self._log_overlay_show)
+        self._save_config()
+        self._redraw()
+
+    # ════════════════════════════════════════════════════════════════
+    #  最大化 / 元に戻す
+    # ════════════════════════════════════════════════════════════════
+    def _maximize_restore(self):
+        if getattr(self, "_maximized", False):
+            if hasattr(self, "_pre_maximize_geo"):
+                self.root.geometry(self._pre_maximize_geo)
+            self._maximized = False
+        else:
+            self._pre_maximize_geo = self.root.geometry()
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            self.root.geometry(f"{sw}x{sh}+0+0")
+            self._maximized = True
+        if hasattr(self, "_ctrl_max_btn"):
+            self._ctrl_max_btn.config(text="❐" if self._maximized else "□")
+        self._redraw()
 
     # ════════════════════════════════════════════════════════════════
     #  浮動ウィンドウ管理
@@ -429,6 +470,7 @@ class WindowManagerMixin:
 
     def _toggle_item_list_float(self):
         """項目リストの埋め込み／浮動ウィンドウを切り替える。"""
+        before_extra = self._main_to_root_extra_w()
         if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
             self._item_list_float_geo = self._sidebar_toplevel.geometry()
             self._sidebar_toplevel.destroy()
@@ -440,10 +482,17 @@ class WindowManagerMixin:
         self._item_list_float = not self._item_list_float
         self._build_sidebar()
         self._apply_right_panel_layout()
+        after_extra = self._main_to_root_extra_w()
+        diff = after_extra - before_extra
+        if diff != 0:
+            cur_w = self.root.winfo_width()
+            cur_h = self.root.winfo_height()
+            self.root.geometry(f"{max(self._root_min_w(), cur_w + diff)}x{cur_h}")
         self._save_config()
 
     def _toggle_cfg_panel_float(self):
         """設定パネルの埋め込み／浮動ウィンドウを切り替える。"""
+        before_extra = self._main_to_root_extra_w()
         if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
             self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
             self._cfg_panel_toplevel.destroy()
@@ -455,6 +504,12 @@ class WindowManagerMixin:
         self._cfg_panel_float = not self._cfg_panel_float
         self._build_cfg_panel()
         self._apply_right_panel_layout()
+        after_extra = self._main_to_root_extra_w()
+        diff = after_extra - before_extra
+        if diff != 0:
+            cur_w = self.root.winfo_width()
+            cur_h = self.root.winfo_height()
+            self.root.geometry(f"{max(self._root_min_w(), cur_w + diff)}x{cur_h}")
         self._save_config()
 
     # ════════════════════════════════════════════════════════════════

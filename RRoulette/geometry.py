@@ -43,6 +43,13 @@ class SafeSector:
         """安全領域の放射方向中心。"""
         return (self.safe_inner_radius + self.safe_outer_radius) / 2
 
+    @property
+    def outer_bias_r(self) -> float:
+        """外周寄せ用の代表半径（安全領域の内側から 70% の位置）。
+        center_r より外周側に寄せることで、テキストを外周寄りに配置できる。
+        """
+        return self.safe_inner_radius + self.safe_radial_height * 0.70
+
     def tangential_chord_at(self, r: float) -> float:
         """半径 r での接線方向の弦長（行を積める総高さの目安）。"""
         return 2.0 * r * math.sin(self.half_extent_rad)

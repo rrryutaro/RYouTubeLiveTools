@@ -17,10 +17,10 @@ import tkinter.ttk as ttk
 import json
 
 from sound_manager import SoundManager
-from config_utils import BASE_DIR, CONFIG_FILE, _is_on_any_monitor, _parse_geometry
+from config_utils import BASE_DIR, CONFIG_FILE, INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 from constants import (
     BG, PANEL, ACCENT, DARK2, WHITE,
-    SIZE_PROFILES, MIN_W, MIN_H,
+    SIZE_PROFILES, MIN_W, MIN_H, MAIN_MIN_W, MAIN_MIN_H,
     SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
 )
@@ -30,6 +30,7 @@ from cfg_panel import CfgPanelMixin, _SETTINGS_DEFAULTS
 from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
+from tooltip_utils import _SimpleTooltip
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -97,7 +98,16 @@ def _apply_split(entries_with_probs):
 def _standard_order(raw_segs):
     """
     raw_segs: list of (text, item_idx, arc)
-    分割された項目を等間隔配置し、残りを順番に埋めた並び順を返す。
+    分割された項目を均等分散配置し、残りを順番に埋めた並び順を返す。
+
+    単一 split — Bresenham 法:
+      F 個のフィラーを K 個のギャップへ floor((k+1)*F/K) - floor(k*F/K) で均等割りし、
+      split 片を最大限均等に散らす。1-step lookahead より大域的に最適。
+
+    複数 split — 位相ずらし greedy:
+      複数 split 項目がある場合、各項目に total_arc 上での位相オフセットを与え
+      目標中心角が重ならないよう分散させる。
+      タイブレーク時は filler を優先して split 片の局所集中を防ぐ。
     """
     T = len(raw_segs)
     if T == 0:
@@ -117,33 +127,68 @@ def _standard_order(raw_segs):
     if not split_idxs:
         return list(raw_segs)
 
-    result = [None] * T
-    placed = set()
+    fillers = [by_idx[i][0] for i in nonsplit_idxs]
 
-    for sidx in split_idxs:
-        subs = by_idx[sidx]
-        K    = len(subs)
-        step = T / K
-        positions = []
-        for j in range(K):
-            pos = int(j * step + 0.5)
-            pos = max(0, min(T - 1, pos))
-            tries = 0
-            while pos in placed and tries < T:
-                pos = (pos + 1) % T
-                tries += 1
-            placed.add(pos)
-            positions.append(pos)
-        sorted_pos = sorted(positions)
-        for p, sub in zip(sorted_pos, subs):
-            result[p] = sub
+    # ── 単一 split: Bresenham 法で最適配置 ──────────────────────────
+    if len(split_idxs) == 1:
+        subs = by_idx[split_idxs[0]]
+        K, F = len(subs), len(fillers)
+        result = []
+        fi = 0
+        for k in range(K):
+            n_fill = (k + 1) * F // K - k * F // K
+            result.extend(fillers[fi:fi + n_fill])
+            fi += n_fill
+            result.append(subs[k])
+        return result
 
-    ns_iter = iter(by_idx[i][0] for i in nonsplit_idxs)
-    for i in range(T):
-        if result[i] is None:
-            result[i] = next(ns_iter, None)
+    # ── 複数 split: 位相ずらし greedy（タイブレーク filler 優先）──────
+    total_arc         = sum(a for _, _, a in raw_segs)
+    total_split_count = sum(len(by_idx[i]) for i in split_idxs)
 
-    return [r for r in result if r is not None]
+    split_queue = []  # (target_center_angle, sub_seg)
+    for i_idx, sidx in enumerate(split_idxs):
+        subs  = by_idx[sidx]
+        K     = len(subs)
+        phase = i_idx * total_arc / total_split_count
+        for j, sub in enumerate(subs):
+            target = (phase + j * total_arc / K) % total_arc
+            split_queue.append((target, sub))
+    split_queue.sort(key=lambda x: x[0])
+
+    result = []
+    cum    = 0.0
+    fi     = 0
+    si     = 0
+
+    while si < len(split_queue) or fi < len(fillers):
+        if si >= len(split_queue):
+            result.extend(fillers[fi:])
+            break
+
+        target, split_seg = split_queue[si]
+        center_now        = cum + split_seg[2] / 2.0
+
+        if fi >= len(fillers):
+            result.append(split_seg)
+            cum += split_seg[2]
+            si  += 1
+        elif center_now >= target:
+            result.append(split_seg)
+            cum += split_seg[2]
+            si  += 1
+        else:
+            center_after = cum + fillers[fi][2] + split_seg[2] / 2.0
+            if abs(center_now - target) < abs(center_after - target):
+                result.append(split_seg)
+                cum += split_seg[2]
+                si  += 1
+            else:
+                result.append(fillers[fi])
+                cum += fillers[fi][2]
+                fi  += 1
+
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -161,7 +206,8 @@ class RouletteApp(
     def __init__(self, root: tk.Tk):
         self.root = root
 
-        root.title("RRoulette")
+        _title = "RRoulette" if INSTANCE_NUM == 1 else f"RRoulette #{INSTANCE_NUM}"
+        root.title(_title)
         root.overrideredirect(True)
         root.configure(bg=BG)
 
@@ -201,6 +247,9 @@ class RouletteApp(
         self._resize_start_y = 0
         self._resize_start_w = 0
         self._resize_start_h = 0
+        self._resize_frame_pending = False
+        self._resize_pending_w = 0
+        self._resize_pending_h = 0
 
         # 浮動ウィンドウ参照（_build_sidebar / _build_cfg_panel で設定される）
         self._sidebar_toplevel    = None
@@ -222,7 +271,7 @@ class RouletteApp(
         self._win_custom_file  = cfg.get("win_custom_file", "")
         self._text_direction = cfg.get("text_direction", 0)
         self._text_size_mode = cfg.get("text_size_mode", _SETTINGS_DEFAULTS["text_size_mode"])
-        self._sidebar_w   = cfg.get("sidebar_w", 216)
+        self._sidebar_w   = cfg.get("sidebar_w", 300)
         self._cfg_panel_w = cfg.get("cfg_panel_w", CFG_PANEL_W)
         self._cfg_panel_visible   = cfg.get("cfg_panel_visible", False)
         self._item_list_float     = cfg.get("item_list_float", False)
@@ -259,6 +308,10 @@ class RouletteApp(
             self._current_pattern = next(iter(self._item_patterns))
         self._item_entries: list[dict] = list(self._item_patterns[self._current_pattern])
         self._auto_shuffle: bool = cfg.get("auto_shuffle", False)
+        self._arrangement_direction: int = cfg.get("arrangement_direction", 0)
+        self._spin_direction: int = cfg.get("spin_direction", 0)
+        self._confirm_reset: bool = cfg.get("confirm_reset", True)
+        self._detail_collapsed: bool = True  # 起動時は詳細設定カードを折りたたむ
         # self.items と self.current_segments は _rebuild_segments() で設定
         self.current_segments: list = []
         self.items: list[str] = []
@@ -271,6 +324,8 @@ class RouletteApp(
         self._layout_cache     = []
         self._layout_cache_key = None
         self._grip_visible     = cfg.get("grip_visible", True)
+        self._ctrl_box_visible = cfg.get("ctrl_box_visible", True)
+        self._maximized        = False
         root.attributes("-topmost", self._topmost)
 
         self._build_ui()
@@ -294,7 +349,7 @@ class RouletteApp(
                 parsed = _parse_geometry(saved_geo)
                 if parsed:
                     w, h, x, y = parsed
-                    if w < MIN_W or h < MIN_H:
+                    if w < MAIN_MIN_W or h < MAIN_MIN_H:
                         # サイズが最小値未満の壊れた geometry は無視
                         self._apply_profile(self._profile_idx)
                     elif _is_on_any_monitor(x, y, w, h):
@@ -307,6 +362,11 @@ class RouletteApp(
                 self._apply_profile(self._profile_idx)
         else:
             self._apply_profile(self._profile_idx)
+
+        # 適用した geometry をウィジェット側に伝播させ、
+        # サイドバー幅が新しいウィンドウ幅に収まるよう整合する。
+        root.update_idletasks()
+        self._clamp_sidebar_w()
 
         self._rebuild_segments()
         self._redraw()
@@ -338,6 +398,18 @@ class RouletteApp(
 
         raw_segs = _apply_split(entries_with_probs)
         ordered  = _standard_order(raw_segs)
+
+        if ordered:
+            first_item_idx = min(idx for _, idx, _ in ordered)
+            pivot = next(
+                (i for i, (_, idx, _) in enumerate(ordered) if idx == first_item_idx),
+                0,
+            )
+            if pivot > 0:
+                ordered = ordered[pivot:] + ordered[:pivot]
+
+        if getattr(self, '_arrangement_direction', 0) == 0:
+            ordered = list(reversed(ordered))
 
         segments = []
         angle = 0.0
@@ -406,10 +478,24 @@ class RouletteApp(
         )
         _btn_exp_items = tk.Button(_title_row, text="↑", command=self._export_item_patterns, **_BTN)
         _btn_exp_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_exp_items, "項目リストをエクスポート", self.root)
         _btn_imp_items = tk.Button(_title_row, text="↓", command=self._import_item_patterns, **_BTN)
         _btn_imp_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_imp_items, "項目リストをインポート", self.root)
         _btn_rst_items = tk.Button(_title_row, text="↺", command=self._reset_item_patterns, **_BTN)
         _btn_rst_items.pack(side=tk.RIGHT, padx=(2, 0))
+        _SimpleTooltip(_btn_rst_items, "項目リストをリセット", self.root)
+        # 独立表示 / メインに戻す
+        if self._item_list_float:
+            _float_label = "メインに戻す"
+            _float_tip   = "メインパネルに組み込む"
+        else:
+            _float_label = "独立表示"
+            _float_tip   = "独立ウィンドウにする"
+        _btn_float = tk.Button(_title_row, text=_float_label,
+                               command=self._toggle_item_list_float, **_BTN)
+        _btn_float.pack(side=tk.RIGHT, padx=(2, 4))
+        _SimpleTooltip(_btn_float, _float_tip, self.root)
         self._item_list_title_btns = [_btn_exp_items, _btn_imp_items, _btn_rst_items]
 
         pat_frm = tk.Frame(self.sidebar, bg=PANEL)
@@ -426,7 +512,7 @@ class RouletteApp(
         self._pattern_cb.bind("<Escape>",              self._on_cb_escape)
 
         btn_row = tk.Frame(self.sidebar, bg=PANEL)
-        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(5, 10))
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 4))
         self._edit_btn = tk.Button(
             btn_row, text="編集", command=self._enter_edit_mode,
             bg=DARK2, fg=WHITE, font=("Meiryo", 9),
@@ -445,7 +531,7 @@ class RouletteApp(
             font=("Meiryo", 8), wraplength=self._sidebar_w - 20,
             justify=tk.LEFT, anchor="w",
         )
-        self._edit_warn_lbl.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
+        # 警告がある時だけ pack する（_show_edit_warning / _hide_edit_warning で制御）
 
         self._edit_mode = False
         self._lb_frm = tk.Frame(self.sidebar, bg=PANEL)
@@ -467,6 +553,40 @@ class RouletteApp(
 
         self.sidebar.bind("<Button-3>", self._show_context_menu)
 
+    def _build_ctrl_box(self):
+        """メインパネル右上のコントロールボックスを構築する。"""
+        self._ctrl_box = tk.Frame(self.main_frame, bg=DARK2)
+
+        _BTN = dict(
+            bg=DARK2, fg=WHITE, font=("Meiryo", 11),
+            relief=tk.FLAT, cursor="hand2", padx=5, pady=2, bd=0,
+        )
+
+        b_list = tk.Button(self._ctrl_box, text="≡", command=self._toggle_settings, **_BTN)
+        b_list.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_list, "項目リスト 表示/非表示", self.root)
+
+        b_cfg = tk.Button(self._ctrl_box, text="⚙", command=self._toggle_cfg_panel, **_BTN)
+        b_cfg.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_cfg, "設定 表示/非表示", self.root)
+
+        b_min = tk.Button(self._ctrl_box, text="━", command=self._minimize, **_BTN)
+        b_min.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_min, "最小化", self.root)
+
+        self._ctrl_max_btn = tk.Button(
+            self._ctrl_box, text="□", command=self._maximize_restore, **_BTN
+        )
+        self._ctrl_max_btn.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(self._ctrl_max_btn, "最大化 / 元に戻す", self.root)
+
+        b_close = tk.Button(self._ctrl_box, text="✕", command=self._on_close, **_BTN)
+        b_close.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(b_close, "閉じる", self.root)
+
+        if self._ctrl_box_visible:
+            self._ctrl_box.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+
     def _build_ui(self):
         self.content = tk.Frame(self.root, bg=BG)
         self.content.pack(fill=tk.BOTH, expand=True)
@@ -483,6 +603,8 @@ class RouletteApp(
 
         self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
+
+        self._build_ctrl_box()
 
         self.cv.bind("<Configure>", self._on_canvas_resize)
 
@@ -524,6 +646,9 @@ class RouletteApp(
             "item_patterns": self._item_patterns,
             "current_pattern": self._current_pattern,
             "auto_shuffle": self._auto_shuffle,
+            "arrangement_direction": self._arrangement_direction,
+            "spin_direction": self._spin_direction,
+            "confirm_reset": self._confirm_reset,
             "pointer_preset": self._pointer_preset,
             "pointer_angle":  self._pointer_angle,
             "log_timestamp":     self._log_timestamp,
@@ -533,6 +658,7 @@ class RouletteApp(
             "transparent":       self._transparent,
             "donut_hole":        self._donut_hole,
             "grip_visible":      self._grip_visible,
+            "ctrl_box_visible":  self._ctrl_box_visible,
             "item_list_float":   self._item_list_float,
             "cfg_panel_float":   self._cfg_panel_float,
             "item_list_float_geo": (
@@ -573,7 +699,12 @@ class RouletteApp(
 # ════════════════════════════════════════════════════════════════════
 def main():
     root = tk.Tk()
+    # 起動時フラッシュ防止・geometry 確実適用のため、初期化中は非表示にする。
+    # overrideredirect(True) ウィンドウは mainloop 前に mapped されると
+    # OS が geometry を上書きする場合があるため、withdraw → init → deiconify の順にする。
+    root.withdraw()
     RouletteApp(root)
+    root.deiconify()
     root.mainloop()
 
 
