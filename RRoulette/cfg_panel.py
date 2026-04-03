@@ -15,6 +15,7 @@ import sys
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as _filedialog
+import tkinter.font as _tkfont
 import tkinter.messagebox as _msgbox
 
 from config_utils import EXPORT_DIR
@@ -355,14 +356,19 @@ class CfgPanelMixin:
         tk.Label(g_txt, text="フォントファミリー", bg=self._design.panel,
                  fg=self._design.text, font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(2, 0))
         _wf_cfg = self._design.fonts.wheel
-        _cfg_font_fam_var = tk.StringVar(value=_wf_cfg.family)
-        _cfg_font_fam_ent = tk.Entry(
+        # システムで使用可能なフォント一覧（重複除去・ソート・空文字除去）
+        _all_fonts = sorted(set(f for f in _tkfont.families(root=self.root) if f))
+        _cur_family = _wf_cfg.family
+        # 保存済みの family が一覧にない場合は先頭に追加して見えるようにする
+        if _cur_family not in _all_fonts:
+            _all_fonts = [_cur_family] + _all_fonts
+        _cfg_font_fam_var = tk.StringVar(value=_cur_family)
+        _cfg_font_fam_cb = ttk.Combobox(
             g_txt, textvariable=_cfg_font_fam_var,
+            values=_all_fonts, state="readonly",
             font=("Meiryo", 9),
-            bg=self._design.separator, fg=self._design.text,
-            insertbackground=self._design.text, relief=tk.FLAT,
         )
-        _cfg_font_fam_ent.pack(fill=tk.X, padx=12, pady=(0, 4))
+        _cfg_font_fam_cb.pack(fill=tk.X, padx=12, pady=(0, 4))
 
         def _on_font_family(e=None):
             v = _cfg_font_fam_var.get().strip()
@@ -371,8 +377,7 @@ class CfgPanelMixin:
                 self._save_config()
                 self._redraw()
 
-        _cfg_font_fam_ent.bind("<Return>", _on_font_family)
-        _cfg_font_fam_ent.bind("<FocusOut>", _on_font_family)
+        _cfg_font_fam_cb.bind("<<ComboboxSelected>>", _on_font_family)
 
         def _make_font_size_row(parent, label, getter, setter):
             """フォントサイズ設定行（ラベル＋Spinbox）を作成する。"""
