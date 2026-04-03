@@ -19,7 +19,7 @@ import json
 from sound_manager import SoundManager
 from config_utils import BASE_DIR, CONFIG_FILE, INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 from constants import (
-    BG, PANEL, ACCENT, DARK2, WHITE,
+    BG,
     SIZE_PROFILES, MIN_W, MIN_H, MAIN_MIN_W, MAIN_MIN_H,
     SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
@@ -31,6 +31,7 @@ from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
 from tooltip_utils import _SimpleTooltip
+from design_settings import DesignSettings
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -326,6 +327,8 @@ class RouletteApp(
         self._grip_visible     = cfg.get("grip_visible", True)
         self._ctrl_box_visible = cfg.get("ctrl_box_visible", True)
         self._maximized        = False
+        # デザイン設定（config["design"] キー配下に保存）
+        self._design = DesignSettings.from_dict(cfg.get("design", {}))
         root.attributes("-topmost", self._topmost)
 
         self._build_ui()
@@ -456,24 +459,24 @@ class RouletteApp(
                 "WM_DELETE_WINDOW", self._toggle_item_list_float
             )
             parent = self._sidebar_toplevel
-            self.sidebar = tk.Frame(parent, bg=PANEL)
+            self.sidebar = tk.Frame(parent, bg=self._design.panel)
             self.sidebar.pack(fill=tk.BOTH, expand=True)
             self._sash = None
             if not self._settings_visible:
                 self._sidebar_toplevel.withdraw()
         else:
             self._sidebar_toplevel = None
-            self.sidebar = tk.Frame(self.content, bg=PANEL, width=self._sidebar_w)
+            self.sidebar = tk.Frame(self.content, bg=self._design.panel, width=self._sidebar_w)
             self.sidebar.pack_propagate(False)
-            self._sash = tk.Frame(self.content, bg=DARK2, width=4)
+            self._sash = tk.Frame(self.content, bg=self._design.separator, width=4)
             self._sash.pack_propagate(False)
 
-        _title_row = tk.Frame(self.sidebar, bg=PANEL)
+        _title_row = tk.Frame(self.sidebar, bg=self._design.panel)
         _title_row.pack(fill=tk.X, padx=8, pady=(10, 4))
-        tk.Label(_title_row, text="項目リスト", bg=PANEL, fg=WHITE,
+        tk.Label(_title_row, text="項目リスト", bg=self._design.panel, fg=self._design.text,
                  font=("Meiryo", 11, "bold")).pack(side=tk.LEFT, padx=(4, 0))
         _BTN = dict(
-            bg=DARK2, fg=WHITE, font=("Meiryo", 10),
+            bg=self._design.separator, fg=self._design.text, font=("Meiryo", 10),
             relief=tk.FLAT, cursor="hand2", padx=5, pady=1, bd=0,
         )
         _btn_exp_items = tk.Button(_title_row, text="↑", command=self._export_item_patterns, **_BTN)
@@ -498,7 +501,7 @@ class RouletteApp(
         _SimpleTooltip(_btn_float, _float_tip, self.root)
         self._item_list_title_btns = [_btn_exp_items, _btn_imp_items, _btn_rst_items]
 
-        pat_frm = tk.Frame(self.sidebar, bg=PANEL)
+        pat_frm = tk.Frame(self.sidebar, bg=self._design.panel)
         pat_frm.pack(fill=tk.X, padx=6, pady=(0, 4))
         self._pattern_var = tk.StringVar(value=self._current_pattern)
         self._pattern_cb = ttk.Combobox(
@@ -511,30 +514,30 @@ class RouletteApp(
         self._pattern_cb.bind("<Return>",              self._on_cb_return)
         self._pattern_cb.bind("<Escape>",              self._on_cb_escape)
 
-        btn_row = tk.Frame(self.sidebar, bg=PANEL)
+        btn_row = tk.Frame(self.sidebar, bg=self._design.panel)
         btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 4))
         self._edit_btn = tk.Button(
             btn_row, text="編集", command=self._enter_edit_mode,
-            bg=DARK2, fg=WHITE, font=("Meiryo", 9),
+            bg=self._design.separator, fg=self._design.text, font=("Meiryo", 9),
             relief=tk.FLAT, cursor="hand2",
         )
         self._edit_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
         self._save_btn = tk.Button(
             btn_row, text="保存", command=self._save_edit,
-            bg=ACCENT, fg=WHITE, font=("Meiryo", 9),
+            bg=self._design.accent, fg=self._design.text, font=("Meiryo", 9),
             relief=tk.FLAT, cursor="hand2", state=tk.DISABLED,
         )
         self._save_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         self._edit_warn_lbl = tk.Label(
-            self.sidebar, text="", bg=PANEL, fg="#ff6b6b",
+            self.sidebar, text="", bg=self._design.panel, fg="#ff6b6b",
             font=("Meiryo", 8), wraplength=self._sidebar_w - 20,
             justify=tk.LEFT, anchor="w",
         )
         # 警告がある時だけ pack する（_show_edit_warning / _hide_edit_warning で制御）
 
         self._edit_mode = False
-        self._lb_frm = tk.Frame(self.sidebar, bg=PANEL)
+        self._lb_frm = tk.Frame(self.sidebar, bg=self._design.panel)
         self._lb_frm.pack(fill=tk.BOTH, expand=True, padx=6)
         self._build_listbox()
 
@@ -542,7 +545,7 @@ class RouletteApp(
         # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
         if not self._item_list_float:
             _sg = tk.Canvas(self.sidebar, width=16, height=16,
-                            bg=PANEL, highlightthickness=0, cursor="sb_h_double_arrow")
+                            bg=self._design.panel, highlightthickness=0, cursor="sb_h_double_arrow")
             for _i in range(3):
                 _x = 4 + _i * 4
                 _sg.create_line(_x, 3, _x, 13, fill="#555577", width=1)
@@ -555,10 +558,10 @@ class RouletteApp(
 
     def _build_ctrl_box(self):
         """メインパネル右上のコントロールボックスを構築する。"""
-        self._ctrl_box = tk.Frame(self.main_frame, bg=DARK2)
+        self._ctrl_box = tk.Frame(self.main_frame, bg=self._design.separator)
 
         _BTN = dict(
-            bg=DARK2, fg=WHITE, font=("Meiryo", 11),
+            bg=self._design.separator, fg=self._design.text, font=("Meiryo", 11),
             relief=tk.FLAT, cursor="hand2", padx=5, pady=2, bd=0,
         )
 
@@ -588,7 +591,7 @@ class RouletteApp(
             self._ctrl_box.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
 
     def _build_ui(self):
-        self.content = tk.Frame(self.root, bg=BG)
+        self.content = tk.Frame(self.root, bg=self._design.bg)
         self.content.pack(fill=tk.BOTH, expand=True)
 
         # ── 項目リスト・設定パネルを構築して RIGHT 側に配置 ──
@@ -597,11 +600,11 @@ class RouletteApp(
         self._apply_right_panel_layout()
 
         # ── メインエリア ──────────────────────────────────
-        self.main_frame = tk.Frame(self.content, bg=BG)
+        self.main_frame = tk.Frame(self.content, bg=self._design.bg)
         self.main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
                              padx=MAIN_PANEL_PAD, pady=MAIN_PANEL_PAD)
 
-        self.cv = tk.Canvas(self.main_frame, bg=BG, highlightthickness=0)
+        self.cv = tk.Canvas(self.main_frame, bg=self._design.bg, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
 
         self._build_ctrl_box()
@@ -618,6 +621,56 @@ class RouletteApp(
 
         for w in (self.cv, self.main_frame, self.content, self.root):
             w.bind("<Button-3>", self._show_context_menu)
+
+    # ════════════════════════════════════════════════════════════════
+    #  デザイン全体適用
+    # ════════════════════════════════════════════════════════════════
+    def _apply_design_to_all(self):
+        """デザインプリセット変更後に全 UI を最新デザインに追従させる。
+        メインウィンドウ背景・コンテキストメニュー・サイドバー・設定パネルを再構築し、
+        ホイールを再描画する。"""
+        d = self._design
+
+        # ── メインウィンドウ背景 ──────────────────────────────
+        self.root.configure(bg=d.bg)
+        self.content.configure(bg=d.bg)
+        self.main_frame.configure(bg=d.bg)
+        self.cv.configure(bg=d.bg)
+        if hasattr(self, '_resize_grip') and self._resize_grip.winfo_exists():
+            self._resize_grip.configure(bg=d.bg)
+
+        # 透過中の場合は透過色を再適用
+        if getattr(self, '_transparent', False):
+            self._apply_transparency()
+
+        # ── コンテキストメニュー再構築 ────────────────────────
+        self._build_context_menu()
+
+        # ── サイドバー再構築 ─────────────────────────────────
+        if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+            self._item_list_float_geo = self._sidebar_toplevel.geometry()
+            self._sidebar_toplevel.destroy()
+            self._sidebar_toplevel = None
+        self.sidebar.destroy()
+        if getattr(self, '_sash', None) is not None:
+            self._sash.destroy()
+            self._sash = None
+        self._build_sidebar()
+
+        # ── 設定パネル再構築 ─────────────────────────────────
+        if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+            self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
+            self._cfg_panel_toplevel.destroy()
+            self._cfg_panel_toplevel = None
+        self.cfg_panel.destroy()
+        if getattr(self, '_cfg_sash_right', None) is not None:
+            self._cfg_sash_right.destroy()
+            self._cfg_sash_right = None
+        self._build_cfg_panel()
+
+        # ── レイアウト再適用・ホイール再描画 ─────────────────────
+        self._apply_right_panel_layout()
+        self._redraw()
 
     # ════════════════════════════════════════════════════════════════
     #  設定保存・読み込み
@@ -671,6 +724,7 @@ class RouletteApp(
                 if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists()
                 else self._cfg_panel_float_geo
             ),
+            "design": self._design.to_dict(),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:

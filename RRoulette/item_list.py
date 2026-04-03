@@ -21,7 +21,7 @@ import tkinter.messagebox as _msgbox
 
 from config_utils import EXPORT_DIR
 from constants import (
-    PANEL, ACCENT, DARK2, WHITE, _ADD_SENTINEL,
+    _ADD_SENTINEL,
     ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
     SPLIT_MAX, WEIGHT_BELOW_ONE,
 )
@@ -212,7 +212,7 @@ class ItemListMixin:
             self._selected_item_idx = None
 
         # 上部: クイック操作帯
-        self._lb_quick_frm = tk.Frame(self._lb_frm, bg=PANEL)
+        self._lb_quick_frm = tk.Frame(self._lb_frm, bg=self._design.panel)
         self._lb_quick_frm.pack(fill=tk.X, padx=4, pady=(2, 0))
         self._build_quick_bar()
 
@@ -241,14 +241,14 @@ class ItemListMixin:
             font=("Meiryo", 10),
             relief=tk.FLAT, cursor="hand2", padx=6, pady=3, bd=0,
         )
-        _EXEC_KW = dict(**_BTN_BASE, bg=DARK2, fg=WHITE)
+        _EXEC_KW = dict(**_BTN_BASE, bg=self._design.separator, fg=self._design.text)
 
         def _tog_kw(on=False):
             return dict(**_BTN_BASE,
-                        bg=ACCENT if on else DARK2,
-                        fg=WHITE if on else "#778899")
+                        bg=self._design.accent if on else self._design.separator,
+                        fg=self._design.text if on else "#778899")
 
-        row = tk.Frame(qb, bg=PANEL)
+        row = tk.Frame(qb, bg=self._design.panel)
         row.pack(fill=tk.X, pady=(2, 2))
 
         # ── 実行ボタン（左側） ─────────────────────────────────────
@@ -314,8 +314,8 @@ class ItemListMixin:
         on = self._card_rows == 2
         if hasattr(self, '_qs_card_rows_btn') and self._qs_card_rows_btn.winfo_exists():
             self._qs_card_rows_btn.config(
-                bg=ACCENT if on else DARK2,
-                fg=WHITE if on else "#778899",
+                bg=self._design.accent if on else self._design.separator,
+                fg=self._design.text if on else "#778899",
             )
         self._build_card_list()
 
@@ -330,8 +330,8 @@ class ItemListMixin:
         collapsed = getattr(self, '_detail_collapsed', False)
         if hasattr(self, '_qs_detail_btn') and self._qs_detail_btn.winfo_exists():
             self._qs_detail_btn.config(
-                bg=ACCENT if not collapsed else DARK2,
-                fg=WHITE if not collapsed else "#778899",
+                bg=self._design.accent if not collapsed else self._design.separator,
+                fg=self._design.text if not collapsed else "#778899",
             )
 
     def _toggle_auto_shuffle(self):
@@ -339,8 +339,8 @@ class ItemListMixin:
         on = self._auto_shuffle
         if hasattr(self, '_qs_auto_btn') and self._qs_auto_btn.winfo_exists():
             self._qs_auto_btn.config(
-                bg=ACCENT if on else DARK2,
-                fg=WHITE if on else "#778899",
+                bg=self._design.accent if on else self._design.separator,
+                fg=self._design.text if on else "#778899",
             )
         # cfg_panel の変数があれば同期
         if hasattr(self, '_cfg_auto_shuffle_var'):
@@ -355,8 +355,8 @@ class ItemListMixin:
         on = self._show_prob
         if hasattr(self, '_qs_prob_btn') and self._qs_prob_btn.winfo_exists():
             self._qs_prob_btn.config(
-                bg=ACCENT if on else DARK2,
-                fg=WHITE if on else "#778899",
+                bg=self._design.accent if on else self._design.separator,
+                fg=self._design.text if on else "#778899",
             )
         # カードの確率ラベルだけ更新（全再構築不要）
         self._refresh_prob_labels()
@@ -366,8 +366,8 @@ class ItemListMixin:
         on = self._show_wins
         if hasattr(self, '_qs_wins_btn') and self._qs_wins_btn.winfo_exists():
             self._qs_wins_btn.config(
-                bg=ACCENT if on else DARK2,
-                fg=WHITE if on else "#778899",
+                bg=self._design.accent if on else self._design.separator,
+                fg=self._design.text if on else "#778899",
             )
         # カードの当選ラベルだけ更新（全再構築不要）
         self._refresh_wins_labels()
@@ -496,10 +496,10 @@ class ItemListMixin:
         refs['row1'].config(bg=bg)
         refs['toggle_btn'].config(
             text="●" if enabled else "○",
-            bg=ACCENT if enabled else DARK2,
-            fg=WHITE if enabled else "#556677",
+            bg=self._design.accent if enabled else self._design.separator,
+            fg=self._design.text if enabled else "#556677",
         )
-        refs['name_lbl'].config(bg=bg, fg=WHITE if enabled else "#4a5e70")
+        refs['name_lbl'].config(bg=bg, fg=self._design.text if enabled else "#4a5e70")
         refs['chip_lbl'].config(
             bg=bg,
             fg="#7788aa" if enabled else "#3a4a55",
@@ -660,8 +660,8 @@ class ItemListMixin:
                 row1,
                 text="●" if enabled else "○",
                 command=lambda idx=i: self._on_item_toggle(idx),
-                bg=ACCENT if enabled else DARK2,
-                fg=WHITE if enabled else "#556677",
+                bg=self._design.accent if enabled else self._design.separator,
+                fg=self._design.text if enabled else "#556677",
                 font=("Meiryo", 10), relief=tk.FLAT, cursor="hand2",
                 padx=3, pady=1, bd=0,
             )
@@ -673,7 +673,7 @@ class ItemListMixin:
                 display = display[:15] + "…"
             name_lbl = tk.Label(
                 row1, text=display,
-                bg=card_bg, fg=WHITE if enabled else "#4a5e70",
+                bg=card_bg, fg=self._design.text if enabled else "#4a5e70",
                 font=("Meiryo", 10), anchor="w",
             )
             name_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -836,7 +836,7 @@ class ItemListMixin:
             display = display[:19] + "…"
         tk.Label(
             header_row, text=display,
-            bg=card_bg, fg=WHITE,
+            bg=card_bg, fg=self._design.text,
             font=("Meiryo", 10, "bold"), anchor="w",
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
         tk.Button(
@@ -850,10 +850,10 @@ class ItemListMixin:
         _LBL_KW = dict(bg=card_bg, fg="#8899cc", font=("Meiryo", 8))
         _CB_KW  = dict(font=("Meiryo", 8), state="readonly")
         _ENT_KW = dict(
-            font=("Meiryo", 8), bg="#1a3a6a", fg=WHITE,
-            insertbackground=WHITE, relief=tk.FLAT,
+            font=("Meiryo", 8), bg="#1a3a6a", fg=self._design.text,
+            insertbackground=self._design.text, relief=tk.FLAT,
             highlightthickness=1, highlightbackground="#334466",
-            highlightcolor=ACCENT,
+            highlightcolor=self._design.accent,
         )
 
         # 抽選方式 Combobox
@@ -913,7 +913,7 @@ class ItemListMixin:
         rst_btn = tk.Button(
             btn_row, text="個別リセット",
             command=self._reset_selected_item,
-            bg=DARK2, fg=WHITE, font=("Meiryo", 8),
+            bg=self._design.separator, fg=self._design.text, font=("Meiryo", 8),
             relief=tk.FLAT, cursor="hand2", padx=6, pady=2,
         )
         rst_btn.pack(side=tk.RIGHT)
@@ -927,10 +927,10 @@ class ItemListMixin:
         card_bg = "#0d1f38"
         _LBL_KW = dict(bg=card_bg, fg="#8899cc", font=("Meiryo", 8))
         _ENT_KW = dict(
-            font=("Meiryo", 8), bg="#1a3a6a", fg=WHITE,
-            insertbackground=WHITE, relief=tk.FLAT,
+            font=("Meiryo", 8), bg="#1a3a6a", fg=self._design.text,
+            insertbackground=self._design.text, relief=tk.FLAT,
             highlightthickness=1, highlightbackground="#334466",
-            highlightcolor=ACCENT,
+            highlightcolor=self._design.accent,
         )
         _CB_KW = dict(font=("Meiryo", 8), state="readonly")
 
@@ -1166,7 +1166,7 @@ class ItemListMixin:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._edit_text = tk.Text(
             self._lb_frm, yscrollcommand=sb.set,
-            bg="#0f3460", fg=WHITE, insertbackground=WHITE,
+            bg="#0f3460", fg=self._design.text, insertbackground=self._design.text,
             font=("Meiryo", 10), relief=tk.FLAT, bd=0,
             wrap=tk.NONE, undo=True,
         )

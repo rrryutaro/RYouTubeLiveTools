@@ -10,7 +10,6 @@ RRoulette — ホイール描画 Mixin
 import math
 
 from constants import (
-    SEGMENT_COLORS, BG, PANEL, ACCENT, DARK2, WHITE, GOLD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, MIN_R, TRANSPARENT_KEY,
     WHEEL_OUTER_MARGIN, DONUT_DRAW_RADIUS,
 )
@@ -52,25 +51,46 @@ class WheelRendererMixin:
         """新レイアウトエンジン用のレイアウトキャッシュを構築する。"""
         from layout_search import build_all_sector_layouts
         donut_r = float(DONUT_DRAW_RADIUS) if getattr(self, '_donut_hole', False) else 0.0
+        _wf = self._design.fonts.wheel
+        mode = self._text_size_mode
+
+        # WheelFontSettings のモード別基準サイズを実接続する
+        # mode 0 (省略): omit_base_size = 固定描画サイズ（収まらない場合は省略記号）
+        # mode 1 (収める): fit_base_size = 探索上限（この値まで大きく置こうとする）
+        # mode 2 (縮小): shrink_base_size = 初期基準サイズ（収まらない場合のみ縮小）
+        _min = _wf.min_size
+        _max = _wf.max_size
+        if mode == 0:   # 省略
+            fixed_size   = max(_min, min(_max, _wf.omit_base_size))
+            effective_max = _max
+        elif mode == 1: # 収める
+            fixed_size   = max(_min, min(_max, _wf.fit_base_size))
+            effective_max = max(_min, min(_max, _wf.fit_base_size))
+        else:           # 縮小
+            fixed_size   = max(_min, min(_max, _wf.shrink_base_size))
+            effective_max = _max
+
         self._layout_cache = build_all_sector_layouts(
             items=self.items,
             wheel_cx=self.CX,
             wheel_cy=self.CY,
             R=self.R,
-            text_size_mode=self._text_size_mode,
+            text_size_mode=mode,
             text_direction=self._text_direction,
-            font_family="Meiryo",
-            fixed_font_size=max(7, min(12, int(160 / max(1, len(self.items))))),
-            min_size=6,
-            max_size=72,
+            font_family=_wf.family,
+            fixed_font_size=fixed_size,
+            min_size=_min,
+            max_size=effective_max,
             donut_r=donut_r,
             segments=getattr(self, 'current_segments', None),
         )
         self._layout_cache_key = (
             tuple(self.items),
             tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
-            self.R, self._text_size_mode, self._text_direction,
+            self.R, mode, self._text_direction,
             self._donut_hole,
+            _wf.family, _wf.omit_base_size, _wf.fit_base_size, _wf.shrink_base_size,
+            _wf.min_size, _wf.max_size,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -81,21 +101,25 @@ class WheelRendererMixin:
         self.cv.delete("all")
         cx, cy, r = self.CX, self.CY, self.R
         segs = getattr(self, 'current_segments', [])
+        d = self._design
         if segs:
             for seg in segs:
                 seg_start = 90 - self.angle + seg.start_angle
-                color = SEGMENT_COLORS[seg.item_index % len(SEGMENT_COLORS)]
+                color = d.segment.color_for(seg.item_index)
                 self.cv.create_arc(
                     cx - r, cy - r, cx + r, cy + r,
                     start=seg_start, extent=seg.arc,
-                    fill=color, outline=WHITE, width=2,
+                    fill=color, outline=d.wheel.segment_outline_color,
+                    width=d.wheel.segment_outline_width,
                 )
         self.cv.create_oval(cx - r, cy - r, cx + r, cy + r,
-                            fill="", outline=WHITE, width=4)
+                            fill="", outline=d.wheel.outline_color,
+                            width=d.wheel.outline_width)
         if getattr(self, "_donut_hole", False):
-            hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else BG
+            hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else d.bg
             self.cv.create_oval(cx - 13, cy - 13, cx + 13, cy + 13,
-                                fill=hole_fill, outline=WHITE, width=3)
+                                fill=hole_fill, outline=d.wheel.hole_outline_color,
+                                width=d.wheel.hole_outline_width)
         t = math.radians(self._pointer_angle)
         st, ct = math.sin(t), math.cos(t)
         tip_x = cx + st * (r - 12)
@@ -106,7 +130,8 @@ class WheelRendererMixin:
         br_y  = cy - ct * (r + 28) + st * 14
         self.cv.create_polygon(
             bl_x, bl_y, br_x, br_y, tip_x, tip_y,
-            fill=GOLD, outline=WHITE, width=2,
+            fill=d.pointer.fill_color, outline=d.pointer.outline_color,
+            width=d.pointer.outline_width,
         )
 
     # ════════════════════════════════════════════════════════════════
@@ -134,18 +159,22 @@ class WheelRendererMixin:
         segs = getattr(self, 'current_segments', [])
         n = len(segs)
 
+        _d = self._design
         if n == 0:
             self.cv.create_text(cx, cy, text="項目を追加してください",
-                                fill=WHITE, font=("Meiryo", 13),
+                                fill=_d.wheel.text_color, font=("Meiryo", 13),
                                 tags=("wheel_text", "wheel_all"))
         else:
             # ── 新レイアウトエンジン: キャッシュ確認・再構築 ─────────────
             _cache_valid = True
+            _wf_key = self._design.fonts.wheel
             _cache_key = (
                 tuple(self.items),
                 tuple(int(seg.arc * 100) for seg in segs),
                 self.R, self._text_size_mode, self._text_direction,
                 self._donut_hole,
+                _wf_key.family, _wf_key.omit_base_size, _wf_key.fit_base_size,
+                _wf_key.shrink_base_size, _wf_key.min_size, _wf_key.max_size,
             )
             if getattr(self, '_layout_cache_key', None) != _cache_key:
                 _drag = (getattr(self, '_resizing', False)
@@ -164,12 +193,13 @@ class WheelRendererMixin:
             for i, seg in enumerate(segs):
                 seg_start = 90 - self.angle + seg.start_angle
                 seg_arc   = seg.arc
-                color = SEGMENT_COLORS[seg.item_index % len(SEGMENT_COLORS)]
+                color = _d.segment.color_for(seg.item_index)
 
                 self.cv.create_arc(
                     cx - r, cy - r, cx + r, cy + r,
                     start=seg_start, extent=seg_arc,
-                    fill=color, outline=WHITE, width=2,
+                    fill=color, outline=_d.wheel.segment_outline_color,
+                    width=_d.wheel.segment_outline_width,
                     tags=("wheel_sector", "wheel_all"),
                 )
 
@@ -188,7 +218,7 @@ class WheelRendererMixin:
                     _lx = cx + _lay.center_r * math.cos(mid_rad)
                     _ly = cy - _lay.center_r * math.sin(mid_rad)
                     self.cv.create_text(
-                        _lx, _ly, text=_lay.lines[0].text, fill=WHITE,
+                        _lx, _ly, text=_lay.lines[0].text, fill=_d.wheel.text_color,
                         font=_draw_font, angle=0,
                         tags=("wheel_text", "wheel_all"),
                     )
@@ -199,7 +229,7 @@ class WheelRendererMixin:
                     for _lp in _lay.lines:
                         self.cv.create_text(
                             _base_x, _base_y + _lp.stack_offset,
-                            text=_lp.text, fill=WHITE,
+                            text=_lp.text, fill=_d.wheel.text_color,
                             font=_draw_font, angle=0,
                             tags=("wheel_text", "wheel_all"),
                         )
@@ -220,7 +250,7 @@ class WheelRendererMixin:
                         _lx = _bx + _s * _tan_x
                         _ly = _by + _s * _tan_y
                         self.cv.create_text(
-                            _lx, _ly, text=_lp.text, fill=WHITE,
+                            _lx, _ly, text=_lp.text, fill=_d.wheel.text_color,
                             font=_draw_font, angle=mid_deg,
                             tags=("wheel_text", "wheel_all"),
                         )
@@ -236,18 +266,20 @@ class WheelRendererMixin:
                         _lx = cx + _r * math.cos(mid_rad) + _lp.extra_offset * _tan_x
                         _ly = cy - _r * math.sin(mid_rad) + _lp.extra_offset * _tan_y
                         self.cv.create_text(
-                            _lx, _ly, text=_lp.text, fill=WHITE,
+                            _lx, _ly, text=_lp.text, fill=_d.wheel.text_color,
                             font=_draw_font, angle=_angle,
                             tags=("wheel_text", "wheel_all"),
                         )
 
         self.cv.create_oval(cx - r, cy - r, cx + r, cy + r,
-                            fill="", outline=WHITE, width=4,
+                            fill="", outline=_d.wheel.outline_color,
+                            width=_d.wheel.outline_width,
                             tags=("wheel_outline", "wheel_all"))
         if getattr(self, "_donut_hole", False):
-            hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else BG
+            hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else _d.bg
             self.cv.create_oval(cx - 13, cy - 13, cx + 13, cy + 13,
-                                fill=hole_fill, outline=WHITE, width=3,
+                                fill=hole_fill, outline=_d.wheel.hole_outline_color,
+                                width=_d.wheel.hole_outline_width,
                                 tags=("wheel_hole", "wheel_all"))
         t   = math.radians(self._pointer_angle)
         st, ct = math.sin(t), math.cos(t)
@@ -259,7 +291,8 @@ class WheelRendererMixin:
         br_y   = cy - ct * (r + 28) + st * 14
         self.cv.create_polygon(
             bl_x, bl_y, br_x, br_y, tip_x, tip_y,
-            fill=GOLD, outline=WHITE, width=2,
+            fill=_d.pointer.fill_color, outline=_d.pointer.outline_color,
+            width=_d.pointer.outline_width,
             tags=("pointer", "wheel_all"),
         )
 
@@ -287,11 +320,12 @@ class WheelRendererMixin:
         BOX_PAD    = 4
         ENTRY_GAP  = 3
         MAX_ENT    = 20
-        FONT       = ("Meiryo", 9)
-        COL_FG     = "#aaaacc"
-        COL_SHD    = "#000000"
-        COL_BOX    = "#4455bb"
-        COL_BOX_BG = "#111133"
+        _ld        = self._design.log
+        FONT       = (self._design.fonts.log_family, _ld.font_size)
+        COL_FG     = _ld.text_color
+        COL_SHD    = _ld.shadow_color
+        COL_BOX    = _ld.box_outline_color
+        COL_BOX_BG = _ld.box_bg_color
 
         log_box = getattr(self, "_log_box_border", False)
         entries = self._history[-MAX_ENT:][::-1]
@@ -380,8 +414,10 @@ class WheelRendererMixin:
         """ログエントリーのホバー情報をキャンバス上に直接描画する。"""
         self.cv.delete("log_popup_overlay")
 
-        FONT_BOLD = ("Meiryo", 9, "bold")
-        FONT_NORM = ("Meiryo", 9)
+        _pd       = self._design
+        _log_fam  = _pd.fonts.log_family
+        FONT_BOLD = (_log_fam, 9, "bold")
+        FONT_NORM = (_log_fam, 9)
         PAD       = 8
         GAP       = 4
         PER_ROW   = 5
@@ -426,13 +462,13 @@ class WheelRendererMixin:
         self.cv.create_rectangle(
             px - PAD, py - PAD,
             px + total_w + PAD, py + total_h + PAD,
-            fill=PANEL, outline=ACCENT, width=2,
+            fill=_pd.panel, outline=_pd.accent, width=2,
             tags="log_popup_overlay",
         )
-        # グループ名（GOLD + bold）
+        # グループ名（gold + bold）
         self.cv.create_text(
             px, py, text=group_text, anchor="nw",
-            font=FONT_BOLD, fill=GOLD,
+            font=FONT_BOLD, fill=_pd.gold,
             tags="log_popup_overlay",
         )
         # セパレータ線
@@ -440,13 +476,13 @@ class WheelRendererMixin:
         self.cv.create_line(
             px - PAD + 2, sep_y,
             px + total_w + PAD - 2, sep_y,
-            fill=DARK2, width=1,
+            fill=_pd.separator, width=1,
             tags="log_popup_overlay",
         )
-        # 項目テキスト（WHITE、当選は★付き）
+        # 項目テキスト（当選は★付き）
         self.cv.create_text(
             px, sep_y + GAP, text=items_text, anchor="nw",
-            font=FONT_NORM, fill=WHITE,
+            font=FONT_NORM, fill=_pd.text,
             tags="log_popup_overlay",
         )
 

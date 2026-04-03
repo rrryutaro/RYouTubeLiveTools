@@ -10,7 +10,7 @@ RRoulette — スピンエンジン Mixin
 import math
 import random
 
-from constants import BG, PANEL, ACCENT, WHITE, GOLD, SEGMENT_COLORS, DONUT_HIT_RADIUS
+from constants import DONUT_HIT_RADIUS
 
 
 class SpinEngineMixin:
@@ -120,7 +120,7 @@ class SpinEngineMixin:
             winner = self.current_segments[seg].item_text
             self._record_result(winner)
             self.snd.play_win()
-            seg_color = SEGMENT_COLORS[self.current_segments[seg].item_index % len(SEGMENT_COLORS)]
+            seg_color = self._design.segment.color_for(self.current_segments[seg].item_index)
             self._flash(4, winner, seg_color)
         else:
             self.set_item_spin_lock(False)
@@ -148,7 +148,7 @@ class SpinEngineMixin:
         描画順（呼び出し順）で Z-order を制御するため use_window は使わない。
         """
         pw, ph = 280, 90
-        text_color = WHITE if times % 2 else GOLD
+        text_color = self._design.wheel.text_color if times % 2 else self._design.gold
         x0 = self.CX - pw // 2
         y0 = self.CY - ph // 2
         x1 = self.CX + pw // 2
