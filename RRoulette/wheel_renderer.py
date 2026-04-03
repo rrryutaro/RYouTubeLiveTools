@@ -33,34 +33,12 @@ class WheelRendererMixin:
         self.R  = r
         # ウィンドウ縮小でサイドバーが溢れないようクランプ
         self._clamp_sidebar_w()
-        # グリップドラッグ中: 外周・ポインターのみ描画（ホイールサイズの目安）
+        # グリップドラッグ中: 軽量ホイール描画（セグメント色・外周・ポインター）
         if getattr(self, "_resizing", False):
             if self._resize_redraw_id:
                 self.root.after_cancel(self._resize_redraw_id)
                 self._resize_redraw_id = None
-            cx, cy, r = self.CX, self.CY, self.R
-            self.cv.delete("resize_preview")
-            self.cv.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                fill="", outline=WHITE, width=4,
-                                tags="resize_preview")
-            if getattr(self, "_donut_hole", False):
-                hole_fill = TRANSPARENT_KEY if getattr(self, "_transparent", False) else BG
-                self.cv.create_oval(
-                    cx - DONUT_DRAW_RADIUS, cy - DONUT_DRAW_RADIUS,
-                    cx + DONUT_DRAW_RADIUS, cy + DONUT_DRAW_RADIUS,
-                    fill=hole_fill, outline=WHITE, width=3,
-                    tags="resize_preview")
-            t = math.radians(self._pointer_angle)
-            st, ct = math.sin(t), math.cos(t)
-            tip_x = cx + st * (r - 12)
-            tip_y = cy - ct * (r - 12)
-            bl_x  = cx + st * (r + 28) - ct * 14
-            bl_y  = cy - ct * (r + 28) - st * 14
-            br_x  = cx + st * (r + 28) + ct * 14
-            br_y  = cy - ct * (r + 28) + st * 14
-            self.cv.create_polygon(bl_x, bl_y, br_x, br_y, tip_x, tip_y,
-                                   fill=GOLD, outline=WHITE, width=2,
-                                   tags="resize_preview")
+            self._redraw_simple()
             return
         # 連続 Configure をデバウンス（50ms）
         if self._resize_redraw_id:

@@ -150,14 +150,15 @@ class WindowManagerMixin:
             return
         self._resizing = True
         self._resize_frame_pending = False
+        lb = getattr(self, '_lb_canvas', None)
+        if lb and lb.winfo_exists():
+            lb._resize_pause = True
         self._resize_start_x = event.x_root
         self._resize_start_y = event.y_root
         self._resize_start_w = self.root.winfo_width()
         self._resize_start_h = self.root.winfo_height()
         self._resize_pending_w = self._resize_start_w
         self._resize_pending_h = self._resize_start_h
-        # ドラッグ開始時にキャンバスをクリア（リサイズ中は空にして描画負荷をゼロにする）
-        self.cv.delete("all")
 
     def _resize_move(self, event):
         if not getattr(self, "_resizing", False):
@@ -182,6 +183,9 @@ class WindowManagerMixin:
             return
         self._resizing = False
         self._resize_frame_pending = False
+        lb = getattr(self, '_lb_canvas', None)
+        if lb and lb.winfo_exists():
+            lb._resize_pause = False
         # ドラッグ中に保留されたサイズが残っていれば確定適用
         if hasattr(self, "_resize_pending_w"):
             self.root.geometry(f"{self._resize_pending_w}x{self._resize_pending_h}")

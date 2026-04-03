@@ -615,9 +615,13 @@ class ItemListMixin:
         win_id = cv.create_window((0, 0), window=inner, anchor="nw")
 
         def _on_inner(e):
+            if getattr(cv, '_resize_pause', False):
+                return
             cv.configure(scrollregion=cv.bbox("all"))
 
         def _on_cv(e):
+            if getattr(cv, '_resize_pause', False):
+                return
             cv.itemconfig(win_id, width=e.width)
 
         inner.bind("<Configure>", _on_inner)
