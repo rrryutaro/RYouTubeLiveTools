@@ -118,7 +118,7 @@ class CommentCard(tk.Frame):
     """1コメント1ブロックのウィジェット"""
 
     def __init__(self, parent, item, icon_cache: dict, icon_loader,
-                 speak_cb=None, **kwargs):
+                 speak_cb=None, rows=2, icon_visible=True, **kwargs):
         style = KIND_STYLES.get(item.kind, _DEFAULT_STYLE)
         bg    = style["bg"]
         super().__init__(parent, bg=bg, pady=CARD_PAD_Y, padx=CARD_PAD_X,
@@ -126,81 +126,104 @@ class CommentCard(tk.Frame):
                          highlightbackground=style["border"],
                          **kwargs)
         self._icon_ref = None
+        self._icon_visible = icon_visible
 
         # ── アイコン領域 ──
-        icon_frame = tk.Frame(self, bg=bg,
-                              width=ICON_SIZE + ICON_PAD * 2,
-                              height=ICON_SIZE + ICON_PAD * 2)
-        icon_frame.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 6), pady=2)
-        icon_frame.pack_propagate(False)
-        self._icon_label = tk.Label(icon_frame, bg=bg, bd=0)
-        self._icon_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        if icon_visible:
+            icon_frame = tk.Frame(self, bg=bg,
+                                  width=ICON_SIZE + ICON_PAD * 2,
+                                  height=ICON_SIZE + ICON_PAD * 2)
+            icon_frame.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 6), pady=2)
+            icon_frame.pack_propagate(False)
+            self._icon_label = tk.Label(icon_frame, bg=bg, bd=0)
+            self._icon_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        ph = icon_cache.get("__ph__" + item.author_name)
-        if ph is None:
-            ph = _make_placeholder_image(item.author_name, ICON_SIZE)
-            icon_cache["__ph__" + item.author_name] = ph
-        if ph:
-            self._icon_label.config(image=ph)
-            self._icon_ref = ph
+            ph = icon_cache.get("__ph__" + item.author_name)
+            if ph is None:
+                ph = _make_placeholder_image(item.author_name, ICON_SIZE)
+                icon_cache["__ph__" + item.author_name] = ph
+            if ph:
+                self._icon_label.config(image=ph)
+                self._icon_ref = ph
 
-        key = item.channel_id or item.author_name
-        if item.profile_url and key not in icon_cache:
-            icon_cache[key] = None
-            threading.Thread(
-                target=icon_loader,
-                args=(item.profile_url, key, self._on_icon_loaded),
-                daemon=True,
-            ).start()
-        elif key in icon_cache and icon_cache[key] is not None:
-            self._icon_ref = icon_cache[key]
-            self._icon_label.config(image=self._icon_ref)
+            key = item.channel_id or item.author_name
+            if item.profile_url and key not in icon_cache:
+                icon_cache[key] = None
+                threading.Thread(
+                    target=icon_loader,
+                    args=(item.profile_url, key, self._on_icon_loaded),
+                    daemon=True,
+                ).start()
+            elif key in icon_cache and icon_cache[key] is not None:
+                self._icon_ref = icon_cache[key]
+                self._icon_label.config(image=self._icon_ref)
+        else:
+            self._icon_label = None
 
         # ── テキスト領域 ──
         right = tk.Frame(self, bg=bg)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        kind_label = style["label"]
-        if kind_label:
-            tk.Label(right, text=kind_label,
-                     font=(FONT_FAMILY, FONT_SIZE_S - 1, "bold"),
-                     fg=style["border"], bg=bg, anchor=tk.W).pack(anchor=tk.W)
-
-        top_row = tk.Frame(right, bg=bg)
-        top_row.pack(anchor=tk.W, fill=tk.X)
-        tk.Label(top_row, text=item.author_name or "—",
-                 font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
-                 fg=UI_COLORS["fg_header"], bg=bg, anchor=tk.W
-                 ).pack(side=tk.LEFT)
-        for attr, label, fg_b, bg_b in BADGE_DEFS:
-            if getattr(item, attr, False):
-                tk.Label(top_row, text=label,
-                         font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                         fg=fg_b, bg=bg_b, padx=3, pady=0,
-                         relief=tk.FLAT).pack(side=tk.LEFT, padx=(3, 0))
-        tk.Label(top_row, text=item.post_time_str(),
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=UI_COLORS["fg_label"], bg=bg, anchor=tk.E
-                 ).pack(side=tk.RIGHT, padx=(4, 0))
-
-        if item.kind == "superChatEvent":
-            sc  = item.raw.get("snippet", {}).get("superChatDetails", {})
-            amt = sc.get("amountDisplayString", "")
-            if amt:
-                tk.Label(right, text=amt,
-                         font=(FONT_FAMILY, FONT_SIZE_M, "bold"),
-                         fg="#FFD700", bg=bg, anchor=tk.W).pack(anchor=tk.W)
-
-        body = item.body
-        if body:
-            tk.Label(right, text=body,
-                     font=(FONT_FAMILY, FONT_SIZE_S),
-                     fg=UI_COLORS["fg_main"], bg=bg,
-                     anchor=tk.W, justify=tk.LEFT,
-                     wraplength=0).pack(anchor=tk.W, fill=tk.X)
-            self._body_label = right.winfo_children()[-1]
+        if rows == 1:
+            # コンパクト1行表示: 名前: 本文
+            name_part = item.author_name or ""
+            body_part = item.body or ""
+            if name_part and body_part:
+                compact_text = f"{name_part}: {body_part}"
+            elif name_part:
+                compact_text = name_part
+            else:
+                compact_text = body_part or "—"
+            compact_lbl = tk.Label(right, text=compact_text,
+                                    font=(FONT_FAMILY, FONT_SIZE_S),
+                                    fg=UI_COLORS["fg_main"], bg=bg,
+                                    anchor=tk.W, justify=tk.LEFT,
+                                    wraplength=0)
+            compact_lbl.pack(anchor=tk.W, fill=tk.X)
+            self._body_label = compact_lbl
         else:
-            self._body_label = None
+            # 2行表示（標準）
+            kind_label = style["label"]
+            if kind_label:
+                tk.Label(right, text=kind_label,
+                         font=(FONT_FAMILY, FONT_SIZE_S - 1, "bold"),
+                         fg=style["border"], bg=bg, anchor=tk.W).pack(anchor=tk.W)
+
+            top_row = tk.Frame(right, bg=bg)
+            top_row.pack(anchor=tk.W, fill=tk.X)
+            tk.Label(top_row, text=item.author_name or "—",
+                     font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
+                     fg=UI_COLORS["fg_header"], bg=bg, anchor=tk.W
+                     ).pack(side=tk.LEFT)
+            for attr, label, fg_b, bg_b in BADGE_DEFS:
+                if getattr(item, attr, False):
+                    tk.Label(top_row, text=label,
+                             font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                             fg=fg_b, bg=bg_b, padx=3, pady=0,
+                             relief=tk.FLAT).pack(side=tk.LEFT, padx=(3, 0))
+            tk.Label(top_row, text=item.post_time_str(),
+                     font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                     fg=UI_COLORS["fg_label"], bg=bg, anchor=tk.E
+                     ).pack(side=tk.RIGHT, padx=(4, 0))
+
+            if item.kind == "superChatEvent":
+                sc  = item.raw.get("snippet", {}).get("superChatDetails", {})
+                amt = sc.get("amountDisplayString", "")
+                if amt:
+                    tk.Label(right, text=amt,
+                             font=(FONT_FAMILY, FONT_SIZE_M, "bold"),
+                             fg="#FFD700", bg=bg, anchor=tk.W).pack(anchor=tk.W)
+
+            body = item.body
+            if body:
+                tk.Label(right, text=body,
+                         font=(FONT_FAMILY, FONT_SIZE_S),
+                         fg=UI_COLORS["fg_main"], bg=bg,
+                         anchor=tk.W, justify=tk.LEFT,
+                         wraplength=0).pack(anchor=tk.W, fill=tk.X)
+                self._body_label = right.winfo_children()[-1]
+            else:
+                self._body_label = None
 
         self.bind("<Configure>", self._on_resize)
         if speak_cb is not None:
@@ -209,15 +232,15 @@ class CommentCard(tk.Frame):
 
     def _on_resize(self, event):
         if self._body_label:
-            wrap = max(100, self.winfo_width()
-                       - ICON_SIZE - ICON_PAD * 2 - CARD_PAD_X * 2 - 16)
+            icon_w = (ICON_SIZE + ICON_PAD * 2 + 6) if self._icon_visible else 0
+            wrap = max(100, self.winfo_width() - icon_w - CARD_PAD_X * 2 - 16)
             self._body_label.config(wraplength=wrap)
 
     def _on_icon_loaded(self, photo):
-        if photo is not None:
-            self._icon_ref = photo
+        if photo and self._icon_label is not None:
             try:
                 self._icon_label.config(image=photo)
+                self._icon_ref = photo
             except tk.TclError:
                 pass
 
@@ -281,6 +304,7 @@ class CommentWindow:
                 self._win = None
 
         self._win = tk.Toplevel(self._master)
+        self._win.title("RCommentHub — コメントビュー")
         self._win.configure(bg=UI_COLORS["bg_main"])
         self._win.overrideredirect(True)
 
@@ -430,9 +454,16 @@ class CommentWindow:
         self._build_user_tab(tab_users)
         self._build_filter_settings_tab(tab_fsettings)
 
-        # ── 透過モード用フレーム（普段は非表示、全メッセージのみ表示） ──
+        # ── 透過モード専用フレーム（コメント文字列のみ表示） ──
         self._trans_outer = tk.Frame(win, bg=C["bg_main"])
-        self._trans_canvas, self._trans_cards = self._make_scroll_area(self._trans_outer)
+        # ハンドル帯: 非透過色 → コメント0件時でもウィンドウが見つけられる
+        self._trans_handle = tk.Frame(self._trans_outer, bg="#3A3A5A", height=10)
+        self._trans_handle.pack(fill=tk.X, side=tk.TOP)
+        tk.Label(self._trans_handle, text="コメントビュー",
+                 fg="#8888BB", bg="#3A3A5A",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1)).pack(side=tk.LEFT, padx=6)
+        # テキスト表示エリア (bg は透過モード時に TRANSPARENT_KEY に変更)
+        self._trans_canvas, self._trans_text_frame = self._make_scroll_area(self._trans_outer)
 
         # ── コンテキストメニュー ──
         self._ctx_menu = tk.Menu(win, tearoff=0,
@@ -447,10 +478,6 @@ class CommentWindow:
             command=self._toggle_transparent_mode,
         )
         self._ctx_menu.add_separator()
-        if self._open_debug:
-            self._ctx_menu.add_command(label="🐛 デバッグコメント送信",
-                                       command=self._open_debug)
-            self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label="最小化", command=self._minimize)
         self._ctx_menu.add_command(label="閉じる", command=self._on_window_close)
 
@@ -752,8 +779,8 @@ class CommentWindow:
             self._add_card(self._cards_all, self._canvas_all, item)
             if getattr(item, "filter_match", False):
                 self._add_card(self._cards_filter, self._canvas_filter, item)
-            # 透過モード用フレームにも追加
-            self._add_card(self._trans_cards, self._trans_canvas, item)
+            # 透過モード用テキスト追加
+            self._add_trans_text(item)
         except tk.TclError:
             pass
 
@@ -761,20 +788,21 @@ class CommentWindow:
         """既存コメントを一括ロード"""
         if self._win is None:
             return
+        rows = self._cfg.get("display_rows", 2)
+        icon_visible = self._cfg.get("icon_visible", True)
         for item in items:
             card = CommentCard(self._cards_all, item,
                                self._icon_cache, self._load_icon_bg,
-                               speak_cb=self._speak_cb)
+                               speak_cb=self._speak_cb,
+                               rows=rows, icon_visible=icon_visible)
             card.pack(fill=tk.X, pady=1, padx=2)
             if getattr(item, "filter_match", False):
                 card2 = CommentCard(self._cards_filter, item,
                                     self._icon_cache, self._load_icon_bg,
-                                    speak_cb=self._speak_cb)
+                                    speak_cb=self._speak_cb,
+                                    rows=rows, icon_visible=icon_visible)
                 card2.pack(fill=tk.X, pady=1, padx=2)
-            card3 = CommentCard(self._trans_cards, item,
-                                self._icon_cache, self._load_icon_bg,
-                                speak_cb=self._speak_cb)
-            card3.pack(fill=tk.X, pady=1, padx=2)
+            self._add_trans_text(item)
         self._win.after(100, lambda: self._scroll_to_bottom(self._canvas_all))
 
     def rebuild_filter_tab(self, items):
@@ -994,12 +1022,41 @@ class CommentWindow:
 
     def _add_card(self, cards_frame, canvas, item):
         was_at_bottom = self._is_at_bottom(canvas)
+        rows = self._cfg.get("display_rows", 2)
+        icon_visible = self._cfg.get("icon_visible", True)
         card = CommentCard(cards_frame, item,
                            self._icon_cache, self._load_icon_bg,
-                           speak_cb=self._speak_cb)
+                           speak_cb=self._speak_cb,
+                           rows=rows, icon_visible=icon_visible)
         card.pack(fill=tk.X, pady=1, padx=2)
         if was_at_bottom:
             self._win.after(50, lambda c=canvas: self._scroll_to_bottom(c))
+
+    def _add_trans_text(self, item):
+        """透過モード用: コメント本文のみのラベルを追加する"""
+        if self._win is None or not item.body:
+            return
+        try:
+            is_trans = self._transparent_mode_var.get() if hasattr(self, "_transparent_mode_var") else False
+            bg = TRANSPARENT_KEY if is_trans else UI_COLORS["bg_main"]
+            lbl = tk.Label(
+                self._trans_text_frame,
+                text=item.body,
+                font=(FONT_FAMILY, FONT_SIZE_S),
+                fg=UI_COLORS["fg_main"],
+                bg=bg,
+                anchor=tk.W,
+                justify=tk.LEFT,
+                wraplength=0,
+            )
+            lbl.pack(fill=tk.X, padx=4, pady=1)
+            lbl.bind("<Configure>", lambda e, l=lbl: l.configure(
+                wraplength=max(100, e.width - 8)))
+            was_at_bottom = self._is_at_bottom(self._trans_canvas)
+            if was_at_bottom:
+                self._win.after(50, lambda: self._scroll_to_bottom(self._trans_canvas))
+        except tk.TclError:
+            pass
 
     # ─── アイコンロード ──────────────────────────────────────────────────────
 
@@ -1070,29 +1127,43 @@ class CommentWindow:
         on = self._transparent_mode_var.get()
         if self._win is None:
             return
-        # -alpha はウィンドウ全体（コメントカードを含む）に適用される。
-        # 0 にするとウィンドウが完全に消えて操作不能になるため最小 10% を保証する。
         raw_alpha = self._cfg.get("cw_comment_alpha", 100) / 100.0
         alpha = max(0.10, raw_alpha)
 
         if on:
-            # ステータスバー・ノートブックを非表示
+            # 通常UIを非表示
             self._status_bar.pack_forget()
             self._notebook.pack_forget()
-            # 透過モード用フレームを表示
+            # テキストフレームの背景を透過キーに変更
+            try:
+                self._trans_canvas.configure(bg=TRANSPARENT_KEY)
+                self._trans_text_frame.configure(bg=TRANSPARENT_KEY)
+                for w in self._trans_text_frame.winfo_children():
+                    w.configure(bg=TRANSPARENT_KEY)
+            except tk.TclError:
+                pass
+            # 透過モードフレームを表示
             self._trans_outer.pack(fill=tk.BOTH, expand=True)
-            # ウィンドウ背景透過
+            # ウィンドウを透過設定
             self._win.configure(bg=TRANSPARENT_KEY)
             self._win.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
             self._win.wm_attributes("-alpha", alpha)
         else:
-            # 透過モード用フレームを非表示
+            # 透過モードフレームを非表示
             self._trans_outer.pack_forget()
-            # ウィンドウ背景を通常に戻す
+            # テキストフレームの背景を通常色に戻す
+            try:
+                self._trans_canvas.configure(bg=UI_COLORS["bg_main"])
+                self._trans_text_frame.configure(bg=UI_COLORS["bg_main"])
+                for w in self._trans_text_frame.winfo_children():
+                    w.configure(bg=UI_COLORS["bg_main"])
+            except tk.TclError:
+                pass
+            # ウィンドウを通常表示に戻す
             self._win.configure(bg=UI_COLORS["bg_main"])
             self._win.wm_attributes("-transparentcolor", "")
             self._win.wm_attributes("-alpha", 1.0)
-            # ステータスバー・ノートブックを再表示
+            # 通常UIを再表示
             self._status_bar.pack(fill=tk.X, side=tk.TOP)
             self._notebook.pack(fill=tk.BOTH, expand=True)
 

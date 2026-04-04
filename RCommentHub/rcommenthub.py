@@ -77,6 +77,12 @@ class RCommentHubApp:
         apply_theme(saved_theme)
         self._current_theme = saved_theme
 
+        # Combobox ドロップダウンリストの色をテーマに合わせる
+        root.option_add("*TCombobox*Listbox.background", UI_COLORS["bg_list"])
+        root.option_add("*TCombobox*Listbox.foreground", UI_COLORS["fg_main"])
+        root.option_add("*TCombobox*Listbox.selectBackground", UI_COLORS["accent"])
+        root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+
         # コントローラ（処理の中核）
         self._ctrl = CommentController(root, self._sm, BASE_DIR)
 
@@ -94,6 +100,10 @@ class RCommentHubApp:
             open_detail_cb=self._detail_window_open,
             open_debug_cb=self._ctrl.toggle_debug_mode,
         )
+
+        # 表示設定を CommentWindow の cfg に反映
+        self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
+        self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
 
         # 接続ダイアログ
         self._connect_dialog = ConnectDialog(
@@ -146,6 +156,8 @@ class RCommentHubApp:
         self._ctrl.on_stream_info(self._on_ctrl_stream_info)
         self._ctrl.on_user_cleared(self._on_ctrl_user_cleared)
         self._ctrl.on_debug_mode(self._on_ctrl_debug_mode)
+        # コメント追加通知 → CommentWindow へ反映
+        self._ctrl.on_comment_added(self._on_ctrl_comment_added)
 
         # TTS 初期化
         self._ctrl.apply_tts_from_settings()
@@ -188,10 +200,18 @@ class RCommentHubApp:
         if open_sender:
             self._debug_win.open()
 
+    def _on_ctrl_comment_added(self, item):
+        """コントローラからのコメント追加通知 → CommentWindow に反映"""
+        if self._comment_window and self._comment_window.is_open:
+            self._comment_window.add_comment(item)
+
     # --- 設定変更 ---
 
     def _on_settings_changed(self):
         self._ctrl.apply_tts_from_settings()
+
+        old_display_rows = self._comment_window._cfg.get("display_rows", 2) if self._comment_window else 2
+        old_icon_visible = self._comment_window._cfg.get("icon_visible", True) if self._comment_window else True
 
         new_theme    = self._sm.get("color_theme", "ダーク (デフォルト)")
         theme_changed = (new_theme != self._current_theme)
@@ -199,9 +219,16 @@ class RCommentHubApp:
         self._current_theme = new_theme
 
         if self._comment_window:
+            # 表示設定を CommentWindow の cfg に同期
+            self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
+            self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
             self._comment_window.topmost_var.set(self._sm.get("cw_topmost", False))
             self._comment_window._cfg["cw_comment_alpha"] = self._sm.get("cw_comment_alpha", 100)
-            if theme_changed and self._comment_window.is_open:
+            display_changed = (
+                self._sm.get("display_rows", 2) != old_display_rows or
+                self._sm.get("icon_visible", True) != old_icon_visible
+            )
+            if (theme_changed or display_changed) and self._comment_window.is_open:
                 self._comment_window.close()
                 self._comment_window.open()
                 self._comment_window.load_all(self._ctrl.comments)

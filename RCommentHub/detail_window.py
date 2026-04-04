@@ -136,6 +136,13 @@ class DetailWindow:
         s.configure("TCombobox", fieldbackground=UI_COLORS["bg_panel"],
                      background=UI_COLORS["bg_panel"], foreground=UI_COLORS["fg_main"],
                      selectbackground=acc, font=(FONT_FAMILY, FONT_SIZE_S))
+        s.map("TCombobox",
+              fieldbackground=[("readonly", UI_COLORS["bg_panel"]),
+                               ("disabled", UI_COLORS["bg_panel"])],
+              foreground=[("readonly", UI_COLORS["fg_main"]),
+                          ("disabled", UI_COLORS["fg_label"])],
+              selectbackground=[("readonly", UI_COLORS["accent"])],
+              selectforeground=[("readonly", "#FFFFFF")])
 
     # --- UI 構築 ---
 

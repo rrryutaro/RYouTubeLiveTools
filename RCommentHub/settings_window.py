@@ -59,6 +59,13 @@ class SettingsWindow:
         style.map("Settings.TNotebook.Tab",
                   background=[("selected", C["accent"])],
                   foreground=[("selected", "#FFFFFF")])
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", C["bg_list"]),
+                                   ("disabled", C["bg_panel"])],
+                  foreground=[("readonly", C["fg_main"]),
+                               ("disabled", C["fg_label"])],
+                  selectbackground=[("readonly", C["accent"])],
+                  selectforeground=[("readonly", "#FFFFFF")])
 
         nb = ttk.Notebook(win, style="Settings.TNotebook")
         nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -144,6 +151,17 @@ class SettingsWindow:
 
     def _build_view_tab(self, parent):
         C = UI_COLORS
+
+        # テーマ選択（最初に配置）
+        self._section(parent, "テーマ")
+        r_theme = self._labeled_row(parent, "カラーテーマ:")
+        self._theme_var = tk.StringVar(
+            value=self._sm.get("color_theme", "ダーク (デフォルト)"))
+        ttk.Combobox(r_theme, textvariable=self._theme_var,
+                     values=list(COLOR_THEMES.keys()), state="readonly", width=18,
+                     font=(FONT_FAMILY, FONT_SIZE_S)
+                     ).pack(side=tk.LEFT, padx=4)
+
         self._section(parent, "コメント表示")
 
         # 表示行数
@@ -188,15 +206,6 @@ class SettingsWindow:
                      font=(FONT_FAMILY, FONT_SIZE_S)
                      ).pack(side=tk.LEFT, padx=4)
 
-        # テーマ選択
-        r3 = self._labeled_row(parent, "テーマ:")
-        self._theme_var = tk.StringVar(
-            value=self._sm.get("color_theme", "ダーク (デフォルト)"))
-        ttk.Combobox(r3, textvariable=self._theme_var,
-                     values=list(COLOR_THEMES.keys()), state="readonly", width=16,
-                     font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).pack(side=tk.LEFT, padx=4)
-
         self._section(parent, "その他")
         self._topmost_var = tk.BooleanVar(value=self._sm.get("cw_topmost", False))
         tk.Checkbutton(parent, text="コメントビュー最前面表示",
@@ -224,16 +233,22 @@ class SettingsWindow:
 
     def _build_tts_tab(self, parent):
         C = UI_COLORS
-        self._section(parent, "読み上げ設定")
 
+        # 読み上げ全般
+        self._section(parent, "読み上げ全般")
+        self._tts_enabled_var = tk.BooleanVar(value=self._sm.get("tts_enabled", False))
+        tk.Checkbutton(parent, text="読み上げを有効にする", variable=self._tts_enabled_var,
+                       font=(FONT_FAMILY, FONT_SIZE_S),
+                       fg=C["fg_main"], bg=C["bg_main"],
+                       activebackground=C["bg_main"],
+                       selectcolor=C["bg_list"]
+                       ).pack(anchor=tk.W, padx=18, pady=2)
+
+        # 読み上げるコメント種別
+        self._section(parent, "読み上げるコメント種別")
         for attr, cfg_key, default, label in [
-            ("_tts_enabled_var",  "tts_enabled",       False, "読み上げ ON"),
-            ("_tts_normal_var",   "tts_normal",          True, "通常コメント"),
-            ("_tts_sc_var",       "tts_superchat",       True, "Super Chat 系"),
-            ("_tts_owner_var",    "tts_owner",           True, "配信者"),
-            ("_tts_mod_var",      "tts_mod",             True, "Mod"),
-            ("_tts_member_var",   "tts_member",         False, "Member"),
-            ("_tts_simplify_var", "tts_simplify_name",   True, "名前簡略化"),
+            ("_tts_normal_var", "tts_normal",    True,  "通常コメント"),
+            ("_tts_sc_var",     "tts_superchat", True,  "Super Chat / Super Sticker"),
         ]:
             var = tk.BooleanVar(value=self._sm.get(cfg_key, default))
             setattr(self, attr, var)
@@ -242,23 +257,34 @@ class SettingsWindow:
                            fg=C["fg_main"], bg=C["bg_main"],
                            activebackground=C["bg_main"],
                            selectcolor=C["bg_list"]
-                           ).pack(anchor=tk.W, padx=18, pady=2)
+                           ).pack(anchor=tk.W, padx=18, pady=1)
 
-        self._section(parent, "読み上げ対象")
-        for label_text, cfg_key, default in [
-            ("配信者",    "tts_read_owner",   True),
-            ("Mod",       "tts_read_mod",      True),
-            ("Member",    "tts_read_member",  False),
+        # 読み上げる投稿者属性
+        self._section(parent, "読み上げる投稿者属性")
+        for attr, cfg_key, default, label in [
+            ("_tts_owner_var",  "tts_owner",  True,  "配信者 (Owner) のコメント"),
+            ("_tts_mod_var",    "tts_mod",    True,  "Mod のコメント"),
+            ("_tts_member_var", "tts_member", False, "Member のコメント"),
         ]:
-            attr = f"_tts_read_{cfg_key.split('_')[-1]}_var"
             var = tk.BooleanVar(value=self._sm.get(cfg_key, default))
             setattr(self, attr, var)
-            tk.Checkbutton(parent, text=label_text, variable=var,
+            tk.Checkbutton(parent, text=label, variable=var,
                            font=(FONT_FAMILY, FONT_SIZE_S),
                            fg=C["fg_main"], bg=C["bg_main"],
                            activebackground=C["bg_main"],
                            selectcolor=C["bg_list"]
                            ).pack(anchor=tk.W, padx=18, pady=1)
+
+        # オプション
+        self._section(parent, "オプション")
+        self._tts_simplify_var = tk.BooleanVar(value=self._sm.get("tts_simplify_name", True))
+        tk.Checkbutton(parent, text="投稿者名を簡略化して読み上げる（英数字のみの名前を省略）",
+                       variable=self._tts_simplify_var,
+                       font=(FONT_FAMILY, FONT_SIZE_S),
+                       fg=C["fg_main"], bg=C["bg_main"],
+                       activebackground=C["bg_main"],
+                       selectcolor=C["bg_list"]
+                       ).pack(anchor=tk.W, padx=18, pady=2)
 
     # ── 保存 ─────────────────────────────────────────────────────────────────
 

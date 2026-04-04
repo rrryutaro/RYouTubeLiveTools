@@ -117,7 +117,7 @@ class DebugSenderWindow:
                 self._win = None
 
         self._win = tk.Toplevel(self._master)
-        self._win.title("デバッグコメント送信")
+        self._win.title("RCommentHub — デバッグ送信")
         self._win.configure(bg=UI_COLORS["bg_main"])
         self._win.resizable(True, True)
         self._win.minsize(380, 360)
@@ -128,6 +128,13 @@ class DebugSenderWindow:
         self._win.bind("<Configure>", self._on_configure)
         self._win.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        # Combobox 可読性確保（ttk スタイルを明示）
+        style = ttk.Style()
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", UI_COLORS["bg_list"])],
+                  foreground=[("readonly", UI_COLORS["fg_main"])],
+                  selectbackground=[("readonly", UI_COLORS["accent"])],
+                  selectforeground=[("readonly", "#FFFFFF")])
 
     def close(self):
         if self._win:
