@@ -12,6 +12,7 @@ YouTubeライブ配信で活用できるツール集です。
 | [RTokei](RTokei/) | `RTokei/` | デスクトップ常駐デジタル時計。最前面表示・背景透過・スナップ対応 |
 | [RSheetsViewer](RSheetsViewer/) | `RSheetsViewer/` | 配信中にブラウザの余計な情報を映さずGoogleスプレッドシートを操作するツール |
 | [RRoulette](RRoulette/) | `RRoulette/` | YouTubeライブ配信向けルーレットツール。背景透過・OBSキャプチャ対応 |
+| [RCommentHub](RCommentHub/) | `RCommentHub/` | YouTubeライブのコメントをリアルタイム受信・表示・管理するツール。YouTube Data API v3 キーが必要 |
 
 ---
 
