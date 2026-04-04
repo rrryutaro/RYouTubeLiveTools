@@ -29,10 +29,12 @@ class SettingsWindow:
     def open(self):
         if self._win is not None:
             try:
+                self._load_values()
+                self._win.deiconify()
                 self._win.lift()
                 self._win.focus_force()
                 return
-            except tk.TclError:
+            except (tk.TclError, AttributeError):
                 self._win = None
 
         C = UI_COLORS
@@ -91,6 +93,13 @@ class SettingsWindow:
                   relief=tk.FLAT, padx=12, pady=4,
                   command=self._on_save
                   ).pack(side=tk.RIGHT)
+
+        tk.Button(btn_frame, text="適用",
+                  font=(FONT_FAMILY, FONT_SIZE_S),
+                  bg=C["bg_list"], fg=C["fg_main"],
+                  relief=tk.FLAT, padx=12, pady=4,
+                  command=self._on_apply
+                  ).pack(side=tk.RIGHT, padx=(0, 4))
 
         tk.Button(btn_frame, text="キャンセル",
                   font=(FONT_FAMILY, FONT_SIZE_S),
@@ -288,8 +297,8 @@ class SettingsWindow:
 
     # ── 保存 ─────────────────────────────────────────────────────────────────
 
-    def _on_save(self):
-        # API キー保存
+    def _apply_settings(self) -> bool:
+        """設定を保存してコールバックを呼ぶ（共通処理）。成功時 True を返す。"""
         api_key = self._api_key_var.get().strip()
         if api_key != self._sm.api_key:
             try:
@@ -297,9 +306,8 @@ class SettingsWindow:
             except Exception as e:
                 messagebox.showerror("エラー", f"API キーの保存に失敗しました:\n{e}",
                                      parent=self._win)
-                return
+                return False
 
-        # 表示・TTS 設定保存
         updates = {
             "display_rows":       int(self._display_rows_var.get()),
             "font_size_name":     int(self._font_name_var.get()),
@@ -322,20 +330,48 @@ class SettingsWindow:
 
         if self._on_changed:
             self._on_changed()
+        return True
 
-        self._close()
+    def _on_apply(self):
+        """設定を保存してコメントビューに即時反映（ウィンドウは閉じない）"""
+        self._apply_settings()
+
+    def _on_save(self):
+        """設定を保存して閉じる"""
+        if self._apply_settings():
+            self._close()
 
     def _on_configure(self, event):
         if self._win and event.widget is self._win:
             self._pos_setter([self._win.winfo_x(), self._win.winfo_y()])
 
     def _close(self):
+        """設定ウィンドウを非表示にする（destroy せず withdraw で保持）"""
         if self._win:
             try:
-                self._win.destroy()
+                self._win.withdraw()
             except tk.TclError:
                 pass
-            self._win = None
+
+    def _load_values(self):
+        """_sm から設定値を読み込んで UI 変数に反映する（再表示時に呼ぶ）"""
+        self._api_key_var.set(self._sm.api_key)
+        self._theme_var.set(self._sm.get("color_theme", "ダーク (デフォルト)"))
+        self._display_rows_var.set(str(self._sm.get("display_rows", 1)))
+        self._font_name_var.set(str(self._sm.get("font_size_name", 9)))
+        self._font_body_var.set(str(self._sm.get("font_size_body", 9)))
+        self._icon_var.set(self._sm.get("icon_visible", True))
+        self._time_var.set(self._sm.get("time_visible", True))
+        self._time_mode_var.set(self._sm.get("time_mode", "実時間"))
+        self._topmost_var.set(self._sm.get("cw_topmost", False))
+        self._comment_alpha_var.set(str(self._sm.get("cw_comment_alpha", 100)))
+        self._tts_enabled_var.set(self._sm.get("tts_enabled", False))
+        self._tts_normal_var.set(self._sm.get("tts_normal", True))
+        self._tts_sc_var.set(self._sm.get("tts_superchat", True))
+        self._tts_owner_var.set(self._sm.get("tts_owner", True))
+        self._tts_mod_var.set(self._sm.get("tts_mod", True))
+        self._tts_member_var.set(self._sm.get("tts_member", False))
+        self._tts_simplify_var.set(self._sm.get("tts_simplify_name", True))
 
     # ── ヘルパー ──────────────────────────────────────────────────────────────
 

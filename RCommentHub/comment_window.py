@@ -454,16 +454,18 @@ class CommentWindow:
         self._build_user_tab(tab_users)
         self._build_filter_settings_tab(tab_fsettings)
 
-        # ── 透過モード専用フレーム（コメント文字列のみ表示） ──
+        # ── 透過モード専用フレーム（GDI 直接描画で child HWND を使わない） ──
         self._trans_outer = tk.Frame(win, bg=C["bg_main"])
-        # ハンドル帯: 非透過色 → コメント0件時でもウィンドウが見つけられる
-        self._trans_handle = tk.Frame(self._trans_outer, bg="#3A3A5A", height=10)
-        self._trans_handle.pack(fill=tk.X, side=tk.TOP)
-        tk.Label(self._trans_handle, text="コメントビュー",
-                 fg="#8888BB", bg="#3A3A5A",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1)).pack(side=tk.LEFT, padx=6)
-        # テキスト表示エリア (bg は透過モード時に TRANSPARENT_KEY に変更)
-        self._trans_canvas, self._trans_text_frame = self._make_scroll_area(self._trans_outer)
+        # 単一 Canvas: ハンドル帯 + テキストを create_text/create_rectangle で描画
+        # ※ tk.Label/tk.Frame は child HWND のため -transparentcolor が効かない
+        self._trans_canvas = tk.Canvas(
+            self._trans_outer, bg=C["bg_main"],
+            highlightthickness=0, borderwidth=0,
+        )
+        self._trans_canvas.pack(fill=tk.BOTH, expand=True)
+        self._trans_canvas.bind("<Configure>", lambda e: self._redraw_trans_overlay())
+        self._trans_canvas.bind("<Button-3>", self._show_context_menu, add="+")
+        self._trans_text_list: list = []  # 表示中のコメント文字列リスト
 
         # ── コンテキストメニュー ──
         self._ctx_menu = tk.Menu(win, tearoff=0,
@@ -805,6 +807,18 @@ class CommentWindow:
             self._add_trans_text(item)
         self._win.after(100, lambda: self._scroll_to_bottom(self._canvas_all))
 
+    def reload_cards(self, items):
+        """ウィンドウを維持したままカードパネルのみ再構築する（設定変更時に使用）"""
+        if self._win is None:
+            return
+        for w in self._cards_all.winfo_children():
+            w.destroy()
+        for w in self._cards_filter.winfo_children():
+            w.destroy()
+        self._trans_text_list.clear()
+        self._trans_canvas.delete("all")
+        self.load_all(items)
+
     def rebuild_filter_tab(self, items):
         """フィルタ結果タブを再構築（条件変更時）"""
         if self._win is None:
@@ -1033,30 +1047,39 @@ class CommentWindow:
             self._win.after(50, lambda c=canvas: self._scroll_to_bottom(c))
 
     def _add_trans_text(self, item):
-        """透過モード用: コメント本文のみのラベルを追加する"""
+        """透過モード用: コメント本文をリストに追加し Canvas を再描画する"""
         if self._win is None or not item.body:
             return
         try:
+            self._trans_text_list.append(item.body)
+            if len(self._trans_text_list) > 10:
+                self._trans_text_list.pop(0)
             is_trans = self._transparent_mode_var.get() if hasattr(self, "_transparent_mode_var") else False
-            bg = TRANSPARENT_KEY if is_trans else UI_COLORS["bg_main"]
-            lbl = tk.Label(
-                self._trans_text_frame,
-                text=item.body,
-                font=(FONT_FAMILY, FONT_SIZE_S),
-                fg=UI_COLORS["fg_main"],
-                bg=bg,
-                anchor=tk.W,
-                justify=tk.LEFT,
-                wraplength=0,
-            )
-            lbl.pack(fill=tk.X, padx=4, pady=1)
-            lbl.bind("<Configure>", lambda e, l=lbl: l.configure(
-                wraplength=max(100, e.width - 8)))
-            was_at_bottom = self._is_at_bottom(self._trans_canvas)
-            if was_at_bottom:
-                self._win.after(50, lambda: self._scroll_to_bottom(self._trans_canvas))
+            if is_trans:
+                self._redraw_trans_overlay()
         except tk.TclError:
             pass
+
+    def _redraw_trans_overlay(self):
+        """透過モード Canvas を再描画する（ハンドル帯 + コメントテキスト）"""
+        if self._win is None:
+            return
+        c = self._trans_canvas
+        c.delete("all")
+        w = max(c.winfo_width(), 100)
+        # ── ハンドル帯（非透過: #3A3A5A） ─────────────────────────────────
+        c.create_rectangle(0, 0, w, 16, fill="#3A3A5A", outline="")
+        c.create_text(6, 8, text="■ コメントビュー", fill="#8888BB",
+                      anchor="w", font=(FONT_FAMILY, FONT_SIZE_S - 1))
+        # ── コメントテキスト ───────────────────────────────────────────────
+        y = 22
+        wrap_w = max(80, w - 12)
+        for text in self._trans_text_list:
+            tid = c.create_text(6, y, text=text, fill=UI_COLORS["fg_main"],
+                                anchor="nw", font=(FONT_FAMILY, FONT_SIZE_S),
+                                width=wrap_w)
+            bbox = c.bbox(tid)
+            y = (bbox[3] + 4) if bbox else (y + 20)
 
     # ─── アイコンロード ──────────────────────────────────────────────────────
 
@@ -1134,32 +1157,22 @@ class CommentWindow:
             # 通常UIを非表示
             self._status_bar.pack_forget()
             self._notebook.pack_forget()
-            # テキストフレームの背景を透過キーに変更
-            try:
-                self._trans_canvas.configure(bg=TRANSPARENT_KEY)
-                self._trans_text_frame.configure(bg=TRANSPARENT_KEY)
-                for w in self._trans_text_frame.winfo_children():
-                    w.configure(bg=TRANSPARENT_KEY)
-            except tk.TclError:
-                pass
-            # 透過モードフレームを表示
+            # Canvas を透過キー色に変更して描画
+            self._trans_canvas.configure(bg=TRANSPARENT_KEY)
+            self._trans_outer.configure(bg=TRANSPARENT_KEY)
             self._trans_outer.pack(fill=tk.BOTH, expand=True)
             # ウィンドウを透過設定
             self._win.configure(bg=TRANSPARENT_KEY)
             self._win.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
             self._win.wm_attributes("-alpha", alpha)
+            # pack が確定してからサイズ取得して描画
+            self._win.after(50, self._redraw_trans_overlay)
         else:
             # 透過モードフレームを非表示
             self._trans_outer.pack_forget()
-            # テキストフレームの背景を通常色に戻す
-            try:
-                self._trans_canvas.configure(bg=UI_COLORS["bg_main"])
-                self._trans_text_frame.configure(bg=UI_COLORS["bg_main"])
-                for w in self._trans_text_frame.winfo_children():
-                    w.configure(bg=UI_COLORS["bg_main"])
-            except tk.TclError:
-                pass
-            # ウィンドウを通常表示に戻す
+            # Canvas / ウィンドウを通常色に戻す
+            self._trans_canvas.configure(bg=UI_COLORS["bg_main"])
+            self._trans_outer.configure(bg=UI_COLORS["bg_main"])
             self._win.configure(bg=UI_COLORS["bg_main"])
             self._win.wm_attributes("-transparentcolor", "")
             self._win.wm_attributes("-alpha", 1.0)

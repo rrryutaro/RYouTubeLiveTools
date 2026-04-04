@@ -229,9 +229,8 @@ class RCommentHubApp:
                 self._sm.get("icon_visible", True) != old_icon_visible
             )
             if (theme_changed or display_changed) and self._comment_window.is_open:
-                self._comment_window.close()
-                self._comment_window.open()
-                self._comment_window.load_all(self._ctrl.comments)
+                # close+open せずカードのみ再構築（ウィンドウ維持でちらつきなし）
+                self._comment_window.reload_cards(self._ctrl.comments)
                 self._comment_window.refresh_user_tree()
                 self._comment_window.refresh_rule_tree()
                 title = self._ctrl.video_title if self._ctrl.conn_status == "receiving" else ""
