@@ -152,6 +152,20 @@ class CfgPanelMixin:
                 _bind_wheel(child)
         self.root.after(100, lambda: _bind_wheel(p))
 
+        _scv.bind("<ButtonPress-1>", self._drag_start, add="+")
+        _scv.bind("<B1-Motion>",     self._drag_move,  add="+")
+
+        def _bind_drag(widget):
+            _SKIP = (tk.Entry, tk.Scale, tk.Checkbutton, tk.Button, tk.Spinbox,
+                     ttk.Entry, ttk.Combobox, ttk.Scale, ttk.Checkbutton, ttk.Button, ttk.Spinbox,
+                     tk.Scrollbar, ttk.Scrollbar)
+            if not isinstance(widget, _SKIP):
+                widget.bind("<ButtonPress-1>", self._drag_start, add="+")
+                widget.bind("<B1-Motion>",     self._drag_move,  add="+")
+            for child in widget.winfo_children():
+                _bind_drag(child)
+        self.root.after(200, lambda: _bind_drag(p))
+
         # ── 設定パネル幅リサイズグリップ（右下角）─────────────────
         # 独立ウィンドウ時は埋め込み用グリップ不要（OS標準リサイズを使用）
         if not self._cfg_panel_float:

@@ -19,7 +19,7 @@ import json
 from sound_manager import SoundManager
 from config_utils import BASE_DIR, CONFIG_FILE, INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 from constants import (
-    BG,
+    BG, PANEL, ACCENT, DARK2, WHITE,
     SIZE_PROFILES, MIN_W, MIN_H, MAIN_MIN_W, MAIN_MIN_H,
     SIDEBAR_W, CFG_PANEL_W, MAIN_PANEL_PAD,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES, _ADD_SENTINEL,
@@ -30,6 +30,7 @@ from cfg_panel import CfgPanelMixin, _SETTINGS_DEFAULTS
 from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
+from graph_view import GraphViewMixin
 from tooltip_utils import _SimpleTooltip
 from design_settings import DesignSettings, DesignPresetManager
 
@@ -197,6 +198,7 @@ def _standard_order(raw_segs):
 # ════════════════════════════════════════════════════════════════════
 class RouletteApp(
     WindowManagerMixin,
+    GraphViewMixin,
     CfgPanelMixin,
     ItemListMixin,
     WheelRendererMixin,
@@ -564,7 +566,9 @@ class RouletteApp(
             _sg.bind("<ButtonRelease-1>", self._sash_end)
             _sg.place(relx=1.0, rely=1.0, anchor="se")
 
-        self.sidebar.bind("<Button-3>", self._show_context_menu)
+        self.sidebar.bind("<Button-3>",    self._show_context_menu)
+        self.sidebar.bind("<ButtonPress-1>", self._drag_start)
+        self.sidebar.bind("<B1-Motion>",     self._drag_move)
 
     def _build_ctrl_box(self):
         """メインパネル右上のコントロールボックスを構築する。"""
@@ -573,6 +577,39 @@ class RouletteApp(
         _BTN = dict(
             bg=self._design.separator, fg=self._design.text, font=("Meiryo", 11),
             relief=tk.FLAT, cursor="hand2", padx=5, pady=2, bd=0,
+        )
+
+        # ── グラフ向き切り替え（グラフ表示時のみ表示：表示形式系）────────
+        # コンテナフレームでラップし、初期は非表示（pack しない）
+        self._graph_orient_wrap = tk.Frame(self._ctrl_box, bg=self._design.separator)
+        self._graph_orient_btn = tk.Button(
+            self._graph_orient_wrap, text="⇄",
+            command=self._toggle_graph_orientation, **_BTN,
+        )
+        self._graph_orient_btn.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(self._graph_orient_btn, "グラフ 縦/横 切り替え", self.root)
+
+        # ── 並び順切り替えボタン（グラフ表示時のみ）────────────────────
+        self._graph_sort_btn = tk.Button(
+            self._graph_orient_wrap, text="順",
+            command=self._toggle_graph_sort, **_BTN,
+        )
+        self._graph_sort_btn.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(self._graph_sort_btn, "グラフ 並び順切り替え（順→↓多→↑少）", self.root)
+
+        # ラップ内セパレーター（表示形式系 ／ 表示モード切替系）
+        tk.Frame(self._graph_orient_wrap, bg=WHITE, width=1, height=14).pack(
+            side=tk.LEFT, padx=4, pady=3,
+        )
+
+        # ── グラフ切り替え（表示モード系）────────────────────────────
+        self._b_graph = tk.Button(self._ctrl_box, text="≣", command=self._toggle_graph_view, **_BTN)
+        self._b_graph.pack(side=tk.LEFT, padx=1)
+        _SimpleTooltip(self._b_graph, "グラフ / ルーレット 切り替え", self.root)
+
+        # セパレーター（表示モード系 ／ ウィンドウ操作系）
+        tk.Frame(self._ctrl_box, bg=WHITE, width=1, height=14).pack(
+            side=tk.LEFT, padx=4, pady=3,
         )
 
         b_list = tk.Button(self._ctrl_box, text="≡", command=self._toggle_settings, **_BTN)
@@ -617,6 +654,7 @@ class RouletteApp(
         self.cv = tk.Canvas(self.main_frame, bg=self._design.bg, highlightthickness=0)
         self.cv.pack(fill=tk.BOTH, expand=True)
 
+        self._build_graph_view()
         self._build_ctrl_box()
 
         self.cv.bind("<Configure>", self._on_canvas_resize)

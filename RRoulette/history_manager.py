@@ -14,6 +14,7 @@ import tkinter.filedialog as _filedialog
 import tkinter.messagebox as _msgbox
 
 from config_utils import EXPORT_DIR, AUTO_LOG_FILE
+from constants import VERSION
 
 
 class HistoryManagerMixin:
@@ -26,10 +27,12 @@ class HistoryManagerMixin:
         日時は常にメモリ上に保持し、出力時に _log_timestamp で制御する。
         """
         entry = {
-            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "result":    winner,
-            "group":     self._current_pattern,
-            "items":     list(self.items),
+            "timestamp":   datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "result":      winner,
+            "group":       self._current_pattern,
+            "items":       list(self.items),
+            "app_version": VERSION,
+            "item_entries_snapshot": [dict(e) for e in self._item_entries],
         }
         self._history.append(entry)
 
@@ -113,10 +116,12 @@ class HistoryManagerMixin:
         """
         results = [
             {
-                "timestamp": e["timestamp"],
-                "result":    e["result"],
-                "group":     e["group"],
-                "items":     e["items"],
+                "timestamp":   e["timestamp"],
+                "result":      e["result"],
+                "group":       e["group"],
+                "items":       e["items"],
+                "app_version": e.get("app_version"),
+                "item_entries_snapshot": e.get("item_entries_snapshot"),
             }
             for e in self._history
         ]
@@ -137,10 +142,12 @@ class HistoryManagerMixin:
                 data = json.load(f)
             for entry in data.get("results", []):
                 self._history.append({
-                    "timestamp": entry.get("timestamp", ""),
-                    "result":    entry.get("result", ""),
-                    "group":     entry.get("group", ""),
-                    "items":     entry.get("items", []),
+                    "timestamp":   entry.get("timestamp", ""),
+                    "result":      entry.get("result", ""),
+                    "group":       entry.get("group", ""),
+                    "items":       entry.get("items", []),
+                    "app_version": entry.get("app_version", None),
+                    "item_entries_snapshot": entry.get("item_entries_snapshot", None),
                 })
         except Exception:
             pass

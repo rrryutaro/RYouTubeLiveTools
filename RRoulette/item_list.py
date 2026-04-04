@@ -610,6 +610,8 @@ class ItemListMixin:
         cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.config(command=cv.yview)
         self._lb_canvas = cv
+        cv.bind("<ButtonPress-1>", self._drag_start)
+        cv.bind("<B1-Motion>",     self._drag_move)
 
         inner  = tk.Frame(cv, bg="#0f3460")
         win_id = cv.create_window((0, 0), window=inner, anchor="nw")
@@ -742,6 +744,8 @@ class ItemListMixin:
                 w.bind("<MouseWheel>", _on_wheel)
                 w.bind("<Button-1>", lambda e, idx=i: self._select_item(idx))
                 w.bind("<Double-Button-1>", self._on_lb_double_click)
+                w.bind("<ButtonPress-1>", self._drag_start, add="+")
+                w.bind("<B1-Motion>",     self._drag_move,  add="+")
 
             for w in [card, row1, name_lbl, chip_lbl, info_row, prob_lbl, wins_lbl]:
                 if w is not None:
@@ -919,6 +923,17 @@ class ItemListMixin:
         rst_btn.pack(side=tk.RIGHT)
         self._detail_lockable_widgets.append(rst_btn)
 
+        # 詳細カード全体にドラッグ開始バインドを追加（入力UI はスキップ）
+        def _bind_drag_detail(widget):
+            _SKIP = (tk.Entry, tk.Scale, tk.Checkbutton, tk.Button, tk.Spinbox,
+                     ttk.Entry, ttk.Combobox, ttk.Scale, ttk.Checkbutton, ttk.Button, ttk.Spinbox)
+            if not isinstance(widget, _SKIP):
+                widget.bind("<ButtonPress-1>", self._drag_start, add="+")
+                widget.bind("<B1-Motion>",     self._drag_move,  add="+")
+            for child in widget.winfo_children():
+                _bind_drag_detail(child)
+        _bind_drag_detail(self._lb_detail_frm)
+
     def _build_detail_value_row(self, entry):
         """詳細設定カードの値入力ウィジェットを構築/更新する。"""
         for w in self._detail_val_frm.winfo_children():
@@ -961,6 +976,15 @@ class ItemListMixin:
             pw_cb.pack(side=tk.LEFT, padx=(4, 0))
             pw_cb.bind("<<ComboboxSelected>>", lambda e: self._on_detail_weight_change())
             self._detail_lockable_widgets.append(pw_cb)
+
+        # 値入力フレームのラベルにドラッグ開始バインドを追加（入力欄はスキップ）
+        self._detail_val_frm.bind("<ButtonPress-1>", self._drag_start, add="+")
+        self._detail_val_frm.bind("<B1-Motion>",     self._drag_move,  add="+")
+        _SKIP_VAL = (tk.Entry, ttk.Entry, ttk.Combobox)
+        for _child in self._detail_val_frm.winfo_children():
+            if not isinstance(_child, _SKIP_VAL):
+                _child.bind("<ButtonPress-1>", self._drag_start, add="+")
+                _child.bind("<B1-Motion>",     self._drag_move,  add="+")
 
     def _on_detail_prob_mode_change(self):
         """詳細カードの抽選方式変更ハンドラ。"""
