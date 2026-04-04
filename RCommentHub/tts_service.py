@@ -26,6 +26,9 @@ class TTSService:
         self._read_moderator = True   # モデレーター
         self._read_member    = False  # メンバー（デフォルト OFF）
 
+        # 音量（0〜100）
+        self._volume         = 100
+
         # 投稿者名簡略化（ON のとき author_display_name_tts を使用）
         self._simplify_name  = True
 
@@ -45,6 +48,14 @@ class TTSService:
     @enabled.setter
     def enabled(self, value: bool):
         self._enabled = value
+
+    @property
+    def volume(self) -> int:
+        return self._volume
+
+    @volume.setter
+    def volume(self, value: int):
+        self._volume = max(0, min(100, int(value)))
 
     @property
     def simplify_name(self) -> bool:
@@ -198,14 +209,14 @@ class TTSService:
                 break
             self._speak_powershell(text)
 
-    @staticmethod
-    def _speak_powershell(text: str):
+    def _speak_powershell(self, text: str):
         """PowerShell 経由で SAPI 読み上げ（ブロッキング）"""
         # シングルクォートをエスケープ
         safe = text.replace("'", "\\'")
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Volume = {self._volume}; "
             f"$s.Speak('{safe}')"
         )
         try:

@@ -119,13 +119,16 @@ class CommentCard(tk.Frame):
     """1コメント1ブロックのウィジェット"""
 
     def __init__(self, parent, item, icon_cache: dict, icon_loader,
-                 speak_cb=None, rows=2, icon_visible=True, show_source=False, **kwargs):
+                 speak_cb=None, rows=2, icon_visible=True, show_source=False,
+                 font_size_name=None, font_size_body=None, **kwargs):
         style = KIND_STYLES.get(item.kind, _DEFAULT_STYLE)
         bg    = style["bg"]
         super().__init__(parent, bg=bg, pady=CARD_PAD_Y, padx=CARD_PAD_X,
                          highlightthickness=1,
                          highlightbackground=style["border"],
                          **kwargs)
+        _fn = font_size_name if font_size_name is not None else FONT_SIZE_S
+        _fb = font_size_body if font_size_body is not None else FONT_SIZE_S
         self._icon_ref = None
         self._icon_visible = icon_visible
         self._show_source  = show_source
@@ -183,7 +186,7 @@ class CommentCard(tk.Frame):
             else:
                 compact_text = f"{source_pfx}{body_part}" if body_part else "—"
             compact_lbl = tk.Label(right, text=compact_text,
-                                    font=(FONT_FAMILY, FONT_SIZE_S),
+                                    font=(FONT_FAMILY, _fb),
                                     fg=UI_COLORS["fg_main"], bg=bg,
                                     anchor=tk.W, justify=tk.LEFT,
                                     wraplength=0)
@@ -210,7 +213,7 @@ class CommentCard(tk.Frame):
             top_row = tk.Frame(right, bg=bg)
             top_row.pack(anchor=tk.W, fill=tk.X)
             tk.Label(top_row, text=item.author_name or "—",
-                     font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
+                     font=(FONT_FAMILY, _fn, "bold"),
                      fg=UI_COLORS["fg_header"], bg=bg, anchor=tk.W
                      ).pack(side=tk.LEFT)
             for attr, label, fg_b, bg_b in BADGE_DEFS:
@@ -235,7 +238,7 @@ class CommentCard(tk.Frame):
             body = item.body
             if body:
                 tk.Label(right, text=body,
-                         font=(FONT_FAMILY, FONT_SIZE_S),
+                         font=(FONT_FAMILY, _fb),
                          fg=UI_COLORS["fg_main"], bg=bg,
                          anchor=tk.W, justify=tk.LEFT,
                          wraplength=0).pack(anchor=tk.W, fill=tk.X)
@@ -291,8 +294,16 @@ class CommentWindow:
         self._win: tk.Toplevel | None = None
 
         # ドラッグ移動用
-        self._drag_x = 0
-        self._drag_y = 0
+        self._drag_x    = 0
+        self._drag_y    = 0
+        self._dragging  = False
+
+        # リサイズグリップ用
+        self._resize_start_x  = 0
+        self._resize_start_y  = 0
+        self._resize_start_w  = 0
+        self._resize_start_h  = 0
+        self._grip_widget: tk.Label | None = None
 
         self._icon_cache: dict = {}
 
@@ -341,7 +352,7 @@ class CommentWindow:
         self._apply_transparency(self._cfg.get("cw_transparent", False))
 
         self._build_ui()
-        self._win.bind("<Configure>", self._on_configure)
+        self._win.bind("<Configure>", self._on_configure, add="+")
 
         # Alt+Tab に表示されるよう適用（overrideredirect 後は少し遅延が必要）
         self._win.after(50, self._set_appwindow)
@@ -486,7 +497,8 @@ class CommentWindow:
         self._trans_canvas.pack(fill=tk.BOTH, expand=True)
         self._trans_canvas.bind("<Configure>", lambda e: self._redraw_trans_overlay())
         self._trans_canvas.bind("<Button-3>", self._show_context_menu, add="+")
-        self._trans_text_list: list = []  # 表示中のコメント文字列リスト
+        self._trans_text_list: list  = []  # 表示中コメントアイテムリスト
+        self._trans_image_refs: list = []  # Canvas画像GC防止用
 
         # ── コンテキストメニュー ──
         self._ctx_menu = tk.Menu(win, tearoff=0,
@@ -500,11 +512,30 @@ class CommentWindow:
             variable=self._transparent_mode_var,
             command=self._toggle_transparent_mode,
         )
+        self._grip_visible_var = tk.BooleanVar(
+            value=bool(self._cfg.get("cw_grip_visible", True)))
+        self._ctx_menu.add_checkbutton(
+            label="リサイズグリップを表示",
+            variable=self._grip_visible_var,
+            command=self._toggle_grip_visible,
+        )
         self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label="最小化", command=self._minimize)
         self._ctx_menu.add_command(label="閉じる", command=self._on_window_close)
 
         win.bind("<Button-3>", self._show_context_menu)
+
+        # ── リサイズグリップ ──
+        self._grip_widget = tk.Label(
+            win, text="◢", cursor="size_nw_se",
+            bg=UI_COLORS["bg_panel"], fg=UI_COLORS["fg_label"],
+            font=(FONT_FAMILY, FONT_SIZE_S), padx=2, pady=0,
+        )
+        self._grip_widget.bind("<ButtonPress-1>",  self._resize_start)
+        self._grip_widget.bind("<B1-Motion>",      self._resize_move)
+        self._grip_widget.bind("<ButtonRelease-1>", self._resize_end)
+        # ウィンドウレンダリング後に配置（未描画時は winfo_width が 1 を返す）
+        win.after(80, self._init_grip)
 
         # ── ドラッグをウィンドウ全体に適用 ──
         self._bind_drag_to_all(win)
@@ -813,19 +844,23 @@ class CommentWindow:
             return
         rows = self._cfg.get("display_rows", 2)
         icon_visible = self._cfg.get("icon_visible", True)
+        fs_name = self._cfg.get("font_size_name", FONT_SIZE_S)
+        fs_body = self._cfg.get("font_size_body", FONT_SIZE_S)
         for item in items:
             card = CommentCard(self._cards_all, item,
                                self._icon_cache, self._load_icon_bg,
                                speak_cb=self._speak_cb,
                                rows=rows, icon_visible=icon_visible,
-                               show_source=self._show_source)
+                               show_source=self._show_source,
+                               font_size_name=fs_name, font_size_body=fs_body)
             card.pack(fill=tk.X, pady=1, padx=2)
             if getattr(item, "filter_match", False):
                 card2 = CommentCard(self._cards_filter, item,
                                     self._icon_cache, self._load_icon_bg,
                                     speak_cb=self._speak_cb,
                                     rows=rows, icon_visible=icon_visible,
-                                    show_source=self._show_source)
+                                    show_source=self._show_source,
+                                    font_size_name=fs_name, font_size_body=fs_body)
                 card2.pack(fill=tk.X, pady=1, padx=2)
             self._add_trans_text(item)
         self._win.after(100, lambda: self._scroll_to_bottom(self._canvas_all))
@@ -839,6 +874,7 @@ class CommentWindow:
         for w in self._cards_filter.winfo_children():
             w.destroy()
         self._trans_text_list.clear()
+        self._trans_image_refs.clear()
         self._trans_canvas.delete("all")
         self.load_all(items)
 
@@ -849,11 +885,14 @@ class CommentWindow:
         try:
             for w in self._cards_filter.winfo_children():
                 w.destroy()
+            fs_name = self._cfg.get("font_size_name", FONT_SIZE_S)
+            fs_body = self._cfg.get("font_size_body", FONT_SIZE_S)
             for item in items:
                 if getattr(item, "filter_match", False):
                     card = CommentCard(self._cards_filter, item,
                                        self._icon_cache, self._load_icon_bg,
-                                       speak_cb=self._speak_cb)
+                                       speak_cb=self._speak_cb,
+                                       font_size_name=fs_name, font_size_body=fs_body)
                     card.pack(fill=tk.X, pady=1, padx=2)
             self._win.after(100, lambda: self._scroll_to_bottom(self._canvas_filter))
         except tk.TclError:
@@ -1062,24 +1101,25 @@ class CommentWindow:
         self._show_source = visible
 
     def _add_card(self, cards_frame, canvas, item):
-        was_at_bottom = self._is_at_bottom(canvas)
         rows = self._cfg.get("display_rows", 2)
         icon_visible = self._cfg.get("icon_visible", True)
+        fs_name = self._cfg.get("font_size_name", FONT_SIZE_S)
+        fs_body = self._cfg.get("font_size_body", FONT_SIZE_S)
         card = CommentCard(cards_frame, item,
                            self._icon_cache, self._load_icon_bg,
                            speak_cb=self._speak_cb,
                            rows=rows, icon_visible=icon_visible,
-                           show_source=self._show_source)
+                           show_source=self._show_source,
+                           font_size_name=fs_name, font_size_body=fs_body)
         card.pack(fill=tk.X, pady=1, padx=2)
-        if was_at_bottom:
-            self._win.after(50, lambda c=canvas: self._scroll_to_bottom(c))
+        self._win.after(50, lambda c=canvas: self._scroll_to_bottom(c))
 
     def _add_trans_text(self, item):
-        """透過モード用: コメント本文をリストに追加し Canvas を再描画する"""
+        """透過モード用: コメントアイテムをリストに追加し Canvas を再描画する"""
         if self._win is None or not item.body:
             return
         try:
-            self._trans_text_list.append(item.body)
+            self._trans_text_list.append(item)
             if len(self._trans_text_list) > 10:
                 self._trans_text_list.pop(0)
             is_trans = self._transparent_mode_var.get() if hasattr(self, "_transparent_mode_var") else False
@@ -1089,25 +1129,100 @@ class CommentWindow:
             pass
 
     def _redraw_trans_overlay(self):
-        """透過モード Canvas を再描画する（ハンドル帯 + コメントテキスト）"""
+        """透過モード Canvas を再描画する。通常モードと同内容（行数・アイコン・フォントサイズ準拠）"""
         if self._win is None:
             return
         c = self._trans_canvas
         c.delete("all")
-        w = max(c.winfo_width(), 100)
+        self._trans_image_refs = []  # GC 防止リセット
+
+        w            = max(c.winfo_width(), 100)
+        fn           = self._cfg.get("font_size_name",  FONT_SIZE_S)
+        fb           = self._cfg.get("font_size_body",  FONT_SIZE_S)
+        rows         = self._cfg.get("display_rows",    2)
+        icon_visible = self._cfg.get("icon_visible",    True)
+
+        # アイコン領域幅（アイコン OFF なら 0）
+        icon_col_w = (ICON_SIZE + ICON_PAD * 2 + 4) if icon_visible else 0
+        text_x     = 6 + icon_col_w
+        wrap_w     = max(80, w - text_x - 6)
+
         # ── ハンドル帯（非透過: #3A3A5A） ─────────────────────────────────
         c.create_rectangle(0, 0, w, 16, fill="#3A3A5A", outline="")
         c.create_text(6, 8, text="■ コメントビュー", fill="#8888BB",
                       anchor="w", font=(FONT_FAMILY, FONT_SIZE_S - 1))
-        # ── コメントテキスト ───────────────────────────────────────────────
+
         y = 22
-        wrap_w = max(80, w - 12)
-        for text in self._trans_text_list:
-            tid = c.create_text(6, y, text=text, fill=UI_COLORS["fg_main"],
-                                anchor="nw", font=(FONT_FAMILY, FONT_SIZE_S),
-                                width=wrap_w)
-            bbox = c.bbox(tid)
-            y = (bbox[3] + 4) if bbox else (y + 20)
+        for item in self._trans_text_list:
+            sid   = getattr(item, "source_id",   "conn1")
+            sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(sid, sid)
+            item_top = y
+            text_y   = y
+
+            if rows == 1:
+                # ── 1行コンパクト ─────────────────────────────────────────
+                source_pfx = f"[{sname}] " if self._show_source and sname else ""
+                name_part  = item.author_name or ""
+                body_part  = item.body or ""
+                if name_part and body_part:
+                    line = f"{source_pfx}{name_part}: {body_part}"
+                elif name_part:
+                    line = f"{source_pfx}{name_part}"
+                else:
+                    line = f"{source_pfx}{body_part}" if body_part else "—"
+                tid  = c.create_text(text_x, text_y, text=line,
+                                     fill=UI_COLORS["fg_main"], anchor="nw",
+                                     font=(FONT_FAMILY, fb), width=wrap_w)
+                bbox = c.bbox(tid)
+                text_y = (bbox[3] + 6) if bbox else (text_y + fb + 6)
+            else:
+                # ── 2行標準 ───────────────────────────────────────────────
+                if self._show_source and sname:
+                    src_color = SOURCE_COLORS.get(sid, "#AAAAAA")
+                    tid  = c.create_text(text_x, text_y,
+                                         text=f"[{sname}]", fill=src_color,
+                                         anchor="nw",
+                                         font=(FONT_FAMILY, max(fn - 1, 6), "bold"),
+                                         width=wrap_w)
+                    bbox = c.bbox(tid)
+                    text_y = (bbox[3] + 2) if bbox else (text_y + fn + 2)
+
+                if item.author_name:
+                    tid  = c.create_text(text_x, text_y,
+                                         text=item.author_name,
+                                         fill=UI_COLORS["fg_header"], anchor="nw",
+                                         font=(FONT_FAMILY, fn, "bold"),
+                                         width=wrap_w)
+                    bbox = c.bbox(tid)
+                    text_y = (bbox[3] + 2) if bbox else (text_y + fn + 2)
+
+                if item.body:
+                    tid  = c.create_text(text_x, text_y, text=item.body,
+                                         fill=UI_COLORS["fg_main"], anchor="nw",
+                                         font=(FONT_FAMILY, fb), width=wrap_w)
+                    bbox = c.bbox(tid)
+                    text_y = (bbox[3] + 6) if bbox else (text_y + fb + 6)
+                else:
+                    text_y += 6
+
+            # ── アイコン描画（Canvas.create_image） ───────────────────────
+            if icon_visible:
+                key   = item.channel_id or item.author_name
+                photo = (self._icon_cache.get(key)
+                         or self._icon_cache.get("__ph__" + (item.author_name or "")))
+                if photo:
+                    # テキスト全体の高さに対して垂直センタリング
+                    item_h  = text_y - item_top - 6
+                    icon_cy = item_top + max(0, (item_h - ICON_SIZE) // 2)
+                    c.create_image(6 + ICON_PAD, icon_cy, image=photo, anchor="nw")
+                    self._trans_image_refs.append(photo)
+
+            y = text_y
+
+        # 描画内容全体を scrollregion に設定し最下部を表示する
+        h = max(c.winfo_height(), 100)
+        c.configure(scrollregion=(0, 0, w, max(y, h)))
+        c.yview_moveto(1.0)
 
     # ─── アイコンロード ──────────────────────────────────────────────────────
 
@@ -1154,15 +1269,71 @@ class CommentWindow:
     def _drag_start(self, event):
         if self._win is None:
             return
+        if self._grip_widget and event.widget is self._grip_widget:
+            self._dragging = False
+            return
+        self._dragging = True
         self._drag_x = event.x_root - self._win.winfo_x()
         self._drag_y = event.y_root - self._win.winfo_y()
 
     def _drag_move(self, event):
-        if self._win is None:
+        if self._win is None or not self._dragging:
             return
         x = event.x_root - self._drag_x
         y = event.y_root - self._drag_y
         self._win.geometry(f"+{x}+{y}")
+
+    # ─── リサイズグリップ ─────────────────────────────────────────────────────
+
+    def _init_grip(self):
+        """ウィンドウ描画後にグリップを初期配置する"""
+        if self._grip_widget is None or self._win is None:
+            return
+        if self._grip_visible_var.get():
+            self._place_grip()
+
+    def _place_grip(self):
+        """グリップを右下に配置し最前面に浮かせる"""
+        if self._grip_widget is None or self._win is None:
+            return
+        w = self._win.winfo_width()
+        h = self._win.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        self._grip_widget.place(x=w - 18, y=h - 18)
+        self._grip_widget.lift()
+
+    def _resize_start(self, event):
+        if self._win is None:
+            return
+        self._resize_start_x = event.x_root
+        self._resize_start_y = event.y_root
+        self._resize_start_w = self._win.winfo_width()
+        self._resize_start_h = self._win.winfo_height()
+
+    def _resize_move(self, event):
+        if self._win is None:
+            return
+        dx = event.x_root - self._resize_start_x
+        dy = event.y_root - self._resize_start_y
+        new_w = max(320, self._resize_start_w + dx)
+        new_h = max(400, self._resize_start_h + dy)
+        self._win.geometry(f"{new_w}x{new_h}")
+
+    def _resize_end(self, event):
+        if self._win is None:
+            return
+        self._cfg["cw_width"]  = self._win.winfo_width()
+        self._cfg["cw_height"] = self._win.winfo_height()
+
+    def _toggle_grip_visible(self):
+        visible = self._grip_visible_var.get()
+        self._cfg["cw_grip_visible"] = visible
+        if self._grip_widget:
+            if visible:
+                self._place_grip()
+            else:
+                self._grip_widget.place_forget()
 
     # ─── コンテキストメニュー ────────────────────────────────────────────────
 
@@ -1259,6 +1430,8 @@ class CommentWindow:
             self._cfg["cw_y"]      = self._win.winfo_y()
             self._cfg["cw_width"]  = self._win.winfo_width()
             self._cfg["cw_height"] = self._win.winfo_height()
+            if self._grip_visible_var.get():
+                self._place_grip()
 
     def _on_topmost_toggle(self):
         val = self.topmost_var.get()

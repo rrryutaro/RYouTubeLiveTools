@@ -34,6 +34,9 @@ DEFAULT_CONFIG = {
     "sash_filter_list": 200,
     "sash_list_detail": 650,
     "sash_main_log":    560,
+    "font_size_name":   9,
+    "font_size_body":   9,
+    "cw_grip_visible":  True,
 }
 
 def _extract_video_id(text: str) -> str:
@@ -285,8 +288,10 @@ class RCommentHubApp:
     def _on_settings_changed(self):
         self._ctrl.apply_tts_from_settings()
 
-        old_display_rows = self._comment_window._cfg.get("display_rows", 2) if self._comment_window else 2
-        old_icon_visible = self._comment_window._cfg.get("icon_visible", True) if self._comment_window else True
+        old_display_rows  = self._comment_window._cfg.get("display_rows", 2) if self._comment_window else 2
+        old_icon_visible  = self._comment_window._cfg.get("icon_visible", True) if self._comment_window else True
+        old_font_size_name = self._comment_window._cfg.get("font_size_name", 9) if self._comment_window else 9
+        old_font_size_body = self._comment_window._cfg.get("font_size_body", 9) if self._comment_window else 9
 
         new_theme    = self._sm.get("color_theme", "ダーク (デフォルト)")
         theme_changed = (new_theme != self._current_theme)
@@ -295,15 +300,21 @@ class RCommentHubApp:
 
         if self._comment_window:
             # 表示設定を CommentWindow の cfg に同期
-            self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
-            self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
+            self._comment_window._cfg["display_rows"]    = self._sm.get("display_rows", 2)
+            self._comment_window._cfg["icon_visible"]    = self._sm.get("icon_visible", True)
+            self._comment_window._cfg["font_size_name"]  = self._sm.get("font_size_name", 9)
+            self._comment_window._cfg["font_size_body"]  = self._sm.get("font_size_body", 9)
             self._comment_window.topmost_var.set(self._sm.get("cw_topmost", False))
             self._comment_window._cfg["cw_comment_alpha"] = self._sm.get("cw_comment_alpha", 100)
             display_changed = (
                 self._sm.get("display_rows", 2) != old_display_rows or
                 self._sm.get("icon_visible", True) != old_icon_visible
             )
-            if (theme_changed or display_changed) and self._comment_window.is_open:
+            font_changed = (
+                self._sm.get("font_size_name", 9) != old_font_size_name or
+                self._sm.get("font_size_body", 9) != old_font_size_body
+            )
+            if (theme_changed or display_changed or font_changed) and self._comment_window.is_open:
                 self._comment_window.reload_cards(self._ctrl.comments)
                 self._comment_window.refresh_user_tree()
                 self._comment_window.refresh_rule_tree()
