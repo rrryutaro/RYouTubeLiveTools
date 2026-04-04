@@ -29,6 +29,9 @@ class TTSService:
         # 投稿者名簡略化（ON のとき author_display_name_tts を使用）
         self._simplify_name  = True
 
+        # 接続先名を先頭で読み上げる
+        self._read_source_name = False
+
         # ワーカースレッド起動
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
@@ -50,6 +53,14 @@ class TTSService:
     @simplify_name.setter
     def simplify_name(self, value: bool):
         self._simplify_name = value
+
+    @property
+    def read_source_name(self) -> bool:
+        return self._read_source_name
+
+    @read_source_name.setter
+    def read_source_name(self, value: bool):
+        self._read_source_name = value
 
     def set_filter(self, *,
                    normal: bool | None = None,
@@ -142,6 +153,15 @@ class TTSService:
             name = item.author_name or "名無し"
         body = item.body or ""
 
+        # 接続先名プレフィックス
+        source_prefix = ""
+        if self._read_source_name:
+            from constants import SOURCE_DEFAULT_NAMES
+            sid   = getattr(item, "source_id",   "conn1")
+            sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(sid, sid)
+            if sname:
+                source_prefix = f"{sname}、"
+
         # URL・記号を除去
         body = re.sub(r'https?://\S+', '', body)
         body = body.strip()
@@ -155,17 +175,20 @@ class TTSService:
                 prefix = f"スーパーチャット {amt}、"
             else:
                 prefix = "スーパーチャット、"
-            return f"{name}、{prefix}{body}" if body else f"{name}、{prefix}"
+            core = f"{name}、{prefix}{body}" if body else f"{name}、{prefix}"
+            return f"{source_prefix}{core}"
         elif kind == "superStickerEvent":
             snippet = item.raw.get("snippet", {})
             amt = snippet.get("superStickerDetails", {}).get("amountDisplayString", "")
-            return f"{name}、スーパーステッカー {amt}"
+            return f"{source_prefix}{name}、スーパーステッカー {amt}"
         elif kind == "memberMilestoneChatEvent":
             d = item.raw.get("snippet", {}).get("memberMilestoneChatDetails", {})
             month = d.get("memberMonth", "")
-            return f"{name}、{month}ヶ月メンバー継続" + (f"、{body}" if body else "")
+            core = f"{name}、{month}ヶ月メンバー継続" + (f"、{body}" if body else "")
+            return f"{source_prefix}{core}"
         else:
-            return f"{name}、{body}" if body else name
+            core = f"{name}、{body}" if body else name
+            return f"{source_prefix}{core}"
 
     def _run(self):
         """ワーカースレッド: キューからテキストを取り出して読み上げ"""

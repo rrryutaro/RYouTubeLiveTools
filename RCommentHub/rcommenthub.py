@@ -1,6 +1,7 @@
 """
 RCommentHub — YouTube Live コメントハブ  v0.2.0
 メインエントリポイントおよびアプリコーディネーター
+v0.2.0: 固定2接続（conn1/conn2）同時表示対応
 """
 
 import tkinter as tk
@@ -10,6 +11,7 @@ import sys
 from constants import (
     VERSION, WINDOW_TITLE, DEFAULT_WIDTH, DEFAULT_HEIGHT,
     CONFIG_FILENAME, apply_theme, UI_COLORS,
+    SOURCE_DEFAULT_NAMES,
 )
 from comment_controller import CommentController
 from comment_window import CommentWindow
@@ -105,16 +107,18 @@ class RCommentHubApp:
         self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
         self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
 
-        # 接続ダイアログ
+        # 接続ダイアログ（conn1 専用）
         self._connect_dialog = ConnectDialog(
             master=root,
             extract_fn=_extract_video_id,
             verify_fn=self._ctrl.verify,
-            connect_fn=self._ctrl.connect,
+            connect_fn=self._on_connect_fn,
             api_key_getter=lambda: self._sm.api_key,
             topmost_getter=_topmost_getter,
             pos_getter=lambda: self._sm.get("cd_pos", None),
             pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
+            url_getter=lambda: self._sm.get("conn1_url", ""),
+            url_saver=lambda url: self._sm.update({"conn1_url": url}),
         )
 
         # 設定ウィンドウ
@@ -137,9 +141,10 @@ class RCommentHubApp:
             topmost_getter=_topmost_getter,
             pos_getter=lambda: self._sm.get("ds_pos", None),
             pos_setter=lambda pos: self._sm.update({"ds_pos": pos}),
+            sources_getter=self._get_active_sources,
         )
 
-        # 詳細ウィンドウ（補助画面）- DetailWindow の参照を保持してから CommentWindow に渡す
+        # 詳細ウィンドウ（補助画面）
         self._detail_win = DetailWindow(
             root=root,
             controller=self._ctrl,
@@ -156,15 +161,16 @@ class RCommentHubApp:
         self._ctrl.on_stream_info(self._on_ctrl_stream_info)
         self._ctrl.on_user_cleared(self._on_ctrl_user_cleared)
         self._ctrl.on_debug_mode(self._on_ctrl_debug_mode)
-        # コメント追加通知 → CommentWindow へ反映
         self._ctrl.on_comment_added(self._on_ctrl_comment_added)
+        # per-source 状態変化 → マルチ接続モード切替
+        self._ctrl.on_source_status(self._on_ctrl_source_status)
 
         # TTS 初期化
         self._ctrl.apply_tts_from_settings()
 
         # 起動時にコメントビューを自動表示
         root.after(100, self._comment_window.open)
-        self._ctrl.log("RCommentHub 起動完了")
+        self._ctrl.log(f"RCommentHub v{VERSION} 起動完了")
 
     def _detail_window_open(self):
         """コメントビューからの詳細ウィンドウ表示要求"""
@@ -175,6 +181,42 @@ class RCommentHubApp:
 
     def _open_settings_window(self):
         self._settings_win.open()
+
+    def _on_connect_fn(self, verify_result: dict):
+        """ConnectDialog から呼ばれる接続開始（conn1 + 自動 conn2 試行）"""
+        self._ctrl.connect_with_auto_conn2(verify_result, source_id="conn1")
+
+    def _get_active_sources(self) -> list:
+        """
+        デバッグ送信ウィンドウ用: 送信先として使える接続の一覧を返す。
+
+        - デバッグモード中: 設定で「有効」になっている接続を全て返す
+          （YouTube への実接続がなくてもデバッグ送信できるため）
+        - 通常接続中: 実際に receiving/connecting/reconnecting な接続のみ返す
+        """
+        result = []
+
+        if self._ctrl.debug_mode:
+            # デバッグ時は設定で enabled な接続を列挙
+            for conn_id in ("conn1", "conn2"):
+                default_en = (conn_id == "conn1")
+                if self._sm.get(f"{conn_id}_enabled", default_en):
+                    name = self._sm.get(
+                        f"{conn_id}_name",
+                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
+                    )
+                    result.append((conn_id, name))
+        else:
+            statuses = self._ctrl.get_conn_statuses()
+            for conn_id in ("conn1", "conn2"):
+                if statuses.get(conn_id, "disconnected") not in ("disconnected", "error"):
+                    name = self._sm.get(
+                        f"{conn_id}_name",
+                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
+                    )
+                    result.append((conn_id, name))
+
+        return result if result else [("conn1", self._sm.get("conn1_name", "接続1"))]
 
     # --- コントローラ → コーディネーター コールバック ---
 
@@ -196,14 +238,47 @@ class RCommentHubApp:
             self._comment_window.refresh_user_tree()
 
     def _on_ctrl_debug_mode(self, debug_mode: bool, open_sender: bool):
-        """デバッグモード変化 → デバッグ送信ウィンドウを開く"""
+        """デバッグモード変化 → デバッグ送信ウィンドウを開く・接続元ラベル切替"""
         if open_sender:
             self._debug_win.open()
+        self._update_source_visible()
 
     def _on_ctrl_comment_added(self, item):
         """コントローラからのコメント追加通知 → CommentWindow に反映"""
         if self._comment_window and self._comment_window.is_open:
             self._comment_window.add_comment(item)
+
+    def _on_ctrl_source_status(self, source_id: str, status: str):
+        """per-source 接続状態変化 → マルチ接続モードの切替判定"""
+        if self._comment_window is None:
+            return
+        self._update_source_visible()
+
+    def _compute_show_source(self) -> bool:
+        """接続元ラベルを表示すべきかを返す。
+        YouTube 2接続 active、または デバッグモードで接続設定が2つ有効な場合に True。"""
+        if self._ctrl.is_multi_conn_active():
+            return True
+        if self._ctrl.debug_mode:
+            enabled = sum(
+                1 for conn_id in ("conn1", "conn2")
+                if self._sm.get(f"{conn_id}_enabled", conn_id == "conn1")
+            )
+            return enabled >= 2
+        return False
+
+    def _update_source_visible(self):
+        """接続元ラベルの表示/非表示を評価し、変化があれば CommentWindow を更新する"""
+        if self._comment_window is None:
+            return
+        show = self._compute_show_source()
+        was  = self._comment_window._show_source
+        if show != was:
+            self._comment_window.set_source_visible(show)
+            if self._comment_window.is_open:
+                self._comment_window.reload_cards(self._ctrl.comments)
+                title = self._ctrl.video_title if self._ctrl.conn_status == "receiving" else ""
+                self._comment_window.set_conn_status(self._ctrl.conn_status, title)
 
     # --- 設定変更 ---
 
@@ -229,7 +304,6 @@ class RCommentHubApp:
                 self._sm.get("icon_visible", True) != old_icon_visible
             )
             if (theme_changed or display_changed) and self._comment_window.is_open:
-                # close+open せずカードのみ再構築（ウィンドウ維持でちらつきなし）
                 self._comment_window.reload_cards(self._ctrl.comments)
                 self._comment_window.refresh_user_tree()
                 self._comment_window.refresh_rule_tree()

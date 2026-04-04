@@ -45,9 +45,9 @@ class SettingsWindow:
         win.resizable(False, True)
         pos = self._pos_getter()
         if pos:
-            win.geometry(f"440x540+{pos[0]}+{pos[1]}")
+            win.geometry(f"460x620+{pos[0]}+{pos[1]}")
         else:
-            win.geometry("440x540")
+            win.geometry("460x620")
         win.wm_attributes("-topmost", self._topmost_getter())
         win.bind("<Configure>", self._on_configure)
 
@@ -73,13 +73,16 @@ class SettingsWindow:
         nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
         tab_api  = tk.Frame(nb, bg=C["bg_main"])
+        tab_conn = tk.Frame(nb, bg=C["bg_main"])
         tab_view = tk.Frame(nb, bg=C["bg_main"])
         tab_tts  = tk.Frame(nb, bg=C["bg_main"])
-        nb.add(tab_api,  text="API / 接続")
+        nb.add(tab_api,  text="API")
+        nb.add(tab_conn, text="接続設定")
         nb.add(tab_view, text="表示")
         nb.add(tab_tts,  text="読み上げ")
 
         self._build_api_tab(tab_api)
+        self._build_conn_tab(tab_conn)
         self._build_view_tab(tab_view)
         self._build_tts_tab(tab_tts)
 
@@ -155,6 +158,75 @@ class SettingsWindow:
 
     def _toggle_key_visibility(self):
         self._api_entry.config(show="" if self._show_key_var.get() else "*")
+
+    # ── 接続設定タブ ──────────────────────────────────────────────────────────
+
+    def _build_conn_tab(self, parent):
+        C = UI_COLORS
+
+        # スクロール対応フレーム
+        canvas = tk.Canvas(parent, bg=C["bg_main"], highlightthickness=0)
+        sb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = tk.Frame(canvas, bg=C["bg_main"])
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(
+            inner_id, width=e.width))
+
+        def _conn_block(parent, conn_id, label_text):
+            self._section(parent, label_text)
+            pad = {"padx": 18, "pady": 2}
+
+            # 有効/無効
+            en_default = True if conn_id == "conn1" else False
+            en_var = tk.BooleanVar(value=self._sm.get(f"{conn_id}_enabled", en_default))
+            setattr(self, f"_{conn_id}_enabled_var", en_var)
+            tk.Checkbutton(parent, text="有効", variable=en_var,
+                           font=(FONT_FAMILY, FONT_SIZE_S),
+                           fg=C["fg_main"], bg=C["bg_main"],
+                           activebackground=C["bg_main"],
+                           selectcolor=C["bg_list"]
+                           ).pack(anchor=tk.W, **pad)
+
+            # 表示名
+            r_name = self._labeled_row(parent, "表示名:")
+            name_default = "接続1" if conn_id == "conn1" else "接続2"
+            name_var = tk.StringVar(value=self._sm.get(f"{conn_id}_name", name_default))
+            setattr(self, f"_{conn_id}_name_var", name_var)
+            tk.Entry(r_name, textvariable=name_var, width=20,
+                     bg=C["bg_list"], fg=C["fg_main"],
+                     insertbackground=C["fg_main"],
+                     font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT
+                     ).pack(side=tk.LEFT, padx=4)
+
+            # URL / 動画ID
+            tk.Label(parent, text="YouTube URL または 動画ID:",
+                     font=(FONT_FAMILY, FONT_SIZE_S),
+                     fg=C["fg_label"], bg=C["bg_main"]
+                     ).pack(anchor=tk.W, padx=18, pady=(4, 0))
+            url_var = tk.StringVar(value=self._sm.get(f"{conn_id}_url", ""))
+            setattr(self, f"_{conn_id}_url_var", url_var)
+            tk.Entry(parent, textvariable=url_var,
+                     bg=C["bg_list"], fg=C["fg_main"],
+                     insertbackground=C["fg_main"],
+                     font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT
+                     ).pack(fill=tk.X, padx=18, pady=(0, 4))
+
+        _conn_block(inner, "conn1", "接続1（メイン）")
+        tk.Label(inner, text="※ 接続1は「接続」ダイアログからも URL を入力できます。",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"], wraplength=380, justify=tk.LEFT
+                 ).pack(anchor=tk.W, padx=18, pady=(0, 6))
+
+        _conn_block(inner, "conn2", "接続2（サブ）")
+        tk.Label(inner, text="※ 接続2は接続1が開始されると自動的に接続を試みます。",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"], wraplength=380, justify=tk.LEFT
+                 ).pack(anchor=tk.W, padx=18, pady=(0, 6))
 
     # ── 表示タブ ──────────────────────────────────────────────────────────────
 
@@ -294,6 +366,14 @@ class SettingsWindow:
                        activebackground=C["bg_main"],
                        selectcolor=C["bg_list"]
                        ).pack(anchor=tk.W, padx=18, pady=2)
+        self._tts_read_source_var = tk.BooleanVar(value=self._sm.get("tts_read_source_name", False))
+        tk.Checkbutton(parent, text="接続先名を先頭で読み上げる（マルチ接続時の識別用）",
+                       variable=self._tts_read_source_var,
+                       font=(FONT_FAMILY, FONT_SIZE_S),
+                       fg=C["fg_main"], bg=C["bg_main"],
+                       activebackground=C["bg_main"],
+                       selectcolor=C["bg_list"]
+                       ).pack(anchor=tk.W, padx=18, pady=2)
 
     # ── 保存 ─────────────────────────────────────────────────────────────────
 
@@ -325,6 +405,14 @@ class SettingsWindow:
             "tts_mod":            self._tts_mod_var.get(),
             "tts_member":         self._tts_member_var.get(),
             "tts_simplify_name":  self._tts_simplify_var.get(),
+            "tts_read_source_name": self._tts_read_source_var.get(),
+            # 接続設定
+            "conn1_enabled":      self._conn1_enabled_var.get(),
+            "conn1_name":         self._conn1_name_var.get().strip(),
+            "conn1_url":          self._conn1_url_var.get().strip(),
+            "conn2_enabled":      self._conn2_enabled_var.get(),
+            "conn2_name":         self._conn2_name_var.get().strip(),
+            "conn2_url":          self._conn2_url_var.get().strip(),
         }
         self._sm.update(updates)
 
@@ -372,6 +460,14 @@ class SettingsWindow:
         self._tts_mod_var.set(self._sm.get("tts_mod", True))
         self._tts_member_var.set(self._sm.get("tts_member", False))
         self._tts_simplify_var.set(self._sm.get("tts_simplify_name", True))
+        self._tts_read_source_var.set(self._sm.get("tts_read_source_name", False))
+        # 接続設定
+        self._conn1_enabled_var.set(self._sm.get("conn1_enabled", True))
+        self._conn1_name_var.set(self._sm.get("conn1_name", "接続1"))
+        self._conn1_url_var.set(self._sm.get("conn1_url", ""))
+        self._conn2_enabled_var.set(self._sm.get("conn2_enabled", False))
+        self._conn2_name_var.set(self._sm.get("conn2_name", "接続2"))
+        self._conn2_url_var.set(self._sm.get("conn2_url", ""))
 
     # ── ヘルパー ──────────────────────────────────────────────────────────────
 

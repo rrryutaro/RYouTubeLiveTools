@@ -14,13 +14,16 @@ class ConnectDialog:
     """
     URL / 動画ID 入力 → 接続確認 → 接続開始 の流れを提供するダイアログ。
 
-    extract_fn: (text: str) -> str          URL から動画 ID を抽出
-    verify_fn:  (video_id, api_key) -> dict 接続確認（失敗時は例外）
-    connect_fn: (verify_result: dict) -> None 接続確認後に接続開始
+    extract_fn:   (text: str) -> str          URL から動画 ID を抽出
+    verify_fn:    (video_id, api_key) -> dict 接続確認（失敗時は例外）
+    connect_fn:   (verify_result: dict) -> None 接続確認後に接続開始
+    url_getter:   () -> str                   設定から conn1 URL を取得（プリフィル用）
+    url_saver:    (url: str) -> None          接続確認後に conn1 URL を保存
     """
 
     def __init__(self, master: tk.Tk, extract_fn, verify_fn, connect_fn,
-                 api_key_getter, topmost_getter=None, pos_getter=None, pos_setter=None):
+                 api_key_getter, topmost_getter=None, pos_getter=None, pos_setter=None,
+                 url_getter=None, url_saver=None):
         self._master         = master
         self._extract_fn     = extract_fn
         self._verify_fn      = verify_fn
@@ -29,6 +32,8 @@ class ConnectDialog:
         self._topmost_getter = topmost_getter or (lambda: False)
         self._pos_getter     = pos_getter or (lambda: None)
         self._pos_setter     = pos_setter or (lambda pos: None)
+        self._url_getter     = url_getter or (lambda: "")
+        self._url_saver      = url_saver or (lambda url: None)
         self._verify_result  = None
         self._win: tk.Toplevel | None = None
 
@@ -68,7 +73,7 @@ class ConnectDialog:
                  font=(FONT_FAMILY, FONT_SIZE_S),
                  fg=C["fg_label"], bg=C["bg_main"]
                  ).pack(anchor=tk.W)
-        self._url_var = tk.StringVar()
+        self._url_var = tk.StringVar(value=self._url_getter())
         entry = tk.Entry(input_frame, textvariable=self._url_var,
                          bg=C["bg_list"], fg=C["fg_main"],
                          insertbackground=C["fg_main"],
@@ -159,6 +164,8 @@ class ConnectDialog:
         self._set_result(f"✓ 確認OK: {title}", "ok")
         self._btn_verify.config(state=tk.NORMAL)
         self._btn_connect.config(state=tk.NORMAL)
+        # 確認できた URL を設定に保存しておく
+        self._url_saver(self._url_var.get().strip())
 
     def _on_verify_fail(self, msg: str):
         self._verify_result = None

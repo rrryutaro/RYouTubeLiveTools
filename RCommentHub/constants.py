@@ -2,7 +2,7 @@
 RCommentHub — 定数定義
 """
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # ─── ウィンドウ ──────────────────────────────────────────────────────────────
 WINDOW_TITLE   = "RCommentHub — 詳細"
@@ -78,6 +78,19 @@ CONN_STATUS_COLORS = {
 # ─── 入力ソース ──────────────────────────────────────────────────────────────
 INPUT_SOURCE_YOUTUBE = "live_youtube"
 INPUT_SOURCE_DEBUG   = "debug_manual"
+
+# ─── 接続ソース定義 ──────────────────────────────────────────────────────────
+CONN_IDS = ("conn1", "conn2")
+
+SOURCE_COLORS = {
+    "conn1": "#88AAFF",   # 青系
+    "conn2": "#FFBB44",   # 橙系
+}
+
+SOURCE_DEFAULT_NAMES = {
+    "conn1": "接続1",
+    "conn2": "接続2",
+}
 
 # ─── 配信状態メッセージ ──────────────────────────────────────────────────────
 STREAM_STATUS_LABELS = {

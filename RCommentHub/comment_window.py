@@ -22,6 +22,7 @@ except ImportError:
 from constants import (
     UI_COLORS, FONT_FAMILY, FONT_SIZE_S, FONT_SIZE_M,
     ROW_COLORS, EVENT_TYPE_LABELS, CONN_STATUS_COLORS, TRANSPARENT_KEY,
+    SOURCE_COLORS, SOURCE_DEFAULT_NAMES,
 )
 from filter_rules import FilterRule, FilterRuleManager, MATCH_TYPES
 
@@ -118,7 +119,7 @@ class CommentCard(tk.Frame):
     """1コメント1ブロックのウィジェット"""
 
     def __init__(self, parent, item, icon_cache: dict, icon_loader,
-                 speak_cb=None, rows=2, icon_visible=True, **kwargs):
+                 speak_cb=None, rows=2, icon_visible=True, show_source=False, **kwargs):
         style = KIND_STYLES.get(item.kind, _DEFAULT_STYLE)
         bg    = style["bg"]
         super().__init__(parent, bg=bg, pady=CARD_PAD_Y, padx=CARD_PAD_X,
@@ -127,6 +128,7 @@ class CommentCard(tk.Frame):
                          **kwargs)
         self._icon_ref = None
         self._icon_visible = icon_visible
+        self._show_source  = show_source
 
         # ── アイコン領域 ──
         if icon_visible:
@@ -165,15 +167,21 @@ class CommentCard(tk.Frame):
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         if rows == 1:
-            # コンパクト1行表示: 名前: 本文
+            # コンパクト1行表示: [接続元] 名前: 本文
             name_part = item.author_name or ""
             body_part = item.body or ""
+            source_pfx = ""
+            if show_source:
+                _sid   = getattr(item, "source_id",   "conn1")
+                _sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(_sid, _sid)
+                if _sname:
+                    source_pfx = f"[{_sname}] "
             if name_part and body_part:
-                compact_text = f"{name_part}: {body_part}"
+                compact_text = f"{source_pfx}{name_part}: {body_part}"
             elif name_part:
-                compact_text = name_part
+                compact_text = f"{source_pfx}{name_part}"
             else:
-                compact_text = body_part or "—"
+                compact_text = f"{source_pfx}{body_part}" if body_part else "—"
             compact_lbl = tk.Label(right, text=compact_text,
                                     font=(FONT_FAMILY, FONT_SIZE_S),
                                     fg=UI_COLORS["fg_main"], bg=bg,
@@ -183,6 +191,16 @@ class CommentCard(tk.Frame):
             self._body_label = compact_lbl
         else:
             # 2行表示（標準）
+            # 接続元ラベル（マルチ接続時）
+            if show_source:
+                _sid   = getattr(item, "source_id",   "conn1")
+                _sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(_sid, _sid)
+                if _sname:
+                    src_color = SOURCE_COLORS.get(_sid, "#AAAAAA")
+                    tk.Label(right, text=f"[{_sname}]",
+                             font=(FONT_FAMILY, FONT_SIZE_S - 1, "bold"),
+                             fg=src_color, bg=bg, anchor=tk.W).pack(anchor=tk.W)
+
             kind_label = style["label"]
             if kind_label:
                 tk.Label(right, text=kind_label,
@@ -291,6 +309,9 @@ class CommentWindow:
 
         # ユーザー一覧 Treeview の定期更新用タスク ID
         self._user_refresh_id = None
+
+        # マルチ接続時の接続元ラベル表示フラグ
+        self._show_source = False
 
     # ─── 開閉 ────────────────────────────────────────────────────────────────
 
@@ -796,13 +817,15 @@ class CommentWindow:
             card = CommentCard(self._cards_all, item,
                                self._icon_cache, self._load_icon_bg,
                                speak_cb=self._speak_cb,
-                               rows=rows, icon_visible=icon_visible)
+                               rows=rows, icon_visible=icon_visible,
+                               show_source=self._show_source)
             card.pack(fill=tk.X, pady=1, padx=2)
             if getattr(item, "filter_match", False):
                 card2 = CommentCard(self._cards_filter, item,
                                     self._icon_cache, self._load_icon_bg,
                                     speak_cb=self._speak_cb,
-                                    rows=rows, icon_visible=icon_visible)
+                                    rows=rows, icon_visible=icon_visible,
+                                    show_source=self._show_source)
                 card2.pack(fill=tk.X, pady=1, padx=2)
             self._add_trans_text(item)
         self._win.after(100, lambda: self._scroll_to_bottom(self._canvas_all))
@@ -1034,6 +1057,10 @@ class CommentWindow:
 
     # ─── カード追加（内部） ───────────────────────────────────────────────────
 
+    def set_source_visible(self, visible: bool):
+        """マルチ接続時の接続元ラベル表示を切り替える"""
+        self._show_source = visible
+
     def _add_card(self, cards_frame, canvas, item):
         was_at_bottom = self._is_at_bottom(canvas)
         rows = self._cfg.get("display_rows", 2)
@@ -1041,7 +1068,8 @@ class CommentWindow:
         card = CommentCard(cards_frame, item,
                            self._icon_cache, self._load_icon_bg,
                            speak_cb=self._speak_cb,
-                           rows=rows, icon_visible=icon_visible)
+                           rows=rows, icon_visible=icon_visible,
+                           show_source=self._show_source)
         card.pack(fill=tk.X, pady=1, padx=2)
         if was_at_bottom:
             self._win.after(50, lambda c=canvas: self._scroll_to_bottom(c))

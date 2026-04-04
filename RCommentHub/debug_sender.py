@@ -52,12 +52,15 @@ _DEFAULT_PRESETS = [
 ]
 
 
-def _build_debug_raw(preset: dict, body: str) -> dict:
+def _build_debug_raw(preset: dict, body: str,
+                     source_id: str = "conn1", source_name: str = "") -> dict:
     """デバッグコメント用の YouTube API 形式 raw dict を生成する"""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return {
-        "id":       f"debug_{uuid.uuid4().hex[:12]}",
-        "_source":  INPUT_SOURCE_DEBUG,
+        "id":           f"debug_{uuid.uuid4().hex[:12]}",
+        "_source":      INPUT_SOURCE_DEBUG,
+        "_source_id":   source_id,
+        "_source_name": source_name,
         "snippet": {
             "type":                "textMessageEvent",
             "publishedAt":         now_iso,
@@ -90,11 +93,12 @@ class DebugSenderWindow:
     presets_getter      : 現在のプリセットリストを返すコールバック
     presets_setter      : プリセットリストを保存するコールバック
     mode_enabled_getter : デバッグモードが ON かどうかを返すコールバック（省略時は常に True）
+    sources_getter      : アクティブな [(source_id, source_name), ...] を返すコールバック
     """
 
     def __init__(self, master, add_comment_cb, presets_getter, presets_setter,
                  mode_enabled_getter=None, topmost_getter=None,
-                 pos_getter=None, pos_setter=None):
+                 pos_getter=None, pos_setter=None, sources_getter=None):
         self._master              = master
         self._add_comment         = add_comment_cb
         self._get_presets         = presets_getter
@@ -103,6 +107,8 @@ class DebugSenderWindow:
         self._topmost_getter      = topmost_getter or (lambda: False)
         self._pos_getter          = pos_getter or (lambda: None)
         self._pos_setter          = pos_setter or (lambda pos: None)
+        # sources_getter: () -> [(source_id, source_name), ...]
+        self._sources_getter      = sources_getter or (lambda: [("conn1", "接続1")])
         self._win: tk.Toplevel | None = None
 
     # ─── 開閉 ────────────────────────────────────────────────────────────────
@@ -238,6 +244,21 @@ class DebugSenderWindow:
         self._body_text.bind("<Return>",   self._on_enter_key)
         self._body_text.bind("<KP_Enter>", self._on_enter_key)
 
+        # ── 接続先セレクタ ──
+        src_frame = tk.Frame(win, bg=C["bg_main"])
+        src_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+        tk.Label(src_frame, text="送信先接続:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]
+                 ).pack(side=tk.LEFT)
+        self._source_var = tk.StringVar(value="conn1")
+        self._source_cb  = ttk.Combobox(
+            src_frame, textvariable=self._source_var,
+            state="readonly", font=(FONT_FAMILY, FONT_SIZE_S), width=16,
+        )
+        self._source_cb.pack(side=tk.LEFT, padx=(6, 0))
+        self._refresh_source_list()
+
         # ── 送信ボタン ──
         tk.Button(
             win, text="▶ 送信",
@@ -264,6 +285,19 @@ class DebugSenderWindow:
         else:
             self._preset_var.set("")
             self._lbl_detail.config(text="プリセットなし")
+
+    def _refresh_source_list(self):
+        """接続先リストを最新の sources_getter から更新する"""
+        sources = self._sources_getter()
+        if not sources:
+            sources = [("conn1", "接続1")]
+        labels = [f"{name} ({sid})" for sid, name in sources]
+        self._source_cb["values"] = labels
+        # _source_var には表示ラベルを保持し、送信時に source_id へ変換する
+        self._source_map = {f"{name} ({sid})": (sid, name) for sid, name in sources}
+        cur = self._source_var.get()
+        if cur not in self._source_map:
+            self._source_var.set(labels[0])
 
     def _update_detail(self):
         preset = self._current_preset()
@@ -315,7 +349,12 @@ class DebugSenderWindow:
                                    parent=self._win)
             return
 
-        raw = _build_debug_raw(preset, body)
+        # 接続先を解決
+        self._refresh_source_list()
+        src_label = self._source_var.get()
+        source_id, source_name = self._source_map.get(src_label, ("conn1", "接続1"))
+
+        raw = _build_debug_raw(preset, body, source_id=source_id, source_name=source_name)
         self._add_comment(raw)
 
         # 送信後に本文クリア
