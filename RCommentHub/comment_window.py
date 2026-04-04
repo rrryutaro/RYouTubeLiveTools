@@ -1150,8 +1150,6 @@ class CommentWindow:
         on = self._transparent_mode_var.get()
         if self._win is None:
             return
-        raw_alpha = self._cfg.get("cw_comment_alpha", 100) / 100.0
-        alpha = max(0.10, raw_alpha)
 
         if on:
             # 通常UIを非表示
@@ -1162,9 +1160,10 @@ class CommentWindow:
             self._trans_outer.configure(bg=TRANSPARENT_KEY)
             self._trans_outer.pack(fill=tk.BOTH, expand=True)
             # ウィンドウを透過設定
+            # 注意: -alpha を後から設定すると LWA_COLORKEY がクリアされるため使用禁止
             self._win.configure(bg=TRANSPARENT_KEY)
-            self._win.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
-            self._win.wm_attributes("-alpha", alpha)
+            self._win.wm_attributes("-alpha", 1.0)          # alpha をリセットしてから
+            self._win.wm_attributes("-transparentcolor", TRANSPARENT_KEY)  # colorkey のみ適用
             # pack が確定してからサイズ取得して描画
             self._win.after(50, self._redraw_trans_overlay)
         else:
