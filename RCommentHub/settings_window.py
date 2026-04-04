@@ -261,7 +261,7 @@ class SettingsWindow:
         ]:
             r = self._labeled_row(parent, label_text)
             var = tk.StringVar(value=str(self._sm.get(cfg_key, default)))
-            ttk.Spinbox(r, textvariable=var, from_=7, to=24, width=4,
+            ttk.Spinbox(r, textvariable=var, from_=7, to=72, width=4,
                         font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT, padx=4)
             setattr(self, attr, var)
 
@@ -324,6 +324,23 @@ class SettingsWindow:
                        activebackground=C["bg_main"],
                        selectcolor=C["bg_list"]
                        ).pack(anchor=tk.W, padx=18, pady=2)
+
+        # 音量
+        vol_row = tk.Frame(parent, bg=C["bg_main"])
+        vol_row.pack(anchor=tk.W, padx=18, pady=2)
+        tk.Label(vol_row, text="音量:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]
+                 ).pack(side=tk.LEFT)
+        self._tts_volume_var = tk.IntVar(value=self._sm.get("tts_volume", 100))
+        tk.Scale(vol_row, variable=self._tts_volume_var,
+                 from_=0, to=100, orient=tk.HORIZONTAL, length=160,
+                 resolution=1, showvalue=True,
+                 bg=C["bg_main"], fg=C["fg_main"],
+                 troughcolor=C["bg_list"], activebackground=C["accent"],
+                 highlightthickness=0, bd=0,
+                 font=(FONT_FAMILY, FONT_SIZE_S)
+                 ).pack(side=tk.LEFT, padx=(4, 0))
 
         # 読み上げるコメント種別
         self._section(parent, "読み上げるコメント種別")
@@ -399,6 +416,7 @@ class SettingsWindow:
             "cw_topmost":         self._topmost_var.get(),
             "cw_comment_alpha":   int(self._comment_alpha_var.get()),
             "tts_enabled":        self._tts_enabled_var.get(),
+            "tts_volume":         self._tts_volume_var.get(),
             "tts_normal":         self._tts_normal_var.get(),
             "tts_superchat":      self._tts_sc_var.get(),
             "tts_owner":          self._tts_owner_var.get(),
@@ -454,6 +472,7 @@ class SettingsWindow:
         self._topmost_var.set(self._sm.get("cw_topmost", False))
         self._comment_alpha_var.set(str(self._sm.get("cw_comment_alpha", 100)))
         self._tts_enabled_var.set(self._sm.get("tts_enabled", False))
+        self._tts_volume_var.set(self._sm.get("tts_volume", 100))
         self._tts_normal_var.set(self._sm.get("tts_normal", True))
         self._tts_sc_var.set(self._sm.get("tts_superchat", True))
         self._tts_owner_var.set(self._sm.get("tts_owner", True))

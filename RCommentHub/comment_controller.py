@@ -485,6 +485,7 @@ class CommentController:
     def apply_tts_from_settings(self):
         sm = self._sm
         self._tts.enabled            = sm.get("tts_enabled",          False)
+        self._tts.volume             = sm.get("tts_volume",            100)
         self._tts.simplify_name      = sm.get("tts_simplify_name",    True)
         self._tts.read_source_name   = sm.get("tts_read_source_name", False)
         self._tts.set_filter(
