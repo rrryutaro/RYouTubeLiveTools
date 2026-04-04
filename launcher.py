@@ -7,7 +7,7 @@ Launcher — YouTubeLiveTools 管理ランチャー
 """
 
 import tkinter as tk
-import json, os, sys, glob, subprocess, ctypes, ctypes.wintypes
+import json, os, sys, glob, subprocess, ctypes, ctypes.wintypes, re
 
 # ─── ウィンドウスタイル定数 ──────────────────────────────────────────
 GWL_EXSTYLE      = -20
@@ -15,6 +15,33 @@ WS_EX_APPWINDOW  = 0x00040000
 WS_EX_TOOLWINDOW = 0x00000080
 
 MIN_W, MIN_H = 280, 120
+
+# ─── バージョン定義箇所（ツール名 → (ファイル名, 行番号)）───────────────────
+VERSION_HINTS = {
+    "RRoulette":     ("constants.py",   5),
+    "RTokei":        ("rtokei.py",      9),
+    "RSheetsViewer": ("sheets_viewer.py", 9),
+    "RCommentHub":   ("constants.py",   5),
+}
+
+
+def _read_version(tool_dir, tool_name):
+    """VERSION_HINTS に登録された行を直接読んでバージョン文字列を返す。未登録・読み取り失敗時は None。"""
+    hint = VERSION_HINTS.get(tool_name)
+    if not hint:
+        return None
+    file_name, line_no = hint
+    file_path = os.path.join(tool_dir, file_name)
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) >= line_no:
+            m = re.match(r'\s*VERSION\s*=\s*["\']([^"\']+)["\']', lines[line_no - 1])
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
 
 # ─── パス設定 ───────────────────────────────────────────────
 if getattr(sys, "frozen", False):
@@ -110,7 +137,8 @@ def discover_tools(base_dir):
         bat_path = os.path.join(folder, "build_exe.bat")
         build_bat = bat_path if os.path.exists(bat_path) else None
 
-        tools.append({"name": entry.name, "py": main_py, "exe": main_exe, "bat": build_bat})
+        version = _read_version(folder, entry.name)
+        tools.append({"name": entry.name, "py": main_py, "exe": main_exe, "bat": build_bat, "version": version})
 
     return tools
 
@@ -181,9 +209,14 @@ class LauncherApp:
             row.pack(fill="x", pady=2)
             row.bind("<Button-3>", self._show_menu)
 
-            tk.Label(row, text=tool["name"], bg=BG, fg=FG,
-                     font=("メイリオ", 10), anchor="w", width=16
-                     ).pack(side="left")
+            name_cell = tk.Frame(row, bg=BG)
+            name_cell.pack(side="left")
+            tk.Label(name_cell, text=tool["name"], bg=BG, fg=FG,
+                     font=("メイリオ", 10), anchor="w", width=16).pack(anchor="w", pady=(1, 0))
+            ver = tool.get("version")
+            if ver:
+                tk.Label(name_cell, text=f"v{ver}", bg=BG, fg=FG2,
+                         font=("メイリオ", 7), anchor="w", width=16).pack(anchor="w", pady=(0, 1))
 
             tk.Button(
                 row, text="▶ Python", bg=BTN, fg=FG,
