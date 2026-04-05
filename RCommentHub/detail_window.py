@@ -9,6 +9,7 @@ import ctypes
 import ctypes.wintypes
 import datetime
 import json
+import os
 import re
 import tkinter as tk
 from tkinter import ttk, scrolledtext
@@ -46,7 +47,8 @@ class DetailWindow:
                  comment_window_getter=None,
                  open_connect_cb=None,
                  open_settings_cb=None,
-                 debug_win_opener=None):
+                 debug_win_opener=None,
+                 base_dir: str = ""):
         self._root               = root
         self._ctrl               = controller
         self._sm                 = settings_mgr
@@ -56,6 +58,12 @@ class DetailWindow:
         self._open_settings      = open_settings_cb or (lambda: None)
         self._debug_win_opener   = debug_win_opener or (lambda: None)
         self._appwindow_set      = False
+        self._base_dir           = base_dir
+
+        # 過去ログ閲覧状態
+        self._past_log_mode      = False
+        self._past_sessions: list = []       # [(folder_name, dir_path, meta_dict), ...]
+        self._past_log_records: dict = {}    # {row_index: record_dict}
 
         # Toplevel 作成（起動直後は非表示）
         self._win = tk.Toplevel(root)
@@ -419,6 +427,51 @@ class DetailWindow:
                   command=self._open_comment_window_filter_tab
                   ).pack(fill=tk.X, padx=6, pady=(2, 0))
 
+        # 過去ログ閲覧
+        section("過去ログ閲覧")
+        self._btn_past_log_toggle = tk.Button(
+            inner, text="📋 過去ログ閲覧",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["bg_list"], fg=C["fg_label"], relief=tk.FLAT, pady=2,
+            command=self._toggle_past_log_mode,
+        )
+        self._btn_past_log_toggle.pack(fill=tk.X, padx=6, pady=(2, 0))
+
+        # セッション選択パネル（過去ログモード時のみ表示）
+        self._past_log_panel = tk.Frame(inner, bg=C["bg_panel"])
+
+        lbox_frame = tk.Frame(self._past_log_panel, bg=C["bg_panel"])
+        lbox_frame.pack(fill=tk.X, padx=0, pady=(2, 0))
+        self._session_listbox = tk.Listbox(
+            lbox_frame, height=8,
+            bg=C["bg_list"], fg=C["fg_main"],
+            selectbackground=C["accent"], selectforeground="#FFFFFF",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            relief=tk.FLAT, activestyle="none",
+        )
+        lbox_vsb = ttk.Scrollbar(lbox_frame, orient=tk.VERTICAL,
+                                  command=self._session_listbox.yview)
+        self._session_listbox.configure(yscrollcommand=lbox_vsb.set)
+        lbox_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._session_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._session_listbox.bind("<<ListboxSelect>>", self._on_past_session_select)
+
+        tk.Button(
+            self._past_log_panel, text="一覧を更新",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["bg_list"], fg=C["fg_label"], relief=tk.FLAT, pady=2,
+            command=self._refresh_past_sessions,
+        ).pack(fill=tk.X, pady=(2, 0))
+
+        self._lbl_session_info = tk.Label(
+            self._past_log_panel, text="", wraplength=160,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg="#AAAAAA", bg=C["bg_panel"], justify=tk.LEFT,
+        )
+        self._lbl_session_info.pack(anchor=tk.W, padx=4, pady=(2, 0))
+
+        # _past_log_panel は初期非表示（モードON時に pack）
+
         return outer
 
     # ── コメント一覧 ──────────────────────────────────────────────────────────
@@ -426,10 +479,18 @@ class DetailWindow:
     def _build_list_area(self, parent) -> tk.Frame:
         C = UI_COLORS
         frame = tk.Frame(parent, bg=C["bg_list"])
-        tk.Label(frame, text="コメント一覧（全件）",
+        header_row = tk.Frame(frame, bg=C["bg_list"])
+        header_row.pack(fill=tk.X, padx=6, pady=(4, 0))
+        tk.Label(header_row, text="コメント一覧（全件）",
                  font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
                  fg=C["fg_label"], bg=C["bg_list"]
-                 ).pack(anchor=tk.W, padx=6, pady=(4, 0))
+                 ).pack(side=tk.LEFT)
+        self._lbl_list_mode = tk.Label(
+            header_row, text="【現在セッション】",
+            font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
+            fg="#88FF88", bg=C["bg_list"],
+        )
+        self._lbl_list_mode.pack(side=tk.LEFT, padx=(10, 0))
 
         tree_frame = tk.Frame(frame, bg=C["bg_list"])
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
@@ -508,6 +569,8 @@ class DetailWindow:
     # ─── コントローラ コールバックハンドラ ───────────────────────────────────
 
     def _on_comment_added(self, item):
+        if self._past_log_mode:
+            return  # 過去ログ閲覧中はライブ更新を抑制
         self._insert_tree_row(item)
         self._update_header_stats()
 
@@ -658,8 +721,21 @@ class DetailWindow:
         sel = self._tree.selection()
         if not sel:
             return
+        iid = sel[0]
+
+        # 過去ログモード：past_<index> 形式の iid
+        if self._past_log_mode and iid.startswith("past_"):
+            try:
+                idx = int(iid[5:])
+                rec = self._past_log_records.get(idx)
+                if rec:
+                    self._show_past_log_detail(rec)
+            except (ValueError, KeyError):
+                pass
+            return
+
         try:
-            seq = int(sel[0])
+            seq = int(iid)
         except ValueError:
             return
         item = next((c for c in self._ctrl.comments if c.seq_no == seq), None)
@@ -735,6 +811,225 @@ class DetailWindow:
 
         h("E. Raw JSON")
         t.insert(tk.END, json.dumps(item.raw, ensure_ascii=False, indent=2) + "\n", "raw")
+        t.config(state=tk.DISABLED)
+
+    # ─── 過去ログ閲覧 ─────────────────────────────────────────────────────────
+
+    def _toggle_past_log_mode(self):
+        if self._past_log_mode:
+            self._exit_past_log_mode()
+        else:
+            self._enter_past_log_mode()
+
+    def _enter_past_log_mode(self):
+        self._past_log_mode = True
+        self._btn_past_log_toggle.config(
+            text="▶ ライブモードに戻る",
+            bg="#3A1A3A", fg="#FF88FF",
+        )
+        self._past_log_panel.pack(fill=tk.X, padx=6, pady=(4, 0))
+        self._lbl_list_mode.config(
+            text="【過去ログ閲覧 — 読み取り専用】",
+            fg="#FF8888",
+        )
+        self._refresh_past_sessions()
+
+    def _exit_past_log_mode(self):
+        self._past_log_mode = False
+        self._past_log_records.clear()
+        C = UI_COLORS
+        self._btn_past_log_toggle.config(
+            text="📋 過去ログ閲覧",
+            bg=C["bg_list"], fg=C["fg_label"],
+        )
+        self._past_log_panel.pack_forget()
+        self._lbl_list_mode.config(text="【現在セッション】", fg="#88FF88")
+        self._lbl_session_info.config(text="")
+        # ライブコメントを再表示
+        self._apply_filter()
+
+    def _refresh_past_sessions(self):
+        sessions_dir = os.path.join(self._base_dir, "logs", "sessions")
+        self._past_sessions = []
+        self._session_listbox.delete(0, tk.END)
+
+        if not os.path.isdir(sessions_dir):
+            self._session_listbox.insert(tk.END, "（セッションなし）")
+            return
+
+        entries = []
+        try:
+            for name in os.listdir(sessions_dir):
+                d = os.path.join(sessions_dir, name)
+                if not os.path.isdir(d):
+                    continue
+                meta_path = os.path.join(d, "session_meta.json")
+                meta = {}
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except Exception:
+                    pass
+                entries.append((name, d, meta))
+        except Exception as e:
+            self._log(f"[過去ログ] 一覧取得エラー: {e}")
+            return
+
+        entries.sort(key=lambda x: x[0], reverse=True)
+
+        if not entries:
+            self._session_listbox.insert(tk.END, "（セッションなし）")
+            return
+
+        for name, d, meta in entries:
+            title    = meta.get("title", "")
+            video_id = meta.get("video_id", "")
+            start_time = meta.get("start_time", "")
+            if start_time:
+                try:
+                    dt = datetime.datetime.fromisoformat(start_time)
+                    date_str = dt.strftime("%Y/%m/%d %H:%M")
+                except Exception:
+                    date_str = start_time[:16]
+            else:
+                date_str = name[:15]
+
+            short_title = (title[:18] + "…") if len(title) > 18 else title
+            display = f"{date_str}  {short_title or video_id[:12]}"
+            self._past_sessions.append((name, d, meta))
+            self._session_listbox.insert(tk.END, display)
+
+    def _on_past_session_select(self, event):
+        sel = self._session_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._past_sessions):
+            return
+        folder_name, session_dir, meta = self._past_sessions[idx]
+        self._load_session_comments(session_dir, meta)
+
+    def _load_session_comments(self, session_dir: str, meta: dict):
+        self._tree.delete(*self._tree.get_children())
+        self._past_log_records.clear()
+
+        # セッション情報ラベル更新
+        title    = meta.get("title", "—")
+        video_id = meta.get("video_id", "—")
+        chat_id  = meta.get("live_chat_id", "—")
+        start    = meta.get("start_time", "—")[:16].replace("T", " ")
+        info_text = f"{start}\n{title}\nvideo: {video_id}\nchat: {chat_id}"
+        self._lbl_session_info.config(text=info_text)
+
+        jsonl_path = os.path.join(session_dir, "comments.jsonl")
+        if not os.path.isfile(jsonl_path):
+            self._log("[過去ログ] comments.jsonl が見つかりません")
+            return
+
+        count = 0
+        try:
+            with open(jsonl_path, encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+
+                    recv_time = rec.get("received_at_local", "")
+                    if recv_time:
+                        try:
+                            dt = datetime.datetime.fromisoformat(recv_time)
+                            recv_str = dt.strftime("%H:%M:%S")
+                        except Exception:
+                            recv_str = recv_time[:8]
+                    else:
+                        recv_str = ""
+
+                    post_time = rec.get("published_at", "")
+                    if post_time:
+                        try:
+                            dt = datetime.datetime.fromisoformat(post_time)
+                            post_str = dt.strftime("%H:%M:%S")
+                        except Exception:
+                            post_str = post_time[:8]
+                    else:
+                        post_str = ""
+
+                    kind    = rec.get("message_type", "")
+                    author  = rec.get("author_display_name_raw", "")
+                    body    = rec.get("message_text_raw", "")
+                    body_s  = (body[:48] + "…") if len(body) > 48 else body
+                    ch_id   = rec.get("author_channel_id", "")
+                    msg_id  = rec.get("message_id", "")
+
+                    roles = []
+                    if rec.get("is_chat_owner"):     roles.append("O")
+                    if rec.get("is_chat_moderator"): roles.append("M")
+                    if rec.get("is_chat_sponsor"):   roles.append("S")
+                    if rec.get("is_verified"):       roles.append("V")
+                    roles_str = ",".join(roles)
+
+                    vals = (i + 1, recv_str, post_str, kind, author, body_s,
+                            ch_id, roles_str, msg_id, "保存済")
+                    iid = f"past_{i}"
+                    self._tree.insert("", tk.END, iid=iid, values=vals)
+                    self._past_log_records[i] = rec
+                    count += 1
+
+                    if count >= 5000:
+                        self._log("[過去ログ] 5000件上限に達したため打ち切りました")
+                        break
+        except Exception as e:
+            self._log(f"[過去ログ] 読込エラー: {e}")
+
+        self._lbl_total.config(text=str(count))
+        self._lbl_shown.config(text=str(count))
+        self._log(f"[過去ログ] {count}件 読み込みました")
+
+    def _show_past_log_detail(self, rec: dict):
+        t = self._detail_text
+        t.config(state=tk.NORMAL)
+        t.delete("1.0", tk.END)
+
+        def h(text):
+            t.insert(tk.END, f"\n{'─'*2} {text} {'─'*20}\n", "section")
+
+        def kv(key, val):
+            t.insert(tk.END, f"  {key:<26}", "key")
+            t.insert(tk.END, f"{val}\n", "value")
+
+        t.insert(tk.END, "  ▼ 保存済みログ — 読み取り専用 ▼\n", "section")
+
+        h("A. 基本情報")
+        kv("メッセージID",    rec.get("message_id", "—"))
+        kv("種別",            rec.get("message_type", "—"))
+        kv("投稿時刻",        rec.get("published_at", "—"))
+        kv("受信時刻(local)", rec.get("received_at_local", "—"))
+        kv("video_id",        rec.get("video_id", "—"))
+        kv("live_chat_id",    rec.get("live_chat_id", "—"))
+        kv("入力ソース",      rec.get("input_source", "—"))
+
+        h("B. 投稿者情報")
+        kv("displayName",     rec.get("author_display_name_raw", "—"))
+        kv("displayName(TTS)",rec.get("author_display_name_tts", "—"))
+        kv("channelId",       rec.get("author_channel_id", "—"))
+        kv("channelUrl",      rec.get("author_channel_url", "—"))
+        kv("isChatOwner",     rec.get("is_chat_owner", False))
+        kv("isChatModerator", rec.get("is_chat_moderator", False))
+        kv("isChatSponsor",   rec.get("is_chat_sponsor", False))
+        kv("isVerified",      rec.get("is_verified", False))
+
+        h("C. メッセージ内容")
+        kv("message_text_raw",     rec.get("message_text_raw", "—"))
+        kv("message_text_display", rec.get("message_text_display", "—"))
+        kv("filter_match",         rec.get("filter_match", False))
+        kv("filter_rule_ids",      str(rec.get("filter_rule_ids", [])))
+
+        h("D. Raw JSON")
+        t.insert(tk.END, json.dumps(rec, ensure_ascii=False, indent=2) + "\n", "raw")
         t.config(state=tk.DISABLED)
 
     # ─── ソート・右クリック ───────────────────────────────────────────────────

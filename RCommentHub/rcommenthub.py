@@ -168,6 +168,7 @@ class RCommentHubApp:
             open_connect_cb=self._open_connect_dialog,
             open_settings_cb=self._open_settings_window,
             debug_win_opener=self._debug_win.open,
+            base_dir=BASE_DIR,
         )
 
         # コントローラ → コーディネーター間のコールバック登録
