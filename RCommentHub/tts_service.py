@@ -17,7 +17,10 @@ class TTSService:
 
     def __init__(self):
         self._enabled = False
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        # キューのエントリは (text: str, item: Any) のタプル、または None（終了シグナル）
+        self._queue: queue.Queue = queue.Queue()
+        # TTS が読み上げ開始する直前に呼ばれるコールバック (item) -> None
+        self._on_speak = None
 
         # 読み上げフィルタ設定
         self._read_normal    = True   # 通常コメント
@@ -96,6 +99,14 @@ class TTSService:
         # SAPI Rate: -10〜10、ここでは 0〜10 の正方向のみ
         self._speed = max(-10, min(10, int(value)))
 
+    def set_on_speak(self, callback):
+        """
+        TTS が読み上げを開始する直前に呼ばれるコールバックを設定する。
+        callback: (item) -> None  ※ item が None のものは呼ばれない
+        Overlay と TTS の同期に使う。
+        """
+        self._on_speak = callback
+
     def set_filter(self, *,
                    normal: bool | None = None,
                    superchat: bool | None = None,
@@ -128,20 +139,20 @@ class TTSService:
 
         text = self._format(item)
         if text:
-            self._queue.put(text)
+            self._queue.put((text, item))
             return True
         return False
 
     def speak(self, text: str):
-        """任意テキストを直接キューへ投入"""
+        """任意テキストを直接キューへ投入（item なし）"""
         if self._enabled and text:
-            self._queue.put(text)
+            self._queue.put((text, None))
 
     def speak_item(self, item) -> None:
         """CommentItem を強制読み上げ（ON/OFF・フィルタを無視）"""
         text = self._format(item)
         if text:
-            self._queue.put(text)
+            self._queue.put((text, item))
 
     def stop(self):
         """ワーカー終了（アプリ終了時に呼ぶ）"""
@@ -230,9 +241,16 @@ class TTSService:
         speaker = self._init_sapi5()
 
         while True:
-            text = self._queue.get()
-            if text is None:
+            entry = self._queue.get()
+            if entry is None:
                 break
+            text, item = entry
+            # 読み上げ開始前にコールバック（Overlay 同期用）
+            if item is not None and self._on_speak is not None:
+                try:
+                    self._on_speak(item)
+                except Exception:
+                    pass
             if speaker is not None:
                 self._speak_sapi5(text, speaker)
             else:

@@ -211,11 +211,15 @@ class YouTubeClient:
 
         if should_try_stream:
             stream_result = self._try_stream_loop()
-            # stream_result: "completed"（正常終了） / "stopped"（停止指示） / "fallback"（失敗）
-            if stream_result == "completed" or stream_result == "stopped":
+            # stream_result: "completed"（ストリーム終了） / "stopped"（停止指示） / "fallback"（失敗）
+            if stream_result == "stopped":
                 return
-            # "fallback": list ポーリングへ
-            self._notify_status(STATUS_CONNECTING, "ポーリング方式で再接続中 (list)...")
+            # "completed" → ストリーム終了後も list ポーリングで継続（OAuth 実機確認用フォールバック含む）
+            # "fallback"  → 非対応・接続失敗、list ポーリングへ
+            if stream_result == "completed":
+                self._notify_status(STATUS_CONNECTING, "ストリーム終了、ポーリング方式で継続中 (list)...")
+            else:
+                self._notify_status(STATUS_CONNECTING, "ポーリング方式で再接続中 (list)...")
 
         self._poll_loop()
 

@@ -180,8 +180,9 @@ class RCommentHubApp:
         # per-source 状態変化 → マルチ接続モード切替
         self._ctrl.on_source_status(self._on_ctrl_source_status)
 
-        # TTS 初期化
+        # TTS 初期化 + Overlay 同期コールバック登録
         self._ctrl.apply_tts_from_settings()
+        self._ctrl.set_tts_on_speak(self._on_tts_speak_item)
 
         # 起動時にコメントビューを自動表示
         root.after(100, self._comment_window.open)
@@ -265,9 +266,18 @@ class RCommentHubApp:
             self._comment_window.add_comment(item)
 
     def _on_ctrl_comment_for_overlay(self, item):
-        """コントローラからのコメント追加通知 → Overlay に反映"""
-        if self._overlay_win:
+        """
+        コントローラからのコメント追加通知 → Overlay に反映。
+        TTS が有効な場合は TTS の読み上げタイミングで Overlay を更新するため、
+        ここでは TTS が無効のときのみ即時表示する。
+        """
+        if self._overlay_win and not self._ctrl.tts_enabled:
             self._overlay_win.show_comment(item)
+
+    def _on_tts_speak_item(self, item):
+        """TTS が読み上げを開始するときに Overlay を更新する（TTS-Overlay 同期）"""
+        if self._overlay_win:
+            self._root.after(0, lambda: self._overlay_win.show_comment(item))
 
     def _on_ctrl_source_status(self, source_id: str, status: str):
         """per-source 接続状態変化 → マルチ接続モードの切替判定"""

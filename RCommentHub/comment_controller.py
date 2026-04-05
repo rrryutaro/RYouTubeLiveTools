@@ -344,6 +344,15 @@ class CommentController:
     def speak_item(self, item):
         return self._tts.speak_item(item)
 
+    @property
+    def tts_enabled(self) -> bool:
+        """TTS が有効かどうかを返す"""
+        return self._tts.enabled
+
+    def set_tts_on_speak(self, callback):
+        """TTS 読み上げ開始時に呼ばれるコールバックを設定する（Overlay 同期用）"""
+        self._tts.set_on_speak(callback)
+
     def get_debug_presets(self) -> list:
         from debug_sender import _DEFAULT_PRESETS
         saved = self._sm.get("debug_presets", None)

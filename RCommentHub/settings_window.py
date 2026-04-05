@@ -128,7 +128,7 @@ class SettingsWindow:
         mode_frame = tk.Frame(parent, bg=C["bg_main"])
         mode_frame.pack(fill=tk.X, padx=14, pady=4)
 
-        current_mode = self._sm.get("auth_mode", "api_key")
+        current_mode = self._resolve_display_auth_mode()
         self._auth_mode_var = tk.StringVar(value=current_mode)
 
         # OAuth ラジオボタン
@@ -175,21 +175,23 @@ class SettingsWindow:
         btn_row = tk.Frame(oauth_frame, bg=C["bg_main"])
         btn_row.pack(anchor=tk.W)
 
-        tk.Button(
+        self._oauth_btn = tk.Button(
             btn_row, text="Googleアカウントで認証する",
             font=(FONT_FAMILY, FONT_SIZE_S),
             bg="#2A4A2A", fg="#AAFFAA", activebackground="#3A6A3A",
             relief=tk.FLAT, padx=12, pady=3,
             command=self._on_oauth_authenticate,
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        self._oauth_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        tk.Button(
+        self._oauth_revoke_btn = tk.Button(
             btn_row, text="認証を解除",
             font=(FONT_FAMILY, FONT_SIZE_S),
             bg=C["bg_list"], fg=C["fg_label"],
             relief=tk.FLAT, padx=8, pady=3,
             command=self._on_oauth_revoke,
-        ).pack(side=tk.LEFT)
+        )
+        self._oauth_revoke_btn.pack(side=tk.LEFT)
 
         # client_secrets.json のロード状態
         auth_svc = self._auth_service_getter()
@@ -266,7 +268,8 @@ class SettingsWindow:
         pass
 
     def _on_oauth_authenticate(self):
-        """OAuth 認証フローを実行する"""
+        """OAuth 認証フローを非同期で実行する（ブロッキング回避）"""
+        import threading as _threading
         auth_svc = self._auth_service_getter()
         if auth_svc is None:
             messagebox.showerror("エラー", "認証サービスが初期化されていません。", parent=self._win)
@@ -279,15 +282,48 @@ class SettingsWindow:
                 parent=self._win,
             )
             return
+
+        # 認証ボタンを無効化してフリーズ防止
         self._oauth_status_var.set("認証中... ブラウザを確認してください")
-        if self._win:
-            self._win.update()
-        success = auth_svc.run_oauth_flow()
-        self._oauth_status_var.set(auth_svc.status_label())
+        try:
+            self._oauth_btn.configure(state=tk.DISABLED)
+            self._oauth_revoke_btn.configure(state=tk.DISABLED)
+        except Exception:
+            pass
+
+        def _do_flow():
+            try:
+                success = auth_svc.run_oauth_flow()
+            except Exception:
+                success = False
+            if self._win:
+                try:
+                    self._win.after(0, lambda: self._on_oauth_done(success, auth_svc))
+                except Exception:
+                    pass
+
+        _threading.Thread(target=_do_flow, daemon=True).start()
+
+    def _on_oauth_done(self, success: bool, auth_svc):
+        """認証フロー完了後の UI 更新（メインスレッドで呼ばれる）"""
+        try:
+            self._oauth_btn.configure(state=tk.NORMAL)
+            self._oauth_revoke_btn.configure(state=tk.NORMAL)
+        except Exception:
+            pass
+        try:
+            self._oauth_status_var.set(auth_svc.status_label())
+        except Exception:
+            pass
         if success:
             messagebox.showinfo("認証完了", "Google アカウントでの認証が完了しました。", parent=self._win)
         else:
-            messagebox.showerror("認証失敗", "認証に失敗しました。client_secrets.json を確認してください。", parent=self._win)
+            messagebox.showerror(
+                "認証失敗",
+                "認証に失敗しました（キャンセルまたはエラー）。\n"
+                "client_secrets.json を確認してから再試行してください。",
+                parent=self._win,
+            )
 
     def _on_oauth_revoke(self):
         """OAuth トークンを失効させる"""
@@ -818,7 +854,7 @@ class SettingsWindow:
     def _load_values(self):
         """_sm から設定値を読み込んで UI 変数に反映する（再表示時に呼ぶ）"""
         self._api_key_var.set(self._sm.api_key)
-        self._auth_mode_var.set(self._sm.get("auth_mode", "api_key"))
+        self._auth_mode_var.set(self._resolve_display_auth_mode())
         auth_svc = self._auth_service_getter()
         if auth_svc and hasattr(self, "_oauth_status_var"):
             self._oauth_status_var.set(auth_svc.status_label())
@@ -869,6 +905,25 @@ class SettingsWindow:
         self._conn2_url_var.set(self._sm.get("conn2_url", ""))
 
     # ── ヘルパー ──────────────────────────────────────────────────────────────
+
+    def _resolve_display_auth_mode(self) -> str:
+        """
+        表示用の認証モードを解決する。
+        CommentController._resolve_auth_mode() と同じ優先順位を使う。
+          1. auth_service.mode（CommentController が起動時に解決済み）が最優先
+          2. 設定ファイルの auth_mode
+          3. API キーが保存済みなら api_key
+          4. それ以外（新規）は oauth
+        """
+        auth_svc = self._auth_service_getter()
+        if auth_svc is not None:
+            return auth_svc.mode
+        saved = self._sm.get("auth_mode", None)
+        if saved is not None:
+            return saved
+        if self._sm.api_key:
+            return "api_key"
+        return "oauth"
 
     def _section(self, parent, text: str):
         C = UI_COLORS
