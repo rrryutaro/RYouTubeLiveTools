@@ -385,7 +385,11 @@ class RCommentHubApp:
 
     def _on_close(self):
         """コメントビューが閉じられたらアプリ終了"""
-        self._ctrl.shutdown(self.cfg)
+        # DEFAULT_CONFIG のキーのみを shutdown に渡す。
+        # self.cfg には起動時に self._sm.load() で混入した全設定値が含まれており、
+        # そのまま渡すと auth_mode 等の設定が起動時の古い値で上書きされるため。
+        cfg_layout = {k: v for k, v in self.cfg.items() if k in DEFAULT_CONFIG}
+        self._ctrl.shutdown(cfg_layout)
         if self._comment_window:
             self._comment_window.close()
         if self._overlay_win:

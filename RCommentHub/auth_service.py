@@ -228,7 +228,8 @@ class AuthService:
                 self._client_config, YOUTUBE_SCOPES
             )
             # PKCE + ローカルサーバー (ループバック) フロー
-            creds = flow.run_local_server(port=0, open_browser=True)
+            # timeout_seconds: ブラウザを閉じた場合に一定時間で失敗扱いにする（フリーズ防止）
+            creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=120)
             self._credentials = creds
             self._save_token()
             return True
