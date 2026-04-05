@@ -191,13 +191,28 @@ class SettingsWindow:
             command=self._on_oauth_revoke,
         ).pack(side=tk.LEFT)
 
+        # client_secrets.json のロード状態
+        auth_svc = self._auth_service_getter()
+        if auth_svc and auth_svc.has_client_config():
+            secrets_text = f"client_secrets.json: ロード済み"
+            secrets_color = "#88DDAA"
+        else:
+            secrets_text = "client_secrets.json: 未ロード（OAuth 認証ボタンは使用不可）"
+            secrets_color = "#FFAA44"
+        self._secrets_status_var = tk.StringVar(value=secrets_text)
+        tk.Label(
+            oauth_frame, textvariable=self._secrets_status_var,
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=secrets_color, bg=C["bg_main"], anchor=tk.W,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
         tk.Label(
             oauth_frame,
             text="※ 認証情報はこの PC 内にのみ保存されます。開発者サーバーへは送信しません。\n"
-                 "※ 認証には google-auth-oauthlib と client_secrets.json が必要です。",
+                 "※ OAuth 認証には client_secrets.json をアプリと同フォルダに配置してください。",
             font=(FONT_FAMILY, FONT_SIZE_S - 1),
             fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(6, 0))
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         # ── API キーセクション（補助モード） ─────────────────────────────────
         self._section(parent, "API キー（補助モード）")
@@ -807,6 +822,11 @@ class SettingsWindow:
         auth_svc = self._auth_service_getter()
         if auth_svc and hasattr(self, "_oauth_status_var"):
             self._oauth_status_var.set(auth_svc.status_label())
+        if auth_svc and hasattr(self, "_secrets_status_var"):
+            if auth_svc.has_client_config():
+                self._secrets_status_var.set("client_secrets.json: ロード済み")
+            else:
+                self._secrets_status_var.set("client_secrets.json: 未ロード（OAuth 認証ボタンは使用不可）")
         self._theme_var.set(self._sm.get("color_theme", "ダーク (デフォルト)"))
         self._display_rows_var.set(str(self._sm.get("display_rows", 1)))
         self._font_name_var.set(str(self._sm.get("font_size_name", 9)))

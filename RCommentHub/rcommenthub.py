@@ -185,6 +185,7 @@ class RCommentHubApp:
 
         # 起動時にコメントビューを自動表示
         root.after(100, self._comment_window.open)
+        root.after(200, self._ctrl.flush_pending_logs)
         self._ctrl.log(f"RCommentHub v{VERSION} 起動完了")
 
     def _detail_window_open(self):

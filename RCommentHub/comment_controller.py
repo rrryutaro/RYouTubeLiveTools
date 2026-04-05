@@ -190,9 +190,16 @@ class CommentController:
 
         # 認証サービス（OAuth / API キー二系統）
         import os
+        self._base_dir = base_dir
         token_path = os.path.join(base_dir, "token.json")
         self._auth_service = AuthService(token_path=token_path)
+        # client_secrets.json を base_dir から自動ロード（起動時）
+        secrets_loaded = self._auth_service.try_load_client_secrets_from_dir(base_dir)
         self._apply_auth_from_settings()
+        if secrets_loaded:
+            self._pending_log = f"[認証] client_secrets.json をロードしました"
+        else:
+            self._pending_log = None
 
         # サービス
         self._user_mgr    = UserManager()
@@ -291,10 +298,32 @@ class CommentController:
     # 公開ログメソッド
     def log(self, msg: str): self._notify_log(msg)
 
+    def flush_pending_logs(self):
+        """起動直後のペンディングログをログコールバックへ出力する"""
+        if self._pending_log:
+            self._notify_log(self._pending_log)
+            self._pending_log = None
+
     # 認証設定の適用
+    def _resolve_auth_mode(self) -> str:
+        """
+        設定から認証モードを解決する（移行ロジック込み）。
+
+        優先順位:
+          1. 設定に auth_mode が保存済み → その値を使う
+          2. 未保存かつ API キーが保存済み → api_key（既存利用者の後方互換）
+          3. 未保存かつ API キーも未保存 → oauth（新規利用者向け既定値）
+        """
+        saved_mode = self._sm.get("auth_mode", None)
+        if saved_mode is not None:
+            return saved_mode
+        if self._sm.api_key:
+            return AUTH_MODE_API_KEY
+        return AUTH_MODE_OAUTH
+
     def _apply_auth_from_settings(self):
         """設定から認証モードと認証情報を AuthService に反映する"""
-        mode = self._sm.get("auth_mode", AUTH_MODE_API_KEY)
+        mode = self._resolve_auth_mode()
         self._auth_service.mode    = mode
         self._auth_service.api_key = self._sm.api_key
         # OAuth モード時: 保存済みトークンをロード

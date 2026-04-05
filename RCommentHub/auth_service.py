@@ -105,6 +105,29 @@ class AuthService:
     def has_client_config(self) -> bool:
         return bool(self._client_config)
 
+    def try_load_client_secrets_from_dir(self, dirpath: str) -> bool:
+        """
+        指定ディレクトリから client_secrets.json または client_secret_*.json を
+        自動検索してロードする。
+        最初に見つかったファイルを使用する。
+        成功なら True を返す。
+        """
+        import glob as _glob
+        candidates = [os.path.join(dirpath, "client_secrets.json")]
+        candidates += sorted(_glob.glob(os.path.join(dirpath, "client_secret_*.json")))
+        for path in candidates:
+            if os.path.exists(path):
+                if self.load_client_config_from_file(path):
+                    return True
+        return False
+
+    def client_config_source(self) -> str:
+        """ロード済みクライアント設定の由来情報（ログ・UI表示用）"""
+        if not self._client_config:
+            return "未ロード"
+        info = self._client_config.get("installed", self._client_config.get("web", {}))
+        return info.get("client_id", "ロード済み（client_id不明）")
+
     # ─── 認証状態 ─────────────────────────────────────────────────────────────
 
     def is_authenticated(self) -> bool:

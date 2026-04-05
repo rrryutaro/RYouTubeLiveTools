@@ -186,31 +186,60 @@ class YouTubeClient:
 
     def _receive_loop(self):
         """
-        主軸: streamList を試みる。
-        streamList が使えない場合は list ポーリングへ自動フォールバック。
+        受信経路の選択:
+          OAuth 認証済み: streamList を試みてから、失敗時に list フォールバック
+          API キーモード: 直接 list ポーリング（streamList は OAuth 必須のため）
+
+        streamList の公式仕様:
+          https://developers.google.com/youtube/v3/live/docs/liveChatMessages/streamList
+          - サーバーストリーミング接続（低レイテンシ）
+          - 各レスポンスに nextPageToken が含まれる
+          - pageToken を指定して再開可能
+          現時点での実装: HTTP streaming (chunked transfer) として試みる。
+          応答形式が公式と一致しない場合は自動的に list フォールバックに移行する。
         """
         self._notify_status(STATUS_CONNECTING, "接続中...")
 
-        if self._use_stream:
-            success = self._try_stream_loop()
-            if success or self._stop_event.is_set():
+        # OAuth 認証済みの場合のみ streamList を試みる
+        # API キーモードでは streamList は利用不可のため list に直行
+        should_try_stream = (
+            self._use_stream
+            and self._auth_service is not None
+            and self._auth_service.is_oauth_mode()
+            and self._auth_service.is_authenticated()
+        )
+
+        if should_try_stream:
+            stream_result = self._try_stream_loop()
+            # stream_result: "completed"（正常終了） / "stopped"（停止指示） / "fallback"（失敗）
+            if stream_result == "completed" or stream_result == "stopped":
                 return
-            # streamList が使えなかった場合は list ポーリングへ
-            self._notify_status(STATUS_CONNECTING, "ポーリング方式で再接続中...")
+            # "fallback": list ポーリングへ
+            self._notify_status(STATUS_CONNECTING, "ポーリング方式で再接続中 (list)...")
 
         self._poll_loop()
 
-    def _try_stream_loop(self) -> bool:
+    def _try_stream_loop(self) -> str:
         """
         liveChatMessages.streamList による接続を試みる。
-        接続に成功して正常完了した場合は True を返す。
-        接続自体が失敗した（streamList が利用不可）場合は False を返す。
+
+        戻り値:
+          "completed" — ストリームが正常に終了した（ライブ終了など）
+          "stopped"   — 停止指示により中断した
+          "fallback"  — 接続失敗または非対応。list フォールバックへ移行すべき状態
+
+        公式仕様に沿った実装方針:
+          - streamList は低レイテンシのサーバーストリーミング接続
+          - 各レスポンスに nextPageToken が含まれる（切断/再接続時の再開用）
+          - 現実装: HTTP streaming (iter_lines) で試みる
+          - 応答が空・形式不一致・接続断の場合は "fallback" を返す
 
         注意:
-            streamList のエンドポイントやレスポンス形式は公式ドキュメントに基づくが、
-            実際の HTTP ストリーミング仕様は実装段階で確認が必要。
-            接続エラー時は False を返し、_poll_loop へのフォールバックを行う。
+          streamList の実際の HTTP レスポンス形式（改行区切り JSON / SSE / gRPC）は
+          実機確認が必要。形式が一致しない場合は fallback 扱いとする。
         """
+        import json as _json
+
         url    = f"{_API_BASE}/liveChat/messages"
         kwargs = self._build_request_kwargs()
 
@@ -232,39 +261,51 @@ class YouTubeClient:
                 **kwargs,
             )
         except requests.RequestException:
-            # 接続失敗 → フォールバック
-            return False
+            return "fallback"
 
+        # 接続可能なステータスコードでなければフォールバック
         if resp.status_code == 404:
-            # streamList が存在しない場合は 404 になる可能性がある
-            return False
-
+            return "fallback"
         if resp.status_code not in (200, 206):
-            # その他のエラーはフォールバック
-            return False
+            return "fallback"
 
-        # ストリーミングレスポンスを行単位で処理
+        # Content-Type が JSON / event-stream でなければ形式不一致としてフォールバック
+        ct = resp.headers.get("Content-Type", "")
+        if "json" not in ct and "event-stream" not in ct and "octet-stream" not in ct:
+            # 形式が想定外の場合はフォールバックへ
+            resp.close()
+            return "fallback"
+
         self._notify_status(STATUS_RECEIVING, "コメント受信中 (streamList)")
-        is_first = self._is_first_fetch
+        is_first    = self._is_first_fetch
+        got_any     = False
 
         try:
             for line in resp.iter_lines(chunk_size=None):
                 if self._stop_event.is_set():
-                    break
+                    return "stopped"
                 if not line:
                     continue
+
+                # SSE 形式の場合は "data: " プレフィックスを除去
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="ignore")
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+
                 try:
-                    data = __import__("json").loads(line)
+                    data = _json.loads(line)
                 except Exception:
                     continue
 
-                # nextPageToken を更新
+                got_any = True
+
                 if "nextPageToken" in data:
                     self._next_token = data["nextPageToken"]
 
                 for raw_item in data.get("items", []):
                     if self._stop_event.is_set():
-                        break
+                        return "stopped"
                     if is_first:
                         raw_item["_is_backlog"] = True
                     if self._on_comment:
@@ -274,14 +315,16 @@ class YouTubeClient:
                 self._is_first_fetch = False
 
         except Exception:
-            pass
+            if not got_any:
+                # 一度もデータが来ずに例外 → fallback
+                return "fallback"
 
         if self._stop_event.is_set():
             self._notify_status(STATUS_DISCONNECTED, "受信停止")
-        else:
-            self._notify_status(STATUS_DISCONNECTED, "ストリーム終了")
+            return "stopped"
 
-        return True
+        self._notify_status(STATUS_DISCONNECTED, "ストリーム終了")
+        return "completed"
 
     # ─── ポーリングループ（list 方式・フォールバック） ────────────────────────
 
