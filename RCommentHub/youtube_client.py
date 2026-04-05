@@ -18,11 +18,15 @@ RCommentHub — YouTube Live Chat API クライアント
 別スレッドで動作。UI コールバックはメインスレッド側で root.after() して使うこと。
 """
 
+import logging
 import threading
 import time
 import requests
 
 from auth_service import AuthService, AUTH_MODE_OAUTH, AUTH_MODE_API_KEY
+
+_logger = logging.getLogger(__name__)
+_route  = logging.getLogger("route_check")   # 経路判定用（route_check.log へ出力）
 
 # ─── YouTube Data API v3 エンドポイント ─────────────────────────────────────
 _API_BASE = "https://www.googleapis.com/youtube/v3"
@@ -66,6 +70,7 @@ class YouTubeClient:
         self._thread: threading.Thread | None = None
         self._on_comment             = None   # (raw: dict) -> None
         self._on_status              = None   # (status: str, message: str) -> None
+        self._on_fallback_confirm    = None   # (reason: str) -> bool | None
         self._is_first_fetch: bool   = True   # 初回取得（バックログ）判定用
         self._use_stream: bool       = True   # True: streamList 試行, False: list のみ
 
@@ -145,24 +150,30 @@ class YouTubeClient:
     # ─── 受信開始 ────────────────────────────────────────────────────────────
 
     def start(self, live_chat_id: str, api_key: str = "",
-              on_comment=None, on_status=None):
+              on_comment=None, on_status=None, on_fallback_confirm=None):
         """
         コメント受信を別スレッドで開始する。
 
         on_comment(raw: dict)            — コメント1件ごと（ワーカースレッド文脈）
         on_status(status: str, msg: str) — 状態変化時（ワーカースレッド文脈）
+        on_fallback_confirm(reason: str) -> bool
+            — streamList 失敗時に list fallback を許可するか確認するコールバック。
+              ワーカースレッドから呼ばれる（内部でブロック待機を行うこと）。
+              True: 今回のみ list fallback を許可、False/None: 拒否（停止）。
+              未指定時は常に拒否（自動 fallback しない）。
 
         呼び出し元は root.after(0, ...) で UI スレッドへ転送すること。
         """
         if self._thread and self._thread.is_alive():
             return
 
-        self._live_chat_id   = live_chat_id
-        self._next_token     = None
-        self._on_comment     = on_comment
-        self._on_status      = on_status
+        self._live_chat_id      = live_chat_id
+        self._next_token        = None
+        self._on_comment        = on_comment
+        self._on_status         = on_status
+        self._on_fallback_confirm = on_fallback_confirm
         self._stop_event.clear()
-        self._is_first_fetch = True
+        self._is_first_fetch    = True
 
         # API キーを直接渡された場合の後方互換処理
         if api_key and self._auth_service is None:
@@ -181,6 +192,26 @@ class YouTubeClient:
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    # ─── fallback 許可確認 ───────────────────────────────────────────────────
+
+    def _request_fallback_permission(self, reason: str) -> bool:
+        """
+        list fallback への切替許可をユーザーへ確認する。
+        on_fallback_confirm コールバックが未設定の場合は常に拒否（自動 fallback しない）。
+
+        ワーカースレッドから呼ばれる。コールバック内でブロック待機すること。
+        戻り値: True=許可, False=拒否
+        """
+        _route.info("[route-check] fallback_prompt_shown reason=%s", reason)
+        if self._on_fallback_confirm is None:
+            _route.info("[route-check] fallback_denied_by_user reason=no_callback")
+            return False
+        try:
+            result = self._on_fallback_confirm(reason)
+            return bool(result)
+        except Exception:
+            return False
 
     # ─── 受信ループ（ワーカースレッド） ──────────────────────────────────────
 
@@ -209,17 +240,41 @@ class YouTubeClient:
             and self._auth_service.is_authenticated()
         )
 
+        auth_mode = (
+            "oauth"
+            if (self._auth_service and self._auth_service.is_oauth_mode())
+            else "api_key"
+        )
+        initial_route = "streamList" if should_try_stream else "list_fallback"
+        _route.info("[route-check] session_connect mode=%s initial=%s", auth_mode, initial_route)
+
+        if not should_try_stream:
+            # API キーモード等: streamList を試みず直接 list（許可確認不要）
+            _route.info("[route-check] effective_route=list_fallback reason=no_stream_attempt")
+
         if should_try_stream:
             stream_result = self._try_stream_loop()
             # stream_result: "completed"（ストリーム終了） / "stopped"（停止指示） / "fallback"（失敗）
             if stream_result == "stopped":
                 return
-            # "completed" → ストリーム終了後も list ポーリングで継続（OAuth 実機確認用フォールバック含む）
-            # "fallback"  → 非対応・接続失敗、list ポーリングへ
-            if stream_result == "completed":
-                self._notify_status(STATUS_CONNECTING, "ストリーム終了、ポーリング方式で継続中 (list)...")
+
+            # streamList が終了 / 失敗 → 自動 fallback は行わず、ユーザーへ確認
+            fallback_reason = (
+                "stream_completed" if stream_result == "completed"
+                else "stream_failed"
+            )
+            if self._request_fallback_permission(fallback_reason):
+                _route.info("[route-check] fallback_allowed_by_user")
+                _route.info("[route-check] effective_route=list_fallback reason=user_allowed")
+                self._notify_status(STATUS_CONNECTING, "list 方式で継続中...")
             else:
-                self._notify_status(STATUS_CONNECTING, "ポーリング方式で再接続中 (list)...")
+                _route.info("[route-check] fallback_denied_by_user")
+                _route.info("[route-check] effective_route=stopped reason=user_denied_fallback")
+                self._notify_status(
+                    STATUS_DISCONNECTED,
+                    "streamList 継続受信に失敗しました。list 方式への切替は未許可のため停止します。",
+                )
+                return
 
         self._poll_loop()
 
@@ -235,100 +290,155 @@ class YouTubeClient:
         公式仕様に沿った実装方針:
           - streamList は低レイテンシのサーバーストリーミング接続
           - 各レスポンスに nextPageToken が含まれる（切断/再接続時の再開用）
-          - 現実装: HTTP streaming (iter_lines) で試みる
+          - 現実装: resp.json() で全体を一括取得して処理（i045 で iter_lines から変更）
           - 応答が空・形式不一致・接続断の場合は "fallback" を返す
 
-        注意:
-          streamList の実際の HTTP レスポンス形式（改行区切り JSON / SSE / gRPC）は
-          実機確認が必要。形式が一致しない場合は fallback 扱いとする。
+        実機確認結果（i044〜i047）:
+          - レスポンスは application/json の標準 JSON 形式（即時レスポンス型）
+          - resp.json() で全体取得後、nextPageToken を使ってループ継続（i047）
+          - list fallback への自動切替は廃止済み（i046）
         """
-        import json as _json
 
-        url    = f"{_API_BASE}/liveChat/messages"
-        kwargs = self._build_request_kwargs()
+        url              = f"{_API_BASE}/liveChat/messages"
+        first_msg_logged = False
+        reconnect_count  = 0
+        is_first         = self._is_first_fetch
 
-        base_params = {
-            "liveChatId": self._live_chat_id,
-            "part":       "id,snippet,authorDetails",
-        }
-        if "params" in kwargs:
-            base_params.update(kwargs.pop("params"))
+        _route.info("[route-check] stream_attempt")
 
-        if self._next_token:
-            base_params["pageToken"] = self._next_token
+        while not self._stop_event.is_set():
 
-        try:
-            resp = requests.get(
-                url, params=base_params,
-                timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
-                stream=True,
-                **kwargs,
-            )
-        except requests.RequestException:
-            return "fallback"
+            # ─── HTTP リクエスト構築（ループ毎に再構築してトークン更新に対応）───
+            kwargs      = self._build_request_kwargs()
+            base_params = {
+                "liveChatId": self._live_chat_id,
+                "part":       "id,snippet,authorDetails",
+            }
+            if "params" in kwargs:
+                base_params.update(kwargs.pop("params"))
+            if self._next_token:
+                base_params["pageToken"] = self._next_token
 
-        # 接続可能なステータスコードでなければフォールバック
-        if resp.status_code == 404:
-            return "fallback"
-        if resp.status_code not in (200, 206):
-            return "fallback"
+            if reconnect_count > 0:
+                _route.info("[route-check] stream_reconnect_start attempt=%d", reconnect_count)
 
-        # Content-Type が JSON / event-stream でなければ形式不一致としてフォールバック
-        ct = resp.headers.get("Content-Type", "")
-        if "json" not in ct and "event-stream" not in ct and "octet-stream" not in ct:
-            # 形式が想定外の場合はフォールバックへ
-            resp.close()
-            return "fallback"
+            # ─── HTTP リクエスト ──────────────────────────────────────────────
+            try:
+                resp = requests.get(
+                    url, params=base_params,
+                    timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+                    stream=True,
+                    **kwargs,
+                )
+            except requests.RequestException as e:
+                _route.info("[route-check] stream_fallback reason=connection_error detail=%s", e)
+                return "fallback"
 
-        self._notify_status(STATUS_RECEIVING, "コメント受信中 (streamList)")
-        is_first    = self._is_first_fetch
-        got_any     = False
-
-        try:
-            for line in resp.iter_lines(chunk_size=None):
-                if self._stop_event.is_set():
-                    return "stopped"
-                if not line:
-                    continue
-
-                # SSE 形式の場合は "data: " プレフィックスを除去
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="ignore")
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-
+            if resp.status_code == 404:
+                _route.info("[route-check] stream_fallback reason=http_404")
+                return "fallback"
+            if resp.status_code == 403:
                 try:
-                    data = _json.loads(line)
+                    reason_403 = (resp.json()
+                                  .get("error", {})
+                                  .get("errors", [{}])[0]
+                                  .get("reason", ""))
                 except Exception:
+                    reason_403 = ""
+                if reason_403 == "rateLimitExceeded":
+                    # 一時的なレートリミット — fallback ではなく再試行
+                    backoff_secs = 5.0
+                    _route.info("[route-check] stream_rate_limited reason=rateLimitExceeded")
+                    _route.info("[route-check] stream_retry_backoff_seconds=%.1f", backoff_secs)
+                    self._wait(backoff_secs)
                     continue
+                # forbidden / liveChatEnded / liveChatDisabled 等 → fallback へ
+                _route.info("[route-check] stream_fallback reason=%s status=403",
+                            reason_403 or "forbidden")
+                return "fallback"
+            if resp.status_code not in (200, 206):
+                _route.info("[route-check] stream_fallback reason=http_error status=%d",
+                            resp.status_code)
+                return "fallback"
 
-                got_any = True
+            ct = resp.headers.get("Content-Type", "")
+            if "json" not in ct and "event-stream" not in ct and "octet-stream" not in ct:
+                _route.info("[route-check] stream_fallback reason=content_type_mismatch ct=%s", ct)
+                resp.close()
+                return "fallback"
 
-                if "nextPageToken" in data:
-                    self._next_token = data["nextPageToken"]
+            # 接続確認ログ
+            if reconnect_count == 0:
+                _route.info("[route-check] stream_started ct=%s", ct)
+            else:
+                _route.info("[route-check] stream_reconnect_success attempt=%d", reconnect_count)
 
-                for raw_item in data.get("items", []):
+            self._notify_status(STATUS_RECEIVING, "コメント受信中 (streamList)")
+
+            if self._stop_event.is_set():
+                return "stopped"
+
+            # ─── レスポンス解析 ───────────────────────────────────────────────
+            try:
+                data = resp.json()
+            except Exception as e:
+                _route.info("[route-check] stream_fallback reason=json_parse_error detail=%s", e)
+                return "fallback"
+
+            items     = data.get("items", [])
+            has_token = "nextPageToken" in data
+            _route.info(
+                "[route-check] stream_response_parsed items=%d has_token=%s attempt=%d",
+                len(items), "yes" if has_token else "no", reconnect_count,
+            )
+
+            if has_token:
+                self._next_token = data["nextPageToken"]
+
+            # ─── メッセージ処理 ───────────────────────────────────────────────
+            if items:
+                if not first_msg_logged:
+                    _route.info("[route-check] stream_first_message_received")
+                    _route.info("[route-check] effective_route=streamList")
+                    first_msg_logged = True
+                for raw_item in items:
                     if self._stop_event.is_set():
                         return "stopped"
                     if is_first:
                         raw_item["_is_backlog"] = True
                     if self._on_comment:
                         self._on_comment(raw_item)
+                if is_first:
+                    self._is_first_fetch = False
+                    is_first = False
 
-                is_first = False
-                self._is_first_fetch = False
+            # ─── 継続判断 ─────────────────────────────────────────────────────
+            if not has_token:
+                # nextPageToken なし → ストリーム終了
+                if not first_msg_logged:
+                    _route.info("[route-check] stream_completed_no_data")
+                if self._stop_event.is_set():
+                    return "stopped"
+                self._notify_status(STATUS_DISCONNECTED, "ストリーム終了")
+                return "completed"
 
-        except Exception:
-            if not got_any:
-                # 一度もデータが来ずに例外 → fallback
-                return "fallback"
+            # nextPageToken あり → streamList 継続
+            reconnect_count += 1
+            _route.info("[route-check] stream_continues_waiting attempt=%d", reconnect_count)
 
-        if self._stop_event.is_set():
-            self._notify_status(STATUS_DISCONNECTED, "受信停止")
-            return "stopped"
+            # pollingIntervalMillis をそのまま待機時間に使用。
+            # items 件数による短縮は行わない（0.5s 短縮が 403 の原因だったため廃止）。
+            polling_ms = data.get("pollingIntervalMillis")
+            if polling_ms is not None:
+                wait_secs = polling_ms / 1000.0
+                _route.info("[route-check] stream_polling_interval_ms=%d", int(polling_ms))
+            else:
+                wait_secs = 3.0  # API から取得できない場合の安全固定値
+            self._wait(wait_secs)
 
-        self._notify_status(STATUS_DISCONNECTED, "ストリーム終了")
-        return "completed"
+        # stop_event によって停止
+        self._notify_status(STATUS_DISCONNECTED, "受信停止")
+        return "stopped"
 
     # ─── ポーリングループ（list 方式・フォールバック） ────────────────────────
 

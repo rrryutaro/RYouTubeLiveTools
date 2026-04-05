@@ -1,10 +1,13 @@
 """
-RCommentHub — YouTube Live コメントハブ  v0.2.0
+RCommentHub — YouTube Live コメントハブ  v0.3.0
 メインエントリポイントおよびアプリコーディネーター
 v0.2.0: 固定2接続（conn1/conn2）同時表示対応
+v0.3.0: OAuth 認証 / streamList 継続受信 / fallback 許可制
 """
 
 import tkinter as tk
+import datetime
+import logging
 import os
 import sys
 
@@ -39,6 +42,33 @@ def _resolve_runtime_base_dir() -> str:
 
 BASE_DIR = _resolve_runtime_base_dir()
 os.makedirs(BASE_DIR, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+# ─── 経路判定用ログファイル (route_check.log) ────────────────────────────────
+_route_log_dir  = os.path.join(BASE_DIR, "logs")
+os.makedirs(_route_log_dir, exist_ok=True)
+ROUTE_LOG_PATH  = os.path.join(_route_log_dir, "route_check.log")
+
+_route_fh = logging.FileHandler(ROUTE_LOG_PATH, encoding="utf-8")
+_route_fh.setLevel(logging.INFO)
+_route_fh.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+_route_logger = logging.getLogger("route_check")
+_route_logger.addHandler(_route_fh)
+_route_logger.propagate = True   # コンソール出力も兼ねる
+
+_route_logger.info(
+    "[route-check] session_start ts=%s",
+    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+)
+# ─────────────────────────────────────────────────────────────────────────────
 
 CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILENAME)
 

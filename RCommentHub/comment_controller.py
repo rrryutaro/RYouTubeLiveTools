@@ -450,6 +450,7 @@ class CommentController:
             live_chat_id=chat_id,
             on_comment=lambda raw, sid=source_id, sname=source_name: self._on_yt_comment(raw, sid, sname),
             on_status=lambda status, msg, sid=source_id: self._on_yt_status(sid, status, msg),
+            on_fallback_confirm=self._ask_fallback_permission,
         )
 
     def connect_with_auto_conn2(self, verify_result: dict, source_id: str = "conn1"):
@@ -522,6 +523,38 @@ class CommentController:
                 for cb in self._on_connect_ui_cbs:
                     cb(None, None, f"[{source_id}] 受信中", "#88FF88")
         self._root.after(0, _apply)
+
+    # ─── fallback 許可確認（ワーカースレッドからブロック呼び出し） ────────────
+
+    def _ask_fallback_permission(self, reason: str) -> bool:
+        """
+        streamList 失敗時に list fallback を許可するかをユーザーへ確認する。
+        ワーカースレッドから呼ばれ、ユーザーが応答するまでブロックする。
+        """
+        import tkinter.messagebox as mb
+
+        reason_text = {
+            "stream_completed": "接続が終了",
+            "stream_failed":    "接続失敗",
+        }.get(reason, reason)
+
+        event  = threading.Event()
+        result = [False]
+
+        def _show_dialog():
+            answer = mb.askyesno(
+                title="streamList 継続受信に失敗",
+                message=(
+                    f"streamList による継続受信に失敗しました（{reason_text}）。\n\n"
+                    "今回のみ list 方式へ切り替えますか？"
+                ),
+            )
+            result[0] = bool(answer)
+            event.set()
+
+        self._root.after(0, _show_dialog)
+        event.wait(timeout=60)   # 60秒応答なし → 拒否扱い
+        return result[0]
 
     # ─── デバッグモード ───────────────────────────────────────────────────────
 
