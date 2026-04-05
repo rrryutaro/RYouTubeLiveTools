@@ -11,6 +11,7 @@ import threading
 from tts_service import TTSService
 from tts_name import make_tts_name
 from youtube_client import YouTubeClient
+from auth_service import AuthService, AUTH_MODE_OAUTH, AUTH_MODE_API_KEY
 from user_manager import UserManager
 from filter_rules import FilterRuleManager
 from session_logger import SessionLogger
@@ -187,6 +188,12 @@ class CommentController:
         self._seq_counter  = 0
         self._msg_id_set:  set  = set()   # "{source_id}:{msg_id}" 形式で重複排除
 
+        # 認証サービス（OAuth / API キー二系統）
+        import os
+        token_path = os.path.join(base_dir, "token.json")
+        self._auth_service = AuthService(token_path=token_path)
+        self._apply_auth_from_settings()
+
         # サービス
         self._user_mgr    = UserManager()
         self._filter_mgr  = FilterRuleManager()
@@ -231,6 +238,10 @@ class CommentController:
         self._on_user_cleared_cbs:  list = []   # () -> None
 
     # プロパティ
+    @property
+    def auth_service(self) -> AuthService:
+        return self._auth_service
+
     @property
     def user_mgr(self): return self._user_mgr
     @property
@@ -280,9 +291,26 @@ class CommentController:
     # 公開ログメソッド
     def log(self, msg: str): self._notify_log(msg)
 
+    # 認証設定の適用
+    def _apply_auth_from_settings(self):
+        """設定から認証モードと認証情報を AuthService に反映する"""
+        mode = self._sm.get("auth_mode", AUTH_MODE_API_KEY)
+        self._auth_service.mode    = mode
+        self._auth_service.api_key = self._sm.api_key
+        # OAuth モード時: 保存済みトークンをロード
+        if mode == AUTH_MODE_OAUTH:
+            self._auth_service.load_token()
+
+    def apply_auth_from_settings(self):
+        """外部から呼び出し可能な設定再適用メソッド"""
+        self._apply_auth_from_settings()
+
     # サービス委譲
-    def verify(self, video_id: str, api_key: str):
-        return self._yt_clients["conn1"].verify(video_id, api_key)
+    def verify(self, video_id: str, api_key: str = ""):
+        """動画ID の確認。AuthService を使用する（api_key は後方互換用）。"""
+        client = self._yt_clients["conn1"]
+        client.set_auth_service(self._auth_service)
+        return client.verify(video_id, api_key)
 
     def speak_item(self, item):
         return self._tts.speak_item(item)
@@ -378,9 +406,10 @@ class CommentController:
             cb(False, True, f"受信中... ({source_name})", "#88FF88")
 
         self._notify_source_status(source_id, "connecting")
-        self._yt_clients[source_id].start(
+        client = self._yt_clients[source_id]
+        client.set_auth_service(self._auth_service)
+        client.start(
             live_chat_id=chat_id,
-            api_key=self._sm.api_key,
             on_comment=lambda raw, sid=source_id, sname=source_name: self._on_yt_comment(raw, sid, sname),
             on_status=lambda status, msg, sid=source_id: self._on_yt_status(sid, status, msg),
         )
@@ -408,7 +437,7 @@ class CommentController:
         def _auto_connect():
             try:
                 video_id = _extract_video_id(other_url)
-                result = self._yt_clients["conn1"].verify(video_id, self._sm.api_key)
+                result = self.verify(video_id)
                 result["_source_name"] = other_name
                 self._root.after(0, lambda r=result: self.connect(r, other_id))
             except Exception as e:
@@ -485,7 +514,7 @@ class CommentController:
         except Exception as e:
             self._notify_log(f"[デバッグ] セッション開始失敗: {e}")
 
-    # ─── TTS ─────────────────────────────────────────────────────────────────
+    # ─── 設定反映 ─────────────────────────────────────────────────────────────
 
     def apply_tts_from_settings(self):
         sm = self._sm

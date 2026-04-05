@@ -123,6 +123,8 @@ class RCommentHubApp:
             pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
             url_getter=lambda: self._sm.get("conn1_url", ""),
             url_saver=lambda url: self._sm.update({"conn1_url": url}),
+            auth_checker=lambda: self._ctrl.auth_service.is_authenticated(),
+            auth_mode_getter=lambda: self._sm.get("auth_mode", "api_key"),
         )
 
         # 設定ウィンドウ
@@ -133,6 +135,7 @@ class RCommentHubApp:
             topmost_getter=_topmost_getter,
             pos_getter=lambda: self._sm.get("sw_pos", None),
             pos_setter=lambda pos: self._sm.update({"sw_pos": pos}),
+            auth_service_getter=lambda: self._ctrl.auth_service,
         )
 
         # デバッグ送信ウィンドウ
@@ -303,6 +306,7 @@ class RCommentHubApp:
     # --- 設定変更 ---
 
     def _on_settings_changed(self):
+        self._ctrl.apply_auth_from_settings()
         self._ctrl.apply_tts_from_settings()
         if self._overlay_win:
             self._overlay_win.on_settings_changed()

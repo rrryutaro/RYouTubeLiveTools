@@ -1,7 +1,7 @@
 """
 RCommentHub — TTS サービス
-  - Windows PowerShell の System.Speech.Synthesis.SpeechSynthesizer を使用
-  - 追加ライブラリ不要
+  - win32com.client (SAPI5 直接利用) による in-process 読み上げ
+  - pywin32 が利用できない環境への fallback として PowerShell 方式を残すが非推奨
   - キュー + デーモンスレッドで UI をブロックしない
   - 将来的に別エンジンへ差し替えやすいよう TTSService クラスに抽象化
 """
@@ -227,17 +227,53 @@ class TTSService:
     def _run(self):
         """ワーカースレッド: キューからテキストを取り出して読み上げ"""
         import time
+        speaker = self._init_sapi5()
+
         while True:
             text = self._queue.get()
             if text is None:
                 break
-            self._speak_powershell(text)
+            if speaker is not None:
+                self._speak_sapi5(text, speaker)
+            else:
+                self._speak_powershell_fallback(text)
             if self._interval_sec > 0:
                 time.sleep(self._interval_sec)
 
-    def _speak_powershell(self, text: str):
-        """PowerShell 経由で SAPI 読み上げ（ブロッキング）"""
-        # シングルクォートをエスケープ
+        if speaker is not None:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    def _init_sapi5(self):
+        """
+        SAPI5 スピーカーを初期化して返す（ワーカースレッド内で呼ぶこと）。
+        win32com が利用できない場合は None を返す。
+        """
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            import win32com.client
+            return win32com.client.Dispatch("SAPI.SpVoice")
+        except Exception:
+            return None
+
+    def _speak_sapi5(self, text: str, speaker) -> None:
+        """win32com 経由で SAPI5 読み上げ（in-process・ブロッキング）"""
+        try:
+            speaker.Volume = self._volume
+            speaker.Rate   = self._speed
+            speaker.Speak(text)
+        except Exception:
+            pass
+
+    def _speak_powershell_fallback(self, text: str) -> None:
+        """
+        PowerShell 経由での読み上げ（非推奨・win32com が使えない場合の最終 fallback）。
+        配布向けには使用しないこと。
+        """
         safe = text.replace("'", "\\'")
         script = (
             "Add-Type -AssemblyName System.Speech; "

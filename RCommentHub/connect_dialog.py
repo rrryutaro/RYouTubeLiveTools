@@ -14,27 +14,33 @@ class ConnectDialog:
     """
     URL / 動画ID 入力 → 接続確認 → 接続開始 の流れを提供するダイアログ。
 
-    extract_fn:   (text: str) -> str          URL から動画 ID を抽出
-    verify_fn:    (video_id, api_key) -> dict 接続確認（失敗時は例外）
-    connect_fn:   (verify_result: dict) -> None 接続確認後に接続開始
-    url_getter:   () -> str                   設定から conn1 URL を取得（プリフィル用）
-    url_saver:    (url: str) -> None          接続確認後に conn1 URL を保存
+    extract_fn:       (text: str) -> str          URL から動画 ID を抽出
+    verify_fn:        (video_id, api_key) -> dict 接続確認（失敗時は例外）
+    connect_fn:       (verify_result: dict) -> None 接続確認後に接続開始
+    url_getter:       () -> str                   設定から conn1 URL を取得（プリフィル用）
+    url_saver:        (url: str) -> None          接続確認後に conn1 URL を保存
+    auth_checker:     () -> bool                  認証済みかどうかを返す（OAuth / API キー共通）
+    auth_mode_getter: () -> str                   現在の認証モードを返す
     """
 
     def __init__(self, master: tk.Tk, extract_fn, verify_fn, connect_fn,
                  api_key_getter, topmost_getter=None, pos_getter=None, pos_setter=None,
-                 url_getter=None, url_saver=None):
-        self._master         = master
-        self._extract_fn     = extract_fn
-        self._verify_fn      = verify_fn
-        self._connect_fn     = connect_fn
-        self._api_key_getter = api_key_getter   # () -> str
-        self._topmost_getter = topmost_getter or (lambda: False)
-        self._pos_getter     = pos_getter or (lambda: None)
-        self._pos_setter     = pos_setter or (lambda pos: None)
-        self._url_getter     = url_getter or (lambda: "")
-        self._url_saver      = url_saver or (lambda url: None)
-        self._verify_result  = None
+                 url_getter=None, url_saver=None,
+                 auth_checker=None, auth_mode_getter=None):
+        self._master          = master
+        self._extract_fn      = extract_fn
+        self._verify_fn       = verify_fn
+        self._connect_fn      = connect_fn
+        self._api_key_getter  = api_key_getter    # () -> str (後方互換)
+        self._topmost_getter  = topmost_getter or (lambda: False)
+        self._pos_getter      = pos_getter or (lambda: None)
+        self._pos_setter      = pos_setter or (lambda pos: None)
+        self._url_getter      = url_getter or (lambda: "")
+        self._url_saver       = url_saver or (lambda url: None)
+        # OAuth 対応: 認証済みかどうかを確認する関数（省略時は API キー方式で動作）
+        self._auth_checker    = auth_checker or (lambda: bool(api_key_getter()))
+        self._auth_mode_getter = auth_mode_getter or (lambda: "api_key")
+        self._verify_result   = None
         self._win: tk.Toplevel | None = None
 
     def open(self):
@@ -137,11 +143,22 @@ class ConnectDialog:
             self._set_result("動画ID を取得できませんでした", "error")
             return
 
-        api_key = self._api_key_getter()
-        if not api_key:
-            self._set_result("API キーが未設定です。設定ウィンドウから登録してください。", "error")
+        # 認証確認: OAuth 認証済みまたは API キー設定済みであること
+        if not self._auth_checker():
+            mode = self._auth_mode_getter()
+            if mode == "oauth":
+                self._set_result(
+                    "Google アカウントで認証されていません。設定ウィンドウから認証してください。",
+                    "error",
+                )
+            else:
+                self._set_result(
+                    "API キーが未設定です（補助モード）。設定ウィンドウから登録してください。",
+                    "error",
+                )
             return
 
+        api_key = self._api_key_getter()
         self._verify_result = None
         self._set_result("確認中...", "info")
         self._btn_verify.config(state=tk.DISABLED)

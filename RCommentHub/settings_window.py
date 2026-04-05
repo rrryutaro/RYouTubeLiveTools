@@ -13,17 +13,20 @@ class SettingsWindow:
     """アプリ設定ウィンドウ（Toplevel）"""
 
     def __init__(self, master: tk.Tk, settings_mgr, on_settings_changed=None,
-                 topmost_getter=None, pos_getter=None, pos_setter=None):
+                 topmost_getter=None, pos_getter=None, pos_setter=None,
+                 auth_service_getter=None):
         """
-        settings_mgr: SettingsManager インスタンス
+        settings_mgr:        SettingsManager インスタンス
         on_settings_changed: 設定保存後に呼ばれるコールバック
+        auth_service_getter: () -> AuthService  認証サービスを返す関数（省略可）
         """
-        self._master         = master
-        self._sm             = settings_mgr
-        self._on_changed     = on_settings_changed
-        self._topmost_getter = topmost_getter or (lambda: False)
-        self._pos_getter     = pos_getter or (lambda: None)
-        self._pos_setter     = pos_setter or (lambda pos: None)
+        self._master              = master
+        self._sm                  = settings_mgr
+        self._on_changed          = on_settings_changed
+        self._topmost_getter      = topmost_getter or (lambda: False)
+        self._pos_getter          = pos_getter or (lambda: None)
+        self._pos_setter          = pos_setter or (lambda pos: None)
+        self._auth_service_getter = auth_service_getter or (lambda: None)
         self._win: tk.Toplevel | None = None
 
     def open(self):
@@ -119,14 +122,95 @@ class SettingsWindow:
     def _build_api_tab(self, parent):
         C = UI_COLORS
 
-        self._section(parent, "YouTube Data API キー")
+        # ── 認証方式の選択 ─────────────────────────────────────────────────────
+        self._section(parent, "認証方式")
+
+        mode_frame = tk.Frame(parent, bg=C["bg_main"])
+        mode_frame.pack(fill=tk.X, padx=14, pady=4)
+
+        current_mode = self._sm.get("auth_mode", "api_key")
+        self._auth_mode_var = tk.StringVar(value=current_mode)
+
+        # OAuth ラジオボタン
+        oauth_row = tk.Frame(mode_frame, bg=C["bg_main"])
+        oauth_row.pack(anchor=tk.W, pady=2)
+        tk.Radiobutton(
+            oauth_row, text="Google アカウントで認証（OAuth 2.0）— 標準",
+            variable=self._auth_mode_var, value="oauth",
+            command=self._on_auth_mode_changed,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg=C["fg_main"], bg=C["bg_main"],
+            activebackground=C["bg_main"], selectcolor=C["bg_list"],
+        ).pack(side=tk.LEFT)
+
+        # API キーラジオボタン
+        apikey_row = tk.Frame(mode_frame, bg=C["bg_main"])
+        apikey_row.pack(anchor=tk.W, pady=2)
+        tk.Radiobutton(
+            apikey_row, text="API キー（補助モード / 簡易利用・検証用）",
+            variable=self._auth_mode_var, value="api_key",
+            command=self._on_auth_mode_changed,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg=C["fg_main"], bg=C["bg_main"],
+            activebackground=C["bg_main"], selectcolor=C["bg_list"],
+        ).pack(side=tk.LEFT)
+
+        # ── OAuth セクション ───────────────────────────────────────────────────
+        self._section(parent, "OAuth 2.0 認証")
+
+        oauth_frame = tk.Frame(parent, bg=C["bg_main"])
+        oauth_frame.pack(fill=tk.X, padx=14, pady=4)
+
+        # 認証状態ラベル
+        auth_svc = self._auth_service_getter()
+        status_text = auth_svc.status_label() if auth_svc else "（認証サービス未接続）"
+        self._oauth_status_var = tk.StringVar(value=status_text)
+        status_lbl = tk.Label(
+            oauth_frame, textvariable=self._oauth_status_var,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg="#88DDAA", bg=C["bg_main"], anchor=tk.W,
+        )
+        status_lbl.pack(anchor=tk.W, pady=(0, 4))
+
+        btn_row = tk.Frame(oauth_frame, bg=C["bg_main"])
+        btn_row.pack(anchor=tk.W)
+
+        tk.Button(
+            btn_row, text="Googleアカウントで認証する",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg="#2A4A2A", fg="#AAFFAA", activebackground="#3A6A3A",
+            relief=tk.FLAT, padx=12, pady=3,
+            command=self._on_oauth_authenticate,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Button(
+            btn_row, text="認証を解除",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["bg_list"], fg=C["fg_label"],
+            relief=tk.FLAT, padx=8, pady=3,
+            command=self._on_oauth_revoke,
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            oauth_frame,
+            text="※ 認証情報はこの PC 内にのみ保存されます。開発者サーバーへは送信しません。\n"
+                 "※ 認証には google-auth-oauthlib と client_secrets.json が必要です。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(6, 0))
+
+        # ── API キーセクション（補助モード） ─────────────────────────────────
+        self._section(parent, "API キー（補助モード）")
 
         api_outer = tk.Frame(parent, bg=C["bg_main"])
         api_outer.pack(fill=tk.X, padx=14, pady=4)
-        tk.Label(api_outer, text="API キー (DPAPI 暗号化で保存されます):",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(anchor=tk.W)
+
+        tk.Label(
+            api_outer,
+            text="API キー（補助モード）: 公開データ・検証・小規模デモ向け",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg=C["fg_label"], bg=C["bg_main"],
+        ).pack(anchor=tk.W)
 
         entry_row = tk.Frame(api_outer, bg=C["bg_main"])
         entry_row.pack(fill=tk.X, pady=2)
@@ -150,15 +234,55 @@ class SettingsWindow:
             selectcolor=C["bg_list"],
         ).pack(side=tk.LEFT, padx=(6, 0))
 
-        tk.Label(api_outer,
-                 text="※ 設定ファイルには平文では保存されません。同じ PC でのみ復号できます。",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"], wraplength=380,
-                 justify=tk.LEFT
-                 ).pack(anchor=tk.W, pady=(4, 0))
+        tk.Label(
+            api_outer,
+            text="※ 設定ファイルには平文では保存されません（DPAPI 暗号化）。\n"
+                 "※ API キーはリポジトリや共有ファイルに含めないでください。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 0))
 
     def _toggle_key_visibility(self):
         self._api_entry.config(show="" if self._show_key_var.get() else "*")
+
+    def _on_auth_mode_changed(self):
+        """認証モードのラジオボタン変更時の即時処理（UI 更新のみ）"""
+        # 保存は _apply_settings で行う
+        pass
+
+    def _on_oauth_authenticate(self):
+        """OAuth 認証フローを実行する"""
+        auth_svc = self._auth_service_getter()
+        if auth_svc is None:
+            messagebox.showerror("エラー", "認証サービスが初期化されていません。", parent=self._win)
+            return
+        if not auth_svc.has_client_config():
+            messagebox.showinfo(
+                "client_secrets.json が必要",
+                "OAuth 認証にはクライアント設定ファイル (client_secrets.json) が必要です。\n"
+                "アプリと同じフォルダに配置してから再試行してください。",
+                parent=self._win,
+            )
+            return
+        self._oauth_status_var.set("認証中... ブラウザを確認してください")
+        if self._win:
+            self._win.update()
+        success = auth_svc.run_oauth_flow()
+        self._oauth_status_var.set(auth_svc.status_label())
+        if success:
+            messagebox.showinfo("認証完了", "Google アカウントでの認証が完了しました。", parent=self._win)
+        else:
+            messagebox.showerror("認証失敗", "認証に失敗しました。client_secrets.json を確認してください。", parent=self._win)
+
+    def _on_oauth_revoke(self):
+        """OAuth トークンを失効させる"""
+        auth_svc = self._auth_service_getter()
+        if auth_svc is None:
+            return
+        if messagebox.askyesno("確認", "認証を解除してよいですか？\n次回接続時に再認証が必要になります。",
+                               parent=self._win):
+            auth_svc.revoke()
+            self._oauth_status_var.set(auth_svc.status_label())
 
     # ── 接続設定タブ ──────────────────────────────────────────────────────────
 
@@ -608,6 +732,7 @@ class SettingsWindow:
                 return False
 
         updates = {
+            "auth_mode": self._auth_mode_var.get(),
             "display_rows":       int(self._display_rows_var.get()),
             "font_size_name":     int(self._font_name_var.get()),
             "font_size_body":     int(self._font_body_var.get()),
@@ -678,6 +803,10 @@ class SettingsWindow:
     def _load_values(self):
         """_sm から設定値を読み込んで UI 変数に反映する（再表示時に呼ぶ）"""
         self._api_key_var.set(self._sm.api_key)
+        self._auth_mode_var.set(self._sm.get("auth_mode", "api_key"))
+        auth_svc = self._auth_service_getter()
+        if auth_svc and hasattr(self, "_oauth_status_var"):
+            self._oauth_status_var.set(auth_svc.status_label())
         self._theme_var.set(self._sm.get("color_theme", "ダーク (デフォルト)"))
         self._display_rows_var.set(str(self._sm.get("display_rows", 1)))
         self._font_name_var.set(str(self._sm.get("font_size_name", 9)))

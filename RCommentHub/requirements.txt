@@ -1,2 +1,7 @@
 requests>=2.28.0
 Pillow>=9.0.0
+# TTS: win32com (SAPI5 直接利用) — PowerShell 外部起動を置き換え
+pywin32>=306
+# OAuth 2.0 認証（標準認証方式）
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0

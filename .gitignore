@@ -26,3 +26,6 @@ ehthumbs.db
 Document/
 *_settings.json
 RCommentHub/logs/
+token.json
+client_secrets.json
+client_secret_*.json
