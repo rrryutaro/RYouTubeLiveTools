@@ -16,6 +16,7 @@ from constants import (
 from comment_controller import CommentController
 from comment_window import CommentWindow
 from detail_window import DetailWindow
+from overlay_window import OverlayWindow
 from settings_manager import SettingsManager
 from connect_dialog import ConnectDialog
 from settings_window import SettingsWindow
@@ -147,6 +148,13 @@ class RCommentHubApp:
             sources_getter=self._get_active_sources,
         )
 
+        # Overlay ウィンドウ（配信用簡易表示）
+        self._overlay_win = OverlayWindow(
+            master=root,
+            settings_mgr=self._sm,
+            topmost_getter=_topmost_getter,
+        )
+
         # 詳細ウィンドウ（補助画面）
         self._detail_win = DetailWindow(
             root=root,
@@ -165,6 +173,7 @@ class RCommentHubApp:
         self._ctrl.on_user_cleared(self._on_ctrl_user_cleared)
         self._ctrl.on_debug_mode(self._on_ctrl_debug_mode)
         self._ctrl.on_comment_added(self._on_ctrl_comment_added)
+        self._ctrl.on_comment_added(self._on_ctrl_comment_for_overlay)
         # per-source 状態変化 → マルチ接続モード切替
         self._ctrl.on_source_status(self._on_ctrl_source_status)
 
@@ -251,6 +260,11 @@ class RCommentHubApp:
         if self._comment_window and self._comment_window.is_open:
             self._comment_window.add_comment(item)
 
+    def _on_ctrl_comment_for_overlay(self, item):
+        """コントローラからのコメント追加通知 → Overlay に反映"""
+        if self._overlay_win:
+            self._overlay_win.show_comment(item)
+
     def _on_ctrl_source_status(self, source_id: str, status: str):
         """per-source 接続状態変化 → マルチ接続モードの切替判定"""
         if self._comment_window is None:
@@ -259,7 +273,10 @@ class RCommentHubApp:
 
     def _compute_show_source(self) -> bool:
         """接続元ラベルを表示すべきかを返す。
-        YouTube 2接続 active、または デバッグモードで接続設定が2つ有効な場合に True。"""
+        ユーザー設定で常時 ON、YouTube 2接続 active、または
+        デバッグモードで接続設定が2つ有効な場合に True。"""
+        if self._sm.get("cw_show_source", False):
+            return True
         if self._ctrl.is_multi_conn_active():
             return True
         if self._ctrl.debug_mode:
@@ -287,6 +304,8 @@ class RCommentHubApp:
 
     def _on_settings_changed(self):
         self._ctrl.apply_tts_from_settings()
+        if self._overlay_win:
+            self._overlay_win.on_settings_changed()
 
         old_display_rows  = self._comment_window._cfg.get("display_rows", 2) if self._comment_window else 2
         old_icon_visible  = self._comment_window._cfg.get("icon_visible", True) if self._comment_window else True
@@ -306,6 +325,7 @@ class RCommentHubApp:
             self._comment_window._cfg["font_size_body"]  = self._sm.get("font_size_body", 9)
             self._comment_window.topmost_var.set(self._sm.get("cw_topmost", False))
             self._comment_window._cfg["cw_comment_alpha"] = self._sm.get("cw_comment_alpha", 100)
+            self._comment_window.apply_transparency(self._sm.get("cw_transparent", False))
             display_changed = (
                 self._sm.get("display_rows", 2) != old_display_rows or
                 self._sm.get("icon_visible", True) != old_icon_visible
@@ -321,6 +341,7 @@ class RCommentHubApp:
                 title = self._ctrl.video_title if self._ctrl.conn_status == "receiving" else ""
                 self._comment_window.set_conn_status(self._ctrl.conn_status, title)
 
+        self._update_source_visible()
         self._apply_topmost_all()
         self._sm.update({"filter_rules": self._ctrl.filter_mgr.to_list()})
         self._ctrl.log("[設定] 保存完了")
@@ -352,6 +373,8 @@ class RCommentHubApp:
         self._ctrl.shutdown(self.cfg)
         if self._comment_window:
             self._comment_window.close()
+        if self._overlay_win:
+            self._overlay_win.close()
         self._root.destroy()
 
 

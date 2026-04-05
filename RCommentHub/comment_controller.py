@@ -311,8 +311,13 @@ class CommentController:
         self._last_recv_time = item.recv_time
         self._user_mgr.on_comment(item)
         self.apply_tts_from_settings()
-        item.tts_target = self._tts.should_read(item)
-        self._tts.enqueue_comment(item)
+        # 接続直後の初回取得分（バックログ）は TTS 対象外とする
+        is_backlog = raw.get("_is_backlog", False)
+        if not is_backlog:
+            item.tts_target = self._tts.should_read(item)
+            self._tts.enqueue_comment(item)
+        else:
+            item.tts_target = False
         rule_matches = self._filter_mgr.evaluate(item, self._user_mgr)
         item.filter_rule_ids = rule_matches
         item.filter_match    = bool(rule_matches)
@@ -488,6 +493,8 @@ class CommentController:
         self._tts.volume             = sm.get("tts_volume",            100)
         self._tts.simplify_name      = sm.get("tts_simplify_name",    True)
         self._tts.read_source_name   = sm.get("tts_read_source_name", False)
+        self._tts.interval_sec       = float(sm.get("tts_interval_sec", 0))
+        self._tts.speed              = int(sm.get("tts_speed",         0))
         self._tts.set_filter(
             normal    = sm.get("tts_normal",    True),
             superchat = sm.get("tts_superchat", True),

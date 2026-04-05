@@ -35,6 +35,12 @@ class TTSService:
         # 接続先名を先頭で読み上げる
         self._read_source_name = False
 
+        # コメント間インターバル（秒、0 = なし）
+        self._interval_sec: float = 0.0
+
+        # 読み上げ速度（1〜10、SAPI の Rate に対応: デフォルト 0）
+        self._speed: int = 0
+
         # ワーカースレッド起動
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
@@ -72,6 +78,23 @@ class TTSService:
     @read_source_name.setter
     def read_source_name(self, value: bool):
         self._read_source_name = value
+
+    @property
+    def interval_sec(self) -> float:
+        return self._interval_sec
+
+    @interval_sec.setter
+    def interval_sec(self, value: float):
+        self._interval_sec = max(0.0, float(value))
+
+    @property
+    def speed(self) -> int:
+        return self._speed
+
+    @speed.setter
+    def speed(self, value: int):
+        # SAPI Rate: -10〜10、ここでは 0〜10 の正方向のみ
+        self._speed = max(-10, min(10, int(value)))
 
     def set_filter(self, *,
                    normal: bool | None = None,
@@ -203,11 +226,14 @@ class TTSService:
 
     def _run(self):
         """ワーカースレッド: キューからテキストを取り出して読み上げ"""
+        import time
         while True:
             text = self._queue.get()
             if text is None:
                 break
             self._speak_powershell(text)
+            if self._interval_sec > 0:
+                time.sleep(self._interval_sec)
 
     def _speak_powershell(self, text: str):
         """PowerShell 経由で SAPI 読み上げ（ブロッキング）"""
@@ -217,6 +243,7 @@ class TTSService:
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$s.Volume = {self._volume}; "
+            f"$s.Rate = {self._speed}; "
             f"$s.Speak('{safe}')"
         )
         try:

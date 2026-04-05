@@ -24,6 +24,7 @@ from constants import (
     ROW_COLORS, EVENT_TYPE_LABELS, CONN_STATUS_COLORS, TRANSPARENT_KEY,
     SOURCE_COLORS, SOURCE_DEFAULT_NAMES,
 )
+from display_utils import normalize_display_text
 from filter_rules import FilterRule, FilterRuleManager, MATCH_TYPES
 
 # ─── Windows スタイル定数 ────────────────────────────────────────────────────
@@ -180,11 +181,11 @@ class CommentCard(tk.Frame):
                 if _sname:
                     source_pfx = f"[{_sname}] "
             if name_part and body_part:
-                compact_text = f"{source_pfx}{name_part}: {body_part}"
+                compact_text = f"{source_pfx}{name_part}: {normalize_display_text(body_part)}"
             elif name_part:
                 compact_text = f"{source_pfx}{name_part}"
             else:
-                compact_text = f"{source_pfx}{body_part}" if body_part else "—"
+                compact_text = f"{source_pfx}{normalize_display_text(body_part)}" if body_part else "—"
             compact_lbl = tk.Label(right, text=compact_text,
                                     font=(FONT_FAMILY, _fb),
                                     fg=UI_COLORS["fg_main"], bg=bg,
@@ -237,7 +238,8 @@ class CommentCard(tk.Frame):
 
             body = item.body
             if body:
-                tk.Label(right, text=body,
+                # normalize_display_text で NBSP 置換 → 不自然な空白起因折り返しを防ぐ
+                tk.Label(right, text=normalize_display_text(body),
                          font=(FONT_FAMILY, _fb),
                          fg=UI_COLORS["fg_main"], bg=bg,
                          anchor=tk.W, justify=tk.LEFT,
@@ -1165,11 +1167,12 @@ class CommentWindow:
                 name_part  = item.author_name or ""
                 body_part  = item.body or ""
                 if name_part and body_part:
-                    line = f"{source_pfx}{name_part}: {body_part}"
+                    line = f"{source_pfx}{name_part}: {normalize_display_text(body_part)}"
                 elif name_part:
                     line = f"{source_pfx}{name_part}"
                 else:
-                    line = f"{source_pfx}{body_part}" if body_part else "—"
+                    line = (f"{source_pfx}{normalize_display_text(body_part)}"
+                            if body_part else "—")
                 tid  = c.create_text(text_x, text_y, text=line,
                                      fill=UI_COLORS["fg_main"], anchor="nw",
                                      font=(FONT_FAMILY, fb), width=wrap_w)
@@ -1197,7 +1200,8 @@ class CommentWindow:
                     text_y = (bbox[3] + 2) if bbox else (text_y + fn + 2)
 
                 if item.body:
-                    tid  = c.create_text(text_x, text_y, text=item.body,
+                    tid  = c.create_text(text_x, text_y,
+                                         text=normalize_display_text(item.body),
                                          fill=UI_COLORS["fg_main"], anchor="nw",
                                          font=(FONT_FAMILY, fb), width=wrap_w)
                     bbox = c.bbox(tid)

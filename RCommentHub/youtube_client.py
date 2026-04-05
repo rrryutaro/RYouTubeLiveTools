@@ -43,6 +43,7 @@ class YouTubeClient:
         self._thread: threading.Thread | None = None
         self._on_comment         = None   # (raw: dict) -> None
         self._on_status          = None   # (status: str, message: str) -> None
+        self._is_first_fetch: bool = True  # 初回取得（バックログ）判定用
 
     # ─── 接続確認（同期。呼び出し元スレッドでブロックする）──────────────────
 
@@ -122,12 +123,13 @@ class YouTubeClient:
         if self._thread and self._thread.is_alive():
             return
 
-        self._api_key      = api_key
-        self._live_chat_id = live_chat_id
-        self._next_token   = None
-        self._on_comment   = on_comment
-        self._on_status    = on_status
+        self._api_key         = api_key
+        self._live_chat_id    = live_chat_id
+        self._next_token      = None
+        self._on_comment      = on_comment
+        self._on_status       = on_status
         self._stop_event.clear()
+        self._is_first_fetch  = True  # 接続ごとにリセット
 
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
@@ -154,9 +156,15 @@ class YouTubeClient:
                 poll_interval = result.get("pollingIntervalMillis",
                                            POLL_DEFAULT_MS) / 1000.0
 
+                # 初回取得分はバックログとしてフラグを付与（TTS 抑止に使用）
+                is_backlog = self._is_first_fetch
+                self._is_first_fetch = False
+
                 for raw_item in result.get("items", []):
                     if self._stop_event.is_set():
                         break
+                    if is_backlog:
+                        raw_item["_is_backlog"] = True
                     if self._on_comment:
                         self._on_comment(raw_item)
 
