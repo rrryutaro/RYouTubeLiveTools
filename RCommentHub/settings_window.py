@@ -42,12 +42,13 @@ class SettingsWindow:
         self._win = win
         win.title("RCommentHub — 設定")
         win.configure(bg=C["bg_main"])
-        win.resizable(False, True)
+        win.resizable(True, True)
+        win.minsize(580, 500)
         pos = self._pos_getter()
         if pos:
-            win.geometry(f"460x620+{pos[0]}+{pos[1]}")
+            win.geometry(f"640x700+{pos[0]}+{pos[1]}")
         else:
-            win.geometry("460x620")
+            win.geometry("640x700")
         win.wm_attributes("-topmost", self._topmost_getter())
         win.bind("<Configure>", self._on_configure)
 
@@ -74,24 +75,17 @@ class SettingsWindow:
 
         tab_api     = tk.Frame(nb, bg=C["bg_main"])
         tab_conn    = tk.Frame(nb, bg=C["bg_main"])
-        tab_display = tk.Frame(nb, bg=C["bg_main"])   # 統合表示設定（監視/配信 比較）
-        tab_view    = tk.Frame(nb, bg=C["bg_main"])   # 監視用 詳細（旧タブ互換）
+        tab_display = tk.Frame(nb, bg=C["bg_main"])
         tab_tts     = tk.Frame(nb, bg=C["bg_main"])
-        tab_overlay = tk.Frame(nb, bg=C["bg_main"])
         nb.add(tab_api,     text="API")
         nb.add(tab_conn,    text="接続設定")
         nb.add(tab_display, text="表示設定")
-        nb.add(tab_view,    text="監視用 詳細")
         nb.add(tab_tts,     text="読み上げ")
-        nb.add(tab_overlay, text="Overlay")
 
         self._build_api_tab(tab_api)
         self._build_conn_tab(tab_conn)
-        # view/tts/overlay を先に組んで変数を確保してから display タブを構築
-        self._build_view_tab(tab_view)
-        self._build_tts_tab(tab_tts)
-        self._build_overlay_tab(tab_overlay)
         self._build_display_tab(tab_display)
+        self._build_tts_tab(tab_tts)
 
         # ── ボタン行 ──────────────────────────────────────────────────────────
         btn_frame = tk.Frame(win, bg=C["bg_main"])
@@ -239,17 +233,19 @@ class SettingsWindow:
 
     def _build_display_tab(self, parent):
         """
-        監視用と配信用の表示設定を同型の2カラムで並べて比較できるタブ。
+        表示設定の正式タブ。監視用 / 配信用を3カラム（項目名・監視用・配信用）で
+        サイドバイサイド比較できる構成。全表示変数をここで初期化する。
 
-        設定グループ:
-          4-1. ウィンドウ設定
-          4-2. 表示要素
-          4-3. 文字サイズ
-          (コピー操作)
+        セクション:
+          全体設定  — テーマ・Overlay有効
+          3-1. ウィンドウ設定
+          3-2. 表示要素
+          3-3. 文字サイズ
+          コピー操作
         """
         C = UI_COLORS
 
-        # スクロール対応
+        # ── スクロールコンテナ ───────────────────────────────────────────
         sc = tk.Canvas(parent, bg=C["bg_main"], highlightthickness=0)
         sb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=sc.yview)
         sc.configure(yscrollcommand=sb.set)
@@ -257,149 +253,195 @@ class SettingsWindow:
         sc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         inner = tk.Frame(sc, bg=C["bg_main"])
         iw_id = sc.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: sc.configure(
-            scrollregion=sc.bbox("all")))
+        inner.bind("<Configure>", lambda e: sc.configure(scrollregion=sc.bbox("all")))
         sc.bind("<Configure>", lambda e: sc.itemconfig(iw_id, width=e.width))
 
-        # ── ヘッダ行（項目名 | 監視用 | 配信用） ─────────────────────────────
-        hdr = tk.Frame(inner, bg=C["bg_main"])
-        hdr.pack(fill=tk.X, padx=12, pady=(8, 2))
-        hdr.columnconfigure(0, weight=2)
-        hdr.columnconfigure(1, weight=1)
-        hdr.columnconfigure(2, weight=1)
-        for col, text in enumerate(["設定項目", "監視用", "配信用 (Overlay)"]):
-            tk.Label(hdr, text=text,
-                     font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
-                     fg=C["fg_label"], bg=C["bg_main"]
-                     ).grid(row=0, column=col, sticky=tk.W, padx=4)
-        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=2)
+        # ── 変数初期化（監視用） ────────────────────────────────────────
+        self._theme_var = tk.StringVar(value=self._sm.get("color_theme", "ダーク (デフォルト)"))
+        self._topmost_var = tk.BooleanVar(value=self._sm.get("cw_topmost", False))
+        self._transparent_mode_for_display_var = tk.BooleanVar(
+            value=self._sm.get("cw_transparent", False))
+        self._comment_alpha_var = tk.StringVar(
+            value=str(self._sm.get("cw_comment_alpha", 100)))
+        self._display_rows_var = tk.StringVar(
+            value=str(self._sm.get("display_rows", 1)))
+        self._icon_var = tk.BooleanVar(value=self._sm.get("icon_visible", True))
+        self._cw_show_source_var = tk.BooleanVar(value=self._sm.get("cw_show_source", False))
+        self._time_var = tk.BooleanVar(value=self._sm.get("time_visible", True))
+        self._time_mode_var = tk.StringVar(value=self._sm.get("time_mode", "実時間"))
+        self._font_name_var = tk.StringVar(value=str(self._sm.get("font_size_name", 9)))
+        self._font_body_var = tk.StringVar(value=str(self._sm.get("font_size_body", 9)))
 
-        def row(parent, label, mon_widget_fn, ov_widget_fn):
-            """1行分のグリッドを作成して返す"""
-            fr = tk.Frame(parent, bg=C["bg_main"])
+        # ── 変数初期化（配信用） ────────────────────────────────────────
+        self._overlay_enabled_var = tk.BooleanVar(
+            value=self._sm.get("overlay_enabled", False))
+        self._overlay_topmost_var = tk.BooleanVar(
+            value=self._sm.get("overlay_topmost", True))
+        self._overlay_transparent_var = tk.BooleanVar(
+            value=self._sm.get("overlay_transparent", False))
+        self._overlay_mode_var = tk.StringVar(
+            value=self._sm.get("overlay_display_mode", "timed"))
+        self._overlay_duration_var = tk.StringVar(
+            value=str(self._sm.get("overlay_duration_sec",
+                                   self._sm.get("overlay_duration", 5))))
+        self._overlay_show_icon_var = tk.BooleanVar(
+            value=self._sm.get("overlay_show_icon", True))
+        self._overlay_show_source_var = tk.BooleanVar(
+            value=self._sm.get("overlay_show_source", False))
+        self._ov_fn_var = tk.StringVar(
+            value=str(self._sm.get("overlay_font_size_name", 9)))
+        self._ov_fb_var = tk.StringVar(
+            value=str(self._sm.get("overlay_font_size_body", 11)))
+
+        # ── ローカルヘルパー ────────────────────────────────────────────
+        COL_W = (3, 2, 2)   # weight: 項目名, 監視用, 配信用
+        COL_MIN = (150, 110, 110)
+
+        def _apply_cols(fr):
+            for i, (w, m) in enumerate(zip(COL_W, COL_MIN)):
+                fr.columnconfigure(i, weight=w, minsize=m)
+
+        def grid_row(label, mon_fn, ov_fn):
+            fr = tk.Frame(inner, bg=C["bg_main"])
             fr.pack(fill=tk.X, padx=12, pady=1)
-            fr.columnconfigure(0, weight=2)
-            fr.columnconfigure(1, weight=1)
-            fr.columnconfigure(2, weight=1)
-            tk.Label(fr, text=label,
-                     font=(FONT_FAMILY, FONT_SIZE_S),
-                     fg=C["fg_label"], bg=C["bg_main"]
-                     ).grid(row=0, column=0, sticky=tk.W, padx=4)
-            mon_widget_fn(fr).grid(row=0, column=1, sticky=tk.W, padx=4)
-            ov_widget_fn(fr).grid(row=0, column=2, sticky=tk.W, padx=4)
+            _apply_cols(fr)
+            tk.Label(fr, text=label, font=(FONT_FAMILY, FONT_SIZE_S),
+                     fg=C["fg_label"], bg=C["bg_main"], anchor=tk.W
+                     ).grid(row=0, column=0, sticky=tk.EW, padx=(4, 8))
+            mon_fn(fr).grid(row=0, column=1, sticky=tk.W, padx=4)
+            ov_fn(fr).grid(row=0, column=2, sticky=tk.W, padx=4)
 
         def chk(parent, var):
             return tk.Checkbutton(parent, variable=var,
-                                  bg=C["bg_main"],
-                                  activebackground=C["bg_main"],
+                                  bg=C["bg_main"], activebackground=C["bg_main"],
                                   selectcolor=C["bg_list"])
 
-        def spn(parent, var, lo=7, hi=72):
+        def dash(parent):
+            return tk.Label(parent, text="—", font=(FONT_FAMILY, FONT_SIZE_S),
+                            fg=C["fg_label"], bg=C["bg_main"])
+
+        def spn(parent, var, lo=7, hi=72, width=4, inc=1):
             f = tk.Frame(parent, bg=C["bg_main"])
-            ttk.Spinbox(f, textvariable=var, from_=lo, to=hi, width=4,
-                        font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
+            ttk.Spinbox(f, textvariable=var, from_=lo, to=hi, increment=inc,
+                        width=width, font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
             return f
 
-        # ── 4-1. ウィンドウ設定 ────────────────────────────────────────────
-        tk.Label(inner, text="4-1. ウィンドウ設定",
-                 font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(anchor=tk.W, padx=14, pady=(8, 2))
-        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=2)
+        def cmb(parent, var, values, width=8):
+            f = tk.Frame(parent, bg=C["bg_main"])
+            ttk.Combobox(f, textvariable=var, values=values, state="readonly",
+                         width=width, font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
+            return f
 
-        row(inner, "最前面表示",
-            lambda p: chk(p, self._topmost_var),
-            lambda p: chk(p, self._overlay_topmost_var))
-        row(inner, "透過モード",
-            lambda p: chk(p, self._transparent_mode_for_display_var),
-            lambda p: chk(p, self._overlay_transparent_var))
+        def sec(text):
+            tk.Label(inner, text=text, font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
+                     fg=C["fg_label"], bg=C["bg_main"]
+                     ).pack(anchor=tk.W, padx=14, pady=(10, 2))
+            tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=2)
 
-        # 配信用のみ: 表示モード
-        fr_mode = tk.Frame(inner, bg=C["bg_main"])
-        fr_mode.pack(fill=tk.X, padx=12, pady=1)
-        fr_mode.columnconfigure(0, weight=2)
-        fr_mode.columnconfigure(1, weight=1)
-        fr_mode.columnconfigure(2, weight=1)
-        tk.Label(fr_mode, text="表示モード (配信用のみ)",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=0, sticky=tk.W, padx=4)
-        tk.Label(fr_mode, text="—",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=1, sticky=tk.W, padx=4)
-        ttk.Combobox(fr_mode, textvariable=self._overlay_mode_var,
-                     values=["timed", "always"], state="readonly", width=7,
+        # ── 全体設定 ──────────────────────────────────────────────────────
+        sec("全体設定")
+        r_theme = self._labeled_row(inner, "カラーテーマ:")
+        ttk.Combobox(r_theme, textvariable=self._theme_var,
+                     values=list(COLOR_THEMES.keys()), state="readonly", width=20,
                      font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).grid(row=0, column=2, sticky=tk.W, padx=4)
+                     ).pack(side=tk.LEFT, padx=4)
 
-        fr_dur = tk.Frame(inner, bg=C["bg_main"])
-        fr_dur.pack(fill=tk.X, padx=12, pady=1)
-        fr_dur.columnconfigure(0, weight=2)
-        fr_dur.columnconfigure(1, weight=1)
-        fr_dur.columnconfigure(2, weight=1)
-        tk.Label(fr_dur, text="表示秒数 (timed 時)",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=0, sticky=tk.W, padx=4)
-        tk.Label(fr_dur, text="—",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=1, sticky=tk.W, padx=4)
-        f_dur = tk.Frame(fr_dur, bg=C["bg_main"])
-        ttk.Spinbox(f_dur, textvariable=self._overlay_duration_var,
-                    from_=1, to=120, width=4,
-                    font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
-        tk.Label(f_dur, text="秒",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT)
-        f_dur.grid(row=0, column=2, sticky=tk.W, padx=4)
+        tk.Checkbutton(inner, text="配信用 Overlay を有効にする",
+                       variable=self._overlay_enabled_var,
+                       font=(FONT_FAMILY, FONT_SIZE_S),
+                       fg=C["fg_main"], bg=C["bg_main"],
+                       activebackground=C["bg_main"],
+                       selectcolor=C["bg_list"]
+                       ).pack(anchor=tk.W, padx=18, pady=2)
+        tk.Label(inner, text="※ Overlay は監視用コメントビューとは独立した配信用ウィンドウです。",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"],
+                 wraplength=560, justify=tk.LEFT
+                 ).pack(anchor=tk.W, padx=18, pady=(0, 4))
 
-        # ── 4-2. 表示要素 ──────────────────────────────────────────────────
-        tk.Label(inner, text="4-2. 表示要素",
-                 font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(anchor=tk.W, padx=14, pady=(10, 2))
-        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=2)
+        # ── 3カラムヘッダ ──────────────────────────────────────────────────
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=(4, 0))
+        hdr = tk.Frame(inner, bg=C["bg_panel"])
+        hdr.pack(fill=tk.X, padx=12, pady=0)
+        _apply_cols(hdr)
+        for col, text in enumerate(["設定項目", "監視用", "配信用 (Overlay)"]):
+            tk.Label(hdr, text=text, font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
+                     fg=C["fg_label"], bg=C["bg_panel"], anchor=tk.W
+                     ).grid(row=0, column=col, sticky=tk.EW, padx=4, pady=3)
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=0)
 
-        row(inner, "アイコン表示",
-            lambda p: chk(p, self._icon_var),
-            lambda p: chk(p, self._overlay_show_icon_var))
-        row(inner, "接続先名表示",
-            lambda p: chk(p, self._cw_show_source_var),
-            lambda p: chk(p, self._overlay_show_source_var))
-        # 時刻表示は監視用のみ
-        fr_time = tk.Frame(inner, bg=C["bg_main"])
-        fr_time.pack(fill=tk.X, padx=12, pady=1)
-        fr_time.columnconfigure(0, weight=2)
-        fr_time.columnconfigure(1, weight=1)
-        fr_time.columnconfigure(2, weight=1)
-        tk.Label(fr_time, text="時刻表示 (監視用のみ)",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=0, sticky=tk.W, padx=4)
-        chk(fr_time, self._time_var).grid(row=0, column=1, sticky=tk.W, padx=4)
-        tk.Label(fr_time, text="—",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).grid(row=0, column=2, sticky=tk.W, padx=4)
+        # ── 3-1. ウィンドウ設定 ──────────────────────────────────────────
+        sec("3-1. ウィンドウ設定")
 
-        # ── 4-3. 文字サイズ ────────────────────────────────────────────────
-        tk.Label(inner, text="4-3. 文字サイズ",
-                 font=(FONT_FAMILY, FONT_SIZE_S, "bold"),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(anchor=tk.W, padx=14, pady=(10, 2))
-        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=2)
+        grid_row("最前面表示",
+                 lambda p: chk(p, self._topmost_var),
+                 lambda p: chk(p, self._overlay_topmost_var))
 
-        row(inner, "投稿者名フォントサイズ",
-            lambda p: spn(p, self._font_name_var),
-            lambda p: spn(p, self._ov_fn_var))
-        row(inner, "本文フォントサイズ",
-            lambda p: spn(p, self._font_body_var),
-            lambda p: spn(p, self._ov_fb_var))
+        grid_row("透過モード",
+                 lambda p: chk(p, self._transparent_mode_for_display_var),
+                 lambda p: chk(p, self._overlay_transparent_var))
 
-        # ── コピー操作 ─────────────────────────────────────────────────────
-        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=(10, 2))
+        def _mon_alpha(p):
+            f = tk.Frame(p, bg=C["bg_main"])
+            ttk.Spinbox(f, textvariable=self._comment_alpha_var,
+                        from_=10, to=100, increment=5, width=5,
+                        font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
+            tk.Label(f, text="%", font=(FONT_FAMILY, FONT_SIZE_S),
+                     fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=(2, 0))
+            return f
+        grid_row("透過率 (監視用)", _mon_alpha, dash)
+
+        grid_row("表示行数 (監視用)",
+                 lambda p: cmb(p, self._display_rows_var, ["1", "2"], width=4),
+                 dash)
+
+        grid_row("表示モード (配信用)",
+                 dash,
+                 lambda p: cmb(p, self._overlay_mode_var, ["timed", "always"], width=8))
+
+        def _ov_dur(p):
+            f = tk.Frame(p, bg=C["bg_main"])
+            ttk.Spinbox(f, textvariable=self._overlay_duration_var,
+                        from_=1, to=120, width=4,
+                        font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT)
+            tk.Label(f, text="秒", font=(FONT_FAMILY, FONT_SIZE_S),
+                     fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=(2, 0))
+            return f
+        grid_row("表示秒数 / timed (配信用)", dash, _ov_dur)
+
+        # ── 3-2. 表示要素 ────────────────────────────────────────────────
+        sec("3-2. 表示要素")
+
+        grid_row("アイコン表示",
+                 lambda p: chk(p, self._icon_var),
+                 lambda p: chk(p, self._overlay_show_icon_var))
+
+        grid_row("接続先名表示",
+                 lambda p: chk(p, self._cw_show_source_var),
+                 lambda p: chk(p, self._overlay_show_source_var))
+
+        grid_row("時刻表示 (監視用)",
+                 lambda p: chk(p, self._time_var),
+                 dash)
+
+        grid_row("時刻方式 (監視用)",
+                 lambda p: cmb(p, self._time_mode_var,
+                               ["実時間", "経過時間"], width=8),
+                 dash)
+
+        # ── 3-3. 文字サイズ ──────────────────────────────────────────────
+        sec("3-3. 文字サイズ")
+
+        grid_row("投稿者名フォントサイズ",
+                 lambda p: spn(p, self._font_name_var),
+                 lambda p: spn(p, self._ov_fn_var))
+
+        grid_row("本文フォントサイズ",
+                 lambda p: spn(p, self._font_body_var),
+                 lambda p: spn(p, self._ov_fb_var))
+
+        # ── コピー操作 ────────────────────────────────────────────────────
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X, padx=12, pady=(12, 4))
         btn_row = tk.Frame(inner, bg=C["bg_main"])
         btn_row.pack(anchor=tk.W, padx=12, pady=4)
         tk.Button(btn_row, text="監視用 → 配信用へコピー",
@@ -414,128 +456,35 @@ class SettingsWindow:
                   relief=tk.FLAT, padx=8, pady=2,
                   command=self._copy_overlay_to_monitor
                   ).pack(side=tk.LEFT)
+        tk.Label(inner,
+                 text="※ 配信用透過モード: 透過時はドラッグ帯が非表示になります。"
+                      "位置・サイズは事前に確定させてください。",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"],
+                 wraplength=560, justify=tk.LEFT
+                 ).pack(anchor=tk.W, padx=14, pady=(4, 8))
 
     def _copy_monitor_to_overlay(self):
-        """監視用のフォントサイズ等を配信用へコピーする"""
+        """監視用の設定を配信用へコピーする"""
         try:
             self._ov_fn_var.set(self._font_name_var.get())
             self._ov_fb_var.set(self._font_body_var.get())
             self._overlay_show_icon_var.set(self._icon_var.get())
+            self._overlay_show_source_var.set(self._cw_show_source_var.get())
+            self._overlay_topmost_var.set(self._topmost_var.get())
         except Exception:
             pass
 
     def _copy_overlay_to_monitor(self):
-        """配信用のフォントサイズ等を監視用へコピーする"""
+        """配信用の設定を監視用へコピーする"""
         try:
             self._font_name_var.set(self._ov_fn_var.get())
             self._font_body_var.set(self._ov_fb_var.get())
             self._icon_var.set(self._overlay_show_icon_var.get())
+            self._cw_show_source_var.set(self._overlay_show_source_var.get())
+            self._topmost_var.set(self._overlay_topmost_var.get())
         except Exception:
             pass
-
-    # ── 表示タブ ──────────────────────────────────────────────────────────────
-
-    def _build_view_tab(self, parent):
-        C = UI_COLORS
-
-        # テーマ選択（最初に配置）
-        self._section(parent, "テーマ")
-        r_theme = self._labeled_row(parent, "カラーテーマ:")
-        self._theme_var = tk.StringVar(
-            value=self._sm.get("color_theme", "ダーク (デフォルト)"))
-        ttk.Combobox(r_theme, textvariable=self._theme_var,
-                     values=list(COLOR_THEMES.keys()), state="readonly", width=18,
-                     font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).pack(side=tk.LEFT, padx=4)
-
-        self._section(parent, "コメント表示")
-
-        # 表示行数
-        row = self._labeled_row(parent, "表示行数:")
-        self._display_rows_var = tk.StringVar(
-            value=str(self._sm.get("display_rows", 1)))
-        ttk.Combobox(row, textvariable=self._display_rows_var,
-                     values=["1", "2"], state="readonly", width=4,
-                     font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).pack(side=tk.LEFT, padx=4)
-
-        # フォントサイズ
-        for label_text, attr, cfg_key, default in [
-            ("ユーザー名フォントサイズ:", "_font_name_var", "font_size_name", 9),
-            ("本文フォントサイズ:",       "_font_body_var", "font_size_body", 9),
-        ]:
-            r = self._labeled_row(parent, label_text)
-            var = tk.StringVar(value=str(self._sm.get(cfg_key, default)))
-            ttk.Spinbox(r, textvariable=var, from_=7, to=72, width=4,
-                        font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT, padx=4)
-            setattr(self, attr, var)
-
-        # ON/OFF チェックボックス
-        for attr, cfg_key, default, label in [
-            ("_icon_var",  "icon_visible",  True,  "アイコン表示"),
-            ("_time_var",  "time_visible",  True,  "時刻表示"),
-        ]:
-            var = tk.BooleanVar(value=self._sm.get(cfg_key, default))
-            setattr(self, attr, var)
-            tk.Checkbutton(parent, text=label, variable=var,
-                           font=(FONT_FAMILY, FONT_SIZE_S),
-                           fg=C["fg_main"], bg=C["bg_main"],
-                           activebackground=C["bg_main"],
-                           selectcolor=C["bg_list"]
-                           ).pack(anchor=tk.W, padx=18, pady=1)
-
-        # 時刻方式
-        r2 = self._labeled_row(parent, "時刻方式:")
-        self._time_mode_var = tk.StringVar(value=self._sm.get("time_mode", "実時間"))
-        ttk.Combobox(r2, textvariable=self._time_mode_var,
-                     values=["実時間", "経過時間"], state="readonly", width=8,
-                     font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).pack(side=tk.LEFT, padx=4)
-
-        self._section(parent, "その他")
-        self._topmost_var = tk.BooleanVar(value=self._sm.get("cw_topmost", False))
-        tk.Checkbutton(parent, text="コメントビュー最前面表示",
-                       variable=self._topmost_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"]
-                       ).pack(anchor=tk.W, padx=18, pady=4)
-
-        # 透過モード（display タブの「監視用」列で使う共有変数）
-        self._transparent_mode_for_display_var = tk.BooleanVar(
-            value=self._sm.get("cw_transparent", False))
-        tk.Checkbutton(parent, text="透過モード（監視用ウィンドウ背景を透明にする）",
-                       variable=self._transparent_mode_for_display_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"]
-                       ).pack(anchor=tk.W, padx=18, pady=1)
-
-        # 接続先名を常時表示（display タブの「監視用」列で使う共有変数）
-        self._cw_show_source_var = tk.BooleanVar(
-            value=self._sm.get("cw_show_source", False))
-        tk.Checkbutton(parent, text="接続先名を常時表示（マルチ接続でなくても表示）",
-                       variable=self._cw_show_source_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"]
-                       ).pack(anchor=tk.W, padx=18, pady=1)
-
-        # コメント透過率（透過モード時の -alpha 値）
-        r4 = self._labeled_row(parent, "ウィンドウ透過率 (%):")
-        self._comment_alpha_var = tk.StringVar(
-            value=str(self._sm.get("cw_comment_alpha", 100)))
-        ttk.Spinbox(r4, textvariable=self._comment_alpha_var,
-                    from_=10, to=100, increment=5, width=5,
-                    font=(FONT_FAMILY, FONT_SIZE_S)
-                    ).pack(side=tk.LEFT, padx=4)
-        tk.Label(r4, text="(透過モード時に適用。コメントを含む全体に影響 / 最小10%)",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(side=tk.LEFT)
 
     # ── 読み上げタブ ──────────────────────────────────────────────────────────
 
@@ -644,133 +593,6 @@ class SettingsWindow:
                  font=(FONT_FAMILY, FONT_SIZE_S - 1),
                  fg=C["fg_label"], bg=C["bg_main"]
                  ).pack(side=tk.LEFT)
-
-    # ── Overlay タブ ─────────────────────────────────────────────────────────
-
-    def _build_overlay_tab(self, parent):
-        C = UI_COLORS
-
-        # スクロール対応フレーム
-        ov_canvas = tk.Canvas(parent, bg=C["bg_main"], highlightthickness=0)
-        ov_sb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=ov_canvas.yview)
-        ov_canvas.configure(yscrollcommand=ov_sb.set)
-        ov_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        ov_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        inner = tk.Frame(ov_canvas, bg=C["bg_main"])
-        inner_id = ov_canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: ov_canvas.configure(
-            scrollregion=ov_canvas.bbox("all")))
-        ov_canvas.bind("<Configure>", lambda e: ov_canvas.itemconfig(
-            inner_id, width=e.width))
-
-        # ── 有効化 ──────────────────────────────────────────────────────────
-        self._section(inner, "Overlay 表示")
-        self._overlay_enabled_var = tk.BooleanVar(
-            value=self._sm.get("overlay_enabled", False))
-        tk.Checkbutton(
-            inner, text="Overlay 表示を有効にする",
-            variable=self._overlay_enabled_var,
-            font=(FONT_FAMILY, FONT_SIZE_S),
-            fg=C["fg_main"], bg=C["bg_main"],
-            activebackground=C["bg_main"],
-            selectcolor=C["bg_list"],
-        ).pack(anchor=tk.W, padx=18, pady=(4, 0))
-        tk.Label(inner,
-                 text="監視用コメントビューとは独立した配信用ウィンドウです。",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"],
-                 wraplength=380, justify=tk.LEFT,
-                 ).pack(anchor=tk.W, padx=18, pady=(0, 4))
-
-        # ── 表示モード ───────────────────────────────────────────────────────
-        self._section(inner, "表示モード")
-
-        rm = self._labeled_row_in(inner, "表示モード:")
-        self._overlay_mode_var = tk.StringVar(
-            value=self._sm.get("overlay_display_mode", "timed"))
-        ttk.Combobox(rm, textvariable=self._overlay_mode_var,
-                     values=["timed", "always"], state="readonly", width=8,
-                     font=(FONT_FAMILY, FONT_SIZE_S)
-                     ).pack(side=tk.LEFT, padx=4)
-        tk.Label(rm, text="timed=自動消去  always=常時表示",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(side=tk.LEFT)
-
-        rd = self._labeled_row_in(inner, "表示秒数 (timed):")
-        self._overlay_duration_var = tk.StringVar(
-            value=str(self._sm.get("overlay_duration_sec",
-                                   self._sm.get("overlay_duration", 5))))
-        ttk.Spinbox(rd, textvariable=self._overlay_duration_var,
-                    from_=1, to=120, width=4,
-                    font=(FONT_FAMILY, FONT_SIZE_S)
-                    ).pack(side=tk.LEFT, padx=4)
-        tk.Label(rd, text="秒",
-                 font=(FONT_FAMILY, FONT_SIZE_S),
-                 fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(side=tk.LEFT)
-
-        # ── ウィンドウ設定 ──────────────────────────────────────────────────
-        self._section(inner, "ウィンドウ設定")
-
-        self._overlay_topmost_var = tk.BooleanVar(
-            value=self._sm.get("overlay_topmost", True))
-        tk.Checkbutton(inner, text="最前面表示 (Topmost)",
-                       variable=self._overlay_topmost_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"],
-                       ).pack(anchor=tk.W, padx=18, pady=2)
-
-        self._overlay_transparent_var = tk.BooleanVar(
-            value=self._sm.get("overlay_transparent", False))
-        tk.Checkbutton(inner, text="透過モード（背景を透明にする）",
-                       variable=self._overlay_transparent_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"],
-                       ).pack(anchor=tk.W, padx=18, pady=2)
-        tk.Label(inner,
-                 text="※ 透過時はドラッグ帯が消えます。位置・サイズは事前に設定してください。",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"],
-                 wraplength=380, justify=tk.LEFT,
-                 ).pack(anchor=tk.W, padx=18, pady=(0, 4))
-
-        # ── 表示内容 ────────────────────────────────────────────────────────
-        self._section(inner, "表示内容")
-
-        self._overlay_show_source_var = tk.BooleanVar(
-            value=self._sm.get("overlay_show_source", False))
-        tk.Checkbutton(inner, text="接続先名を表示",
-                       variable=self._overlay_show_source_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"],
-                       ).pack(anchor=tk.W, padx=18, pady=2)
-
-        self._overlay_show_icon_var = tk.BooleanVar(
-            value=self._sm.get("overlay_show_icon", True))
-        tk.Checkbutton(inner, text="アイコンを表示",
-                       variable=self._overlay_show_icon_var,
-                       font=(FONT_FAMILY, FONT_SIZE_S),
-                       fg=C["fg_main"], bg=C["bg_main"],
-                       activebackground=C["bg_main"],
-                       selectcolor=C["bg_list"],
-                       ).pack(anchor=tk.W, padx=18, pady=2)
-
-        for label_text, attr, cfg_key, default in [
-            ("投稿者名フォントサイズ:", "_ov_fn_var", "overlay_font_size_name", 9),
-            ("本文フォントサイズ:",     "_ov_fb_var", "overlay_font_size_body", 11),
-        ]:
-            r = self._labeled_row_in(inner, label_text)
-            var = tk.StringVar(value=str(self._sm.get(cfg_key, default)))
-            ttk.Spinbox(r, textvariable=var, from_=7, to=72, width=4,
-                        font=(FONT_FAMILY, FONT_SIZE_S)).pack(side=tk.LEFT, padx=4)
-            setattr(self, attr, var)
 
     # ── 保存 ─────────────────────────────────────────────────────────────────
 
