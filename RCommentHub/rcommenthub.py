@@ -22,14 +22,28 @@ from connect_dialog import ConnectDialog
 from settings_window import SettingsWindow
 from debug_sender import DebugSenderWindow
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _resolve_runtime_base_dir() -> str:
+    """
+    ランタイム基準ディレクトリを返す。
+    exe 実行 / Python 実行どちらでも dist/ を基準とする。
+
+    - frozen (exe 実行): sys.executable の存在フォルダ = dist/
+    - Python 実行 (ランチャー含む): __file__ の親 / dist/
+    """
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+    return os.path.normpath(base)
+
+
+BASE_DIR = _resolve_runtime_base_dir()
+os.makedirs(BASE_DIR, exist_ok=True)
 
 CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILENAME)
 
 DEFAULT_CONFIG = {
+    # 詳細ウィンドウ位置・サイズ
     "x": 100, "y": 100,
     "width": DEFAULT_WIDTH, "height": DEFAULT_HEIGHT,
     "sash_filter_list": 200,
@@ -38,6 +52,9 @@ DEFAULT_CONFIG = {
     "font_size_name":   9,
     "font_size_body":   9,
     "cw_grip_visible":  True,
+    # コメントビュー位置・サイズ（_on_configure で更新、shutdown で保存）
+    "cw_x": 100, "cw_y": 100,
+    "cw_width": 440, "cw_height": 680,
 }
 
 def _extract_video_id(text: str) -> str:
