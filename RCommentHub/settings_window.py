@@ -28,6 +28,8 @@ class SettingsWindow:
         self._pos_setter          = pos_setter or (lambda pos: None)
         self._auth_service_getter = auth_service_getter or (lambda: None)
         self._win: tk.Toplevel | None = None
+        # OAuth 試行 ID: 認証開始ごとにインクリメントし、古い試行の完了通知を無視するために使う
+        self._oauth_attempt_id: int = 0
 
     def open(self):
         if self._win is not None:
@@ -191,7 +193,17 @@ class SettingsWindow:
             relief=tk.FLAT, padx=8, pady=3,
             command=self._on_oauth_revoke,
         )
-        self._oauth_revoke_btn.pack(side=tk.LEFT)
+        self._oauth_revoke_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        self._oauth_cancel_btn = tk.Button(
+            btn_row, text="認証をキャンセル",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["bg_list"], fg="#FFAA66",
+            relief=tk.FLAT, padx=8, pady=3,
+            command=self._on_oauth_cancel,
+            state=tk.DISABLED,
+        )
+        self._oauth_cancel_btn.pack(side=tk.LEFT)
 
         # client_secrets.json のロード状態
         auth_svc = self._auth_service_getter()
@@ -283,13 +295,13 @@ class SettingsWindow:
             )
             return
 
-        # 認証ボタンを無効化してフリーズ防止
+        # 試行 ID をインクリメントして現在の認証試行を識別する
+        self._oauth_attempt_id += 1
+        attempt_id = self._oauth_attempt_id
+
+        # 認証中 UI: 認証ボタン・解除ボタン無効化、キャンセルボタン有効化
         self._oauth_status_var.set("認証中... ブラウザを確認してください")
-        try:
-            self._oauth_btn.configure(state=tk.DISABLED)
-            self._oauth_revoke_btn.configure(state=tk.DISABLED)
-        except Exception:
-            pass
+        self._set_oauth_buttons(authenticating=True)
 
         def _do_flow():
             try:
@@ -298,19 +310,19 @@ class SettingsWindow:
                 success = False
             if self._win:
                 try:
-                    self._win.after(0, lambda: self._on_oauth_done(success, auth_svc))
+                    self._win.after(0, lambda: self._on_oauth_done(attempt_id, success, auth_svc))
                 except Exception:
                     pass
 
         _threading.Thread(target=_do_flow, daemon=True).start()
 
-    def _on_oauth_done(self, success: bool, auth_svc):
-        """認証フロー完了後の UI 更新（メインスレッドで呼ばれる）"""
-        try:
-            self._oauth_btn.configure(state=tk.NORMAL)
-            self._oauth_revoke_btn.configure(state=tk.NORMAL)
-        except Exception:
-            pass
+    def _on_oauth_done(self, attempt_id: int, success: bool, auth_svc):
+        """認証フロー完了後の UI 更新（メインスレッドで呼ばれる）。
+        attempt_id が現在の有効試行と一致しない場合（キャンセル済み等）は無視する。"""
+        if attempt_id != self._oauth_attempt_id:
+            # 古い試行の通知 — キャンセル後または再試行開始後のため無視
+            return
+        self._set_oauth_buttons(authenticating=False)
         try:
             self._oauth_status_var.set(auth_svc.status_label())
         except Exception:
@@ -324,6 +336,25 @@ class SettingsWindow:
                 "client_secrets.json を確認してから再試行してください。",
                 parent=self._win,
             )
+
+    def _on_oauth_cancel(self):
+        """OAuth 認証試行をキャンセルする（UI を即時リセットし再試行可能にする）。
+        バックグラウンドスレッドは timeout まで残るが、完了通知は attempt_id 不一致で無視される。"""
+        # 試行 ID を更新して古い試行の完了通知を無効化
+        self._oauth_attempt_id += 1
+        self._set_oauth_buttons(authenticating=False)
+        self._oauth_status_var.set("認証キャンセル済み — 再度ボタンを押して再試行できます")
+
+    def _set_oauth_buttons(self, authenticating: bool):
+        """OAuth ボタン群の有効/無効を一括切り替えする"""
+        auth_state   = tk.DISABLED if authenticating else tk.NORMAL
+        cancel_state = tk.NORMAL   if authenticating else tk.DISABLED
+        try:
+            self._oauth_btn.configure(state=auth_state)
+            self._oauth_revoke_btn.configure(state=auth_state)
+            self._oauth_cancel_btn.configure(state=cancel_state)
+        except Exception:
+            pass
 
     def _on_oauth_revoke(self):
         """OAuth トークンを失効させる"""
