@@ -392,8 +392,31 @@ class MainWindow(QMainWindow):
         self._settings_panel.update_setting("donut_hole", self._settings.donut_hole)
 
     # ================================================================
-    #  キーボード
+    #  入力操作（一覧）
+    #
+    #  ┌──────────────────────────────────┬──────────────────────────┐
+    #  │ 入力                             │ 動作                     │
+    #  ├──────────────────────────────────┼──────────────────────────┤
+    #  │ ホイール上左クリック              │ spin 開始                │
+    #  │ ポインター上左ドラッグ            │ pointer 角度変更         │
+    #  │ ホイール外左クリック              │ 無視（super に委譲）     │
+    #  │ スピン中のクリック/ドラッグ       │ 無視                     │
+    #  │ 結果 overlay 表示中の左クリック   │ overlay 側で閉じ判定     │
+    #  │ マウスホイール回転                │ 無効化（誤操作防止）     │
+    #  │ 右クリック                        │ コンテキストメニュー     │
+    #  │ Space                            │ spin 開始                │
+    #  │ F1                               │ 設定パネル開閉           │
+    #  │ Escape                           │ アプリ終了               │
+    #  └──────────────────────────────────┴──────────────────────────┘
+    #
+    #  将来の変更ポイント:
+    #    - スピン中 pointer 移動許可: mousePressEvent 内の
+    #      `if not self._spin_ctrl.is_spinning` 条件を外し、
+    #      pointer_hit 分岐のみ独立させる
+    #    - マウスホイールに機能割り当て: wheelEvent を用途に応じて実装
     # ================================================================
+
+    # ── キーボード ──
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -404,12 +427,7 @@ class MainWindow(QMainWindow):
             self._start_spin()
         super().keyPressEvent(event)
 
-    # ================================================================
-    #  マウス操作
-    #    - ポインター上ドラッグ → 角度移動
-    #    - ホイール上クリック（ポインター以外） → spin 開始
-    #    - スピン中はドラッグ不可
-    # ================================================================
+    # ── マウスクリック・ドラッグ ──
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -447,3 +465,22 @@ class MainWindow(QMainWindow):
             self._dragging_pointer = False
             return
         super().mouseReleaseEvent(event)
+
+    # ── マウスホイール ──
+
+    def wheelEvent(self, event):
+        """ホイール領域でのマウスホイール回転を無効化する。
+
+        現時点ではマウスホイールに割り当てる操作がなく、
+        意図しないスクロールや誤操作を防ぐため明示的に無効化する。
+        SettingsPanel 内のスクロールは QScrollArea が独自に処理するため影響なし。
+
+        将来マウスホイールに機能を割り当てる場合はここに実装する。
+        """
+        # SettingsPanel 上ではスクロールを許可
+        panel_pos = self._settings_panel.mapFrom(self, event.position().toPoint())
+        if self._settings_panel_visible and self._settings_panel.rect().contains(panel_pos):
+            super().wheelEvent(event)
+            return
+        # それ以外（ホイール領域等）では無効化
+        event.accept()
