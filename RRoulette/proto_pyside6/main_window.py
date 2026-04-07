@@ -30,8 +30,8 @@ from PySide6.QtWidgets import (
 from bridge import (
     SIZE_PROFILES, SIDEBAR_W, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
-    load_config, load_design, load_items, load_app_settings,
-    build_segments_from_config,
+    load_config, load_design, load_items, load_item_entries,
+    load_app_settings, build_segments_from_config,
 )
 from app_settings import AppSettings
 from wheel_widget import WheelWidget
@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._settings = load_app_settings(self._config)
         self._design = load_design(self._config)
         self._segments, self._items = build_segments_from_config(self._config)
+        self._item_entries = load_item_entries(self._config)  # 項目データ（設定とは別管理）
 
         self.setWindowTitle(f"RRoulette (PySide6 Proto) v{VERSION}")
         self.setMinimumSize(MIN_W, MIN_H)
@@ -114,9 +115,8 @@ class MainWindow(QMainWindow):
         #  操作・設定パネル（デフォルト非表示）
         # ============================================================
 
-        display_items = load_items(self._config)
         self._settings_panel = SettingsPanel(
-            display_items, self._settings, self._design
+            self._item_entries, self._settings, self._design
         )
         self._settings_panel_visible = False
         self._settings_panel.hide()
@@ -131,6 +131,9 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self._wheel_container, stretch=1)
         main_layout.addWidget(self._settings_panel, stretch=0)
+
+        # --- ドラッグ状態 ---
+        self._dragging_pointer = False
 
         # --- コンテキストメニュー（右クリック専用） ---
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -388,17 +391,38 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     # ================================================================
-    #  マウス操作（左クリック = spin）
+    #  マウス操作（ドラッグでポインター移動、クリックでは spin しない）
     # ================================================================
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # overlay 表示中は overlay 側で処理
             if self._result_overlay.isVisible():
                 super().mousePressEvent(event)
                 return
+            # wheel 領域内でポインターをつかんだらドラッグ開始
             local_pos = self._wheel_container.mapFrom(self, event.pos())
             if self._wheel_container.rect().contains(local_pos):
-                if not self._spin_ctrl.is_spinning:
-                    self._start_spin()
+                wheel_pos = self._wheel.mapFrom(self._wheel_container, local_pos)
+                if (not self._spin_ctrl.is_spinning
+                        and self._wheel.pointer_hit(wheel_pos.x(), wheel_pos.y())):
+                    self._dragging_pointer = True
                     return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging_pointer:
+            local_pos = self._wheel_container.mapFrom(self, event.pos())
+            wheel_pos = self._wheel.mapFrom(self._wheel_container, local_pos)
+            angle = self._wheel.angle_from_pos(wheel_pos.x(), wheel_pos.y())
+            self._settings.pointer_angle = angle
+            self._wheel.set_pointer_angle(angle)
+            self._settings_panel.update_setting("pointer_angle", angle)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_pointer:
+            self._dragging_pointer = False
+            return
+        super().mouseReleaseEvent(event)

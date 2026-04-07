@@ -150,6 +150,52 @@ def load_items(config: dict | None = None) -> list[str]:
     return items
 
 
+def load_item_entries(config: dict | None = None) -> list[dict]:
+    """設定辞書から現在の有効な項目エントリをリストで返す。
+
+    各エントリは dict 形式で、少なくとも以下のキーを含む:
+      - text: 項目テキスト
+      - enabled: 有効かどうか（True のみ返す）
+      - split_count: 分割数
+      - prob_mode: 確率モード (None / "fixed" / "weight")
+      - prob_value: 確率値
+
+    項目データ（テキスト・確率・分割等）と設定データ（AppSettings）を
+    分離して扱うための入口。将来の項目編集 UI はこのデータを基にする。
+    """
+    if config is None:
+        config = load_config()
+    patterns = config.get("item_patterns", {})
+    current = config.get("current_pattern", "デフォルト")
+    raw_items = patterns.get(current, [])
+    if not raw_items:
+        for v in patterns.values():
+            if v:
+                raw_items = v
+                break
+    entries = []
+    for entry in raw_items:
+        if isinstance(entry, str):
+            if entry.strip():
+                entries.append({
+                    "text": entry,
+                    "enabled": True,
+                    "split_count": 1,
+                    "prob_mode": None,
+                    "prob_value": None,
+                })
+        elif isinstance(entry, dict):
+            if entry.get("enabled", True):
+                entries.append({
+                    "text": entry.get("text", ""),
+                    "enabled": True,
+                    "split_count": entry.get("split_count", 1),
+                    "prob_mode": entry.get("prob_mode"),
+                    "prob_value": entry.get("prob_value"),
+                })
+    return entries
+
+
 def load_weights_from_config(config: dict | None = None) -> list[float]:
     """設定辞書から項目の重み（split_count ベース）を取得する。"""
     if config is None:

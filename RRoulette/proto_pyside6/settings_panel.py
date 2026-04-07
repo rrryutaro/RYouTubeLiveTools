@@ -107,11 +107,20 @@ class SettingsPanel(QFrame):
     preset_changed = Signal(str)
     setting_changed = Signal(str, object)
 
-    def __init__(self, items: list[str], settings: AppSettings,
+    def __init__(self, item_entries: list[dict], settings: AppSettings,
                  design: DesignSettings, parent=None):
+        """操作・設定パネル。
+
+        Args:
+            item_entries: 項目データ（bridge.load_item_entries() の戻り値）。
+                設定データ（AppSettings）とは別管理。
+            settings: アプリ設定データ。
+            design: デザイン設定。
+        """
         super().__init__(parent)
         self._design = design
         self._settings = settings
+        self._item_entries = item_entries
         self.setFixedWidth(SIDEBAR_W)
         self.setStyleSheet(f"background-color: {design.panel};")
 
@@ -131,11 +140,16 @@ class SettingsPanel(QFrame):
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(8)
 
-        # --- セクション構築 ---
+        # --- 設定セクション群 ---
         self._build_spin_section(design)
         self._build_display_section(settings, design)
         self._build_result_section(settings, design)
-        self._build_items_section(items, design)
+
+        # --- 項目データセクション（設定とは別管理） ---
+        items_text = [e["text"] for e in item_entries]
+        self._build_items_section(items_text, design)
+
+        # --- 将来機能（項目編集系プレースホルダー） ---
         self._build_future_sections(design)
 
         self._layout.addStretch()

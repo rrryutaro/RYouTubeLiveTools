@@ -144,6 +144,20 @@ class WheelWidget(QWidget):
             return None
         return self._segments[idx].item_text
 
+    def pointer_hit(self, local_x: float, local_y: float) -> bool:
+        """ローカル座標がポインター上かどうか（ヒット半径 26px）。"""
+        t = math.radians(self._pointer_angle)
+        st, ct = math.sin(t), math.cos(t)
+        px = self._cx + st * (self._r + 8)
+        py = self._cy - ct * (self._r + 8)
+        return math.hypot(local_x - px, local_y - py) < 26
+
+    def angle_from_pos(self, local_x: float, local_y: float) -> float:
+        """ローカル座標から wheel 中心基準の角度（度）を算出する。"""
+        dx = local_x - self._cx
+        dy = local_y - self._cy
+        return math.degrees(math.atan2(dx, -dy)) % 360
+
     # ================================================================
     #  描画パラメータ計算
     # ================================================================
