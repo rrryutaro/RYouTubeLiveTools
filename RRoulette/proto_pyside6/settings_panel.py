@@ -150,6 +150,7 @@ class SettingsPanel(QFrame):
         self._build_spin_section(design)
         self._build_display_section(settings, design)
         self._build_result_section(settings, design)
+        self._build_sound_section(settings, design)
 
         # ── 項目データセクション（ItemEntry 側） ──
         self._build_items_section(item_entries, design)
@@ -413,6 +414,35 @@ class SettingsPanel(QFrame):
         self._result_sec_spin.setEnabled(enabled)
 
     # ================================================================
+    #  セクション 3b: サウンド設定（AppSettings 側）
+    # ================================================================
+
+    def _build_sound_section(self, settings: AppSettings,
+                             design: DesignSettings):
+        self._sound_header = _SectionHeader("サウンド", design)
+        self._layout.addWidget(self._sound_header)
+
+        # tick 音 ON/OFF
+        self._sound_tick_cb = QCheckBox("スピン音")
+        self._sound_tick_cb.setFont(QFont("Meiryo", 8))
+        self._sound_tick_cb.setStyleSheet(f"color: {design.text};")
+        self._sound_tick_cb.setChecked(settings.sound_tick_enabled)
+        self._sound_tick_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("sound_tick_enabled", v)
+        )
+        self._layout.addWidget(self._sound_tick_cb)
+
+        # result 音 ON/OFF
+        self._sound_result_cb = QCheckBox("決定音")
+        self._sound_result_cb.setFont(QFont("Meiryo", 8))
+        self._sound_result_cb.setStyleSheet(f"color: {design.text};")
+        self._sound_result_cb.setChecked(settings.sound_result_enabled)
+        self._sound_result_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("sound_result_enabled", v)
+        )
+        self._layout.addWidget(self._sound_result_cb)
+
+    # ================================================================
     #  セクション 4: 項目リスト（読み取り専用・ItemEntry 側）
     # ================================================================
 
@@ -569,6 +599,14 @@ class SettingsPanel(QFrame):
             self._result_sec_spin.blockSignals(True)
             self._result_sec_spin.setValue(value)
             self._result_sec_spin.blockSignals(False)
+        elif key == "sound_tick_enabled":
+            self._sound_tick_cb.blockSignals(True)
+            self._sound_tick_cb.setChecked(value)
+            self._sound_tick_cb.blockSignals(False)
+        elif key == "sound_result_enabled":
+            self._sound_result_cb.blockSignals(True)
+            self._sound_result_cb.setChecked(value)
+            self._sound_result_cb.blockSignals(False)
 
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
@@ -586,7 +624,8 @@ class SettingsPanel(QFrame):
 
         # セクションヘッダー
         for header in [self._spin_header, self._display_header,
-                       self._result_header, self._items_header]:
+                       self._result_header, self._sound_header,
+                       self._items_header]:
             header._apply_style(design)
 
         # ラベル
@@ -597,6 +636,8 @@ class SettingsPanel(QFrame):
         self._sdir_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._ptr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._donut_cb.setStyleSheet(f"color: {design.text};")
+        self._sound_tick_cb.setStyleSheet(f"color: {design.text};")
+        self._sound_result_cb.setStyleSheet(f"color: {design.text};")
         self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._result_mode_combo, design)

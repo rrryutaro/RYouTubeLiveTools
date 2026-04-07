@@ -40,6 +40,7 @@ from settings_panel import SettingsPanel
 from spin_controller import SpinController
 from result_overlay import ResultOverlay
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
+from sound_manager import SoundManager
 
 
 class MainWindow(QMainWindow):
@@ -95,10 +96,20 @@ class MainWindow(QMainWindow):
         self._apply_settings_to_wheel()
 
         # ============================================================
+        #  サウンド（既存 SoundManager を再利用）
+        # ============================================================
+
+        self._sound = SoundManager()
+
+        # ============================================================
         #  スピン制御（SpinController に委譲）
         # ============================================================
 
-        self._spin_ctrl = SpinController(self._wheel, parent=self)
+        self._spin_ctrl = SpinController(
+            self._wheel, sound_manager=self._sound, parent=self
+        )
+        self._spin_ctrl.set_sound_tick_enabled(self._settings.sound_tick_enabled)
+        self._spin_ctrl.set_sound_result_enabled(self._settings.sound_result_enabled)
         self._spin_ctrl.spin_finished.connect(self._on_spin_finished)
         if self._settings.spin_preset_name:
             self._spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
@@ -243,9 +254,11 @@ class MainWindow(QMainWindow):
             self._result_overlay.set_close_mode(value)
         elif key == "result_hold_sec":
             self._result_overlay.set_hold_sec(value)
-        # 将来設定の更新先はここに追加:
-        # elif key == "auto_shuffle":
-        #     self._spin_ctrl.set_auto_shuffle(value)
+        # サウンド設定
+        elif key == "sound_tick_enabled":
+            self._spin_ctrl.set_sound_tick_enabled(value)
+        elif key == "sound_result_enabled":
+            self._spin_ctrl.set_sound_result_enabled(value)
 
     # ================================================================
     #  パネル開閉（F1 でトグル、ウィンドウ幅を連動）

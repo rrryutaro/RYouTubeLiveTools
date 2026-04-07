@@ -41,15 +41,21 @@ class SpinController(QObject):
     spin_started = Signal()
     spin_finished = Signal(str, int)
 
-    def __init__(self, wheel, parent=None):
+    def __init__(self, wheel, sound_manager=None, parent=None):
         super().__init__(parent)
         self._wheel = wheel
+        self._sound = sound_manager
 
         # --- spin 状態 ---
         self._spinning: bool = False
         self._velocity: float = 0.0
         self._spin_sign: int = 1
         self._cruise_decel: float = 1.0
+        self._prev_seg_idx: int = -1   # tick 音用: 前フレームのセグメント番号
+
+        # --- 音設定 ---
+        self._sound_tick_enabled: bool = True
+        self._sound_result_enabled: bool = True
 
         # --- プリセット ---
         self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
@@ -75,6 +81,12 @@ class SpinController(QObject):
         """spin プリセットを切り替える。"""
         if preset_name in SPIN_PRESETS:
             self._spin_preset = SPIN_PRESETS[preset_name]
+
+    def set_sound_tick_enabled(self, enabled: bool):
+        self._sound_tick_enabled = enabled
+
+    def set_sound_result_enabled(self, enabled: bool):
+        self._sound_result_enabled = enabled
 
     def start_spin(self, duration: float | None = None):
         """spin を開始する（プリセットベース多段階減速）。
@@ -162,6 +174,7 @@ class SpinController(QObject):
         self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
         self._spin_sign = spin_sign
 
+        self._prev_seg_idx = self._wheel.seg_at_pointer()
         self._spin_timer.start()
 
     # ================================================================
@@ -172,6 +185,13 @@ class SpinController(QObject):
         """毎フレームの回転更新（プリセットベース多段階減速）。"""
         new_angle = (self._wheel._angle + self._spin_sign * self._velocity) % 360
         self._wheel.set_angle(new_angle)
+
+        # tick 音: セグメント境界を越えたら鳴らす
+        if self._sound_tick_enabled and self._sound:
+            cur_seg = self._wheel.seg_at_pointer()
+            if cur_seg != self._prev_seg_idx:
+                self._sound.play_tick()
+                self._prev_seg_idx = cur_seg
 
         decel = self._spin_preset.decel_for_velocity(
             self._velocity, self._cruise_decel
@@ -185,6 +205,10 @@ class SpinController(QObject):
         """spin 停止・結果確定。"""
         self._spin_timer.stop()
         self._spinning = False
+
+        # 決定音
+        if self._sound_result_enabled and self._sound:
+            self._sound.play_win()
 
         seg_idx = self._wheel.seg_at_pointer()
         segs = self._wheel._segments

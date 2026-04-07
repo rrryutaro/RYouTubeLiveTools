@@ -69,6 +69,10 @@ class AppSettings:
     # 常時ランダム:
     auto_shuffle: bool = False      # spin 前に配置ランダム化
 
+    # サウンド:
+    sound_tick_enabled: bool = True   # スピン中 tick 音
+    sound_result_enabled: bool = True # 結果確定音
+
     # 結果 overlay:
     result_close_mode: int = 0      # 0=クリックのみ, 1=自動のみ, 2=両方
     result_hold_sec: float = 5.0    # 自動クローズまでの秒数
@@ -93,6 +97,8 @@ class AppSettings:
                 if isinstance(config.get("design"), dict) else "",
             arrangement_direction=config.get("arrangement_direction", 0),
             auto_shuffle=config.get("auto_shuffle", False),
+            sound_tick_enabled=config.get("sound_tick_enabled", True),
+            sound_result_enabled=config.get("sound_result_enabled", True),
             result_close_mode=config.get("result_close_mode", 0),
             result_hold_sec=config.get("result_hold_sec", 5.0),
         )
@@ -112,6 +118,8 @@ class AppSettings:
             "spin_preset_name": self.spin_preset_name,
             "arrangement_direction": self.arrangement_direction,
             "auto_shuffle": self.auto_shuffle,
+            "sound_tick_enabled": self.sound_tick_enabled,
+            "sound_result_enabled": self.sound_result_enabled,
             "result_close_mode": self.result_close_mode,
             "result_hold_sec": self.result_hold_sec,
         }
