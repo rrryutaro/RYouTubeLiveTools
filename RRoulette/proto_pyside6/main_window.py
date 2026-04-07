@@ -224,6 +224,16 @@ class MainWindow(QMainWindow):
             self._wheel.set_pointer_angle(value)
         elif key == "spin_direction":
             self._wheel._spin_direction = value
+        # サイズプロファイル
+        elif key == "profile_idx":
+            idx = min(value, len(SIZE_PROFILES) - 1)
+            _, w, h = SIZE_PROFILES[idx]
+            self._wheel_base_w = w
+            self._wheel_base_h = h
+            total_w = w
+            if self._settings_panel_visible:
+                total_w += SIDEBAR_W
+            self.resize(total_w, h)
         # 結果表示設定
         elif key == "result_close_mode":
             self._result_overlay.set_close_mode(value)
@@ -339,6 +349,7 @@ class MainWindow(QMainWindow):
         if self._settings_panel_visible:
             total_w += SIDEBAR_W
         self.resize(total_w, h)
+        self._settings_panel.update_setting("profile_idx", idx)
 
     def _apply_design_preset(self, name: str):
         preset = DESIGN_PRESETS.get(name)

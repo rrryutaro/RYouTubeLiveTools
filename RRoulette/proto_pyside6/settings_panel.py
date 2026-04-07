@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 
-from bridge import SIDEBAR_W, DesignSettings
+from bridge import SIDEBAR_W, SIZE_PROFILES, DesignSettings
 from app_settings import AppSettings
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 
@@ -217,6 +217,28 @@ class SettingsPanel(QFrame):
             lambda v: self.setting_changed.emit("donut_hole", v)
         )
         self._layout.addWidget(self._donut_cb)
+
+        # サイズプロファイル
+        prof_row = QHBoxLayout()
+        prof_row.setSpacing(4)
+        prof_lbl = QLabel("サイズ:")
+        prof_lbl.setFont(QFont("Meiryo", 8))
+        prof_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._prof_lbl = prof_lbl
+        prof_row.addWidget(prof_lbl)
+
+        self._prof_combo = QComboBox()
+        self._prof_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._prof_combo, design)
+        for label, w, h in SIZE_PROFILES:
+            self._prof_combo.addItem(f"{label}  ({w}x{h})")
+        prof_idx = min(settings.profile_idx, len(SIZE_PROFILES) - 1)
+        self._prof_combo.setCurrentIndex(prof_idx)
+        self._prof_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("profile_idx", idx)
+        )
+        prof_row.addWidget(self._prof_combo, stretch=1)
+        self._layout.addLayout(prof_row)
 
     # ================================================================
     #  セクション 3: 結果表示設定（実装済み）
@@ -412,6 +434,10 @@ class SettingsPanel(QFrame):
             self._donut_cb.blockSignals(True)
             self._donut_cb.setChecked(value)
             self._donut_cb.blockSignals(False)
+        elif key == "profile_idx":
+            self._prof_combo.blockSignals(True)
+            self._prof_combo.setCurrentIndex(value)
+            self._prof_combo.blockSignals(False)
         elif key == "result_close_mode":
             self._result_mode_combo.blockSignals(True)
             self._result_mode_combo.setCurrentIndex(value)
@@ -430,6 +456,7 @@ class SettingsPanel(QFrame):
         self._apply_scroll_style(design)
         self._apply_combo_style(self._preset_combo, design)
         self._apply_combo_style(self._text_mode_combo, design)
+        self._apply_combo_style(self._prof_combo, design)
         self._apply_spin_btn_style(design)
 
         # セクションヘッダー
@@ -440,6 +467,7 @@ class SettingsPanel(QFrame):
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._prof_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._donut_cb.setStyleSheet(f"color: {design.text};")
         self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
