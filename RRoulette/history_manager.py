@@ -1,11 +1,13 @@
 """
 RRoulette — 履歴管理 Mixin
   - _record_result: スピン結果を履歴に追記（常に日時を保持）
+  - _make_log_record: 完全なレコード dict を生成する（自動保存・詳細出力共通）
   - _export_log_simple: シンプルリスト形式（テキスト）でログ出力
   - _export_log_detailed: グループ名・項目構成付き詳細形式（JSON）でログ出力
   - _do_export_log: ファイル保存ダイアログ経由でエクスポート
 
-  self._log_timestamp (bool): True=日時をログに含める / False=含めない
+  self._log_timestamp (bool): True=日時を「結果のみ出力」に含める / False=含めない
+  注意: 詳細ログ（JSON）は _log_timestamp 設定に関係なく、常に全フィールドを保持する。
 """
 
 import datetime
@@ -17,6 +19,28 @@ from config_utils import EXPORT_DIR, AUTO_LOG_FILE
 from constants import VERSION
 
 
+def _make_entries_snapshot(item_entries: list) -> list | None:
+    """item_entries のデフォルト差分スナップショットを生成する。
+    デフォルト値（enabled=True, prob_mode=null, prob_value=null, split_count=1）と
+    同じ項目・フィールドは省略し、変更がある項目だけを index ベースで出力する。
+    全項目がデフォルトなら None を返す（出力自体を省略できる）。
+    """
+    result = []
+    for i, e in enumerate(item_entries):
+        diff: dict = {"index": i}
+        if not e.get("enabled", True):
+            diff["enabled"] = False
+        if e.get("prob_mode") is not None:
+            diff["prob_mode"] = e["prob_mode"]
+            if e.get("prob_value") is not None:
+                diff["prob_value"] = e["prob_value"]
+        if (e.get("split_count") or 1) != 1:
+            diff["split_count"] = e["split_count"]
+        if len(diff) > 1:   # "index" 以外に変更あり
+            result.append(diff)
+    return result if result else None
+
+
 class HistoryManagerMixin:
 
     # ════════════════════════════════════════════════════════════════
@@ -25,16 +49,38 @@ class HistoryManagerMixin:
     def _record_result(self, winner: str):
         """スピン結果を履歴リストに追記する。
         日時は常にメモリ上に保持し、出力時に _log_timestamp で制御する。
+        items は項目リストUI順の本体テキストリスト（セグメント列ではない）。
         """
         entry = {
             "timestamp":   datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "result":      winner,
             "group":       self._current_pattern,
-            "items":       list(self.items),
+            "items":       [e["text"] for e in self._item_entries],
             "app_version": VERSION,
-            "item_entries_snapshot": [dict(e) for e in self._item_entries],
+            "item_entries_snapshot": _make_entries_snapshot(self._item_entries),
         }
         self._history.append(entry)
+
+    # ════════════════════════════════════════════════════════════════
+    #  レコード生成（共通）
+    # ════════════════════════════════════════════════════════════════
+    def _make_log_record(self, e: dict) -> dict:
+        """ログエントリから完全なレコード dict を生成する。
+        自動保存ログと詳細ログ出力で共通利用し、フィールド定義を一元管理する。
+        app_version を先頭に置くことで人がテキストで読みやすくする。
+        item_entries_snapshot は差分が存在する場合のみ含める。
+        """
+        record = {
+            "app_version": e.get("app_version"),
+            "timestamp":   e["timestamp"],
+            "result":      e["result"],
+            "group":       e["group"],
+            "items":       e["items"],
+        }
+        snap = e.get("item_entries_snapshot")
+        if snap is not None:
+            record["item_entries_snapshot"] = snap
+        return record
 
     # ════════════════════════════════════════════════════════════════
     #  ログ出力
@@ -63,7 +109,10 @@ class HistoryManagerMixin:
     def _export_log_detailed(self, path: str):
         """グループ名・項目構成付き詳細ログをJSON形式で書き出す。
 
-        _log_timestamp=True の場合:
+        _log_timestamp 設定に関係なく、常に全フィールドを保持する。
+        （_log_timestamp は「結果のみ出力」の簡易テキスト形式にのみ影響する）
+
+        出力形式:
         {
           "exported_at": "2026-03-29 12:40:00",
           "results": [
@@ -71,39 +120,18 @@ class HistoryManagerMixin:
               "timestamp": "2026-03-29 12:34:56",
               "result": "項目A",
               "group": "デフォルト",
-              "items": ["項目A", "項目B", "項目C"]
-            },
-            ...
-          ]
-        }
-
-        _log_timestamp=False の場合:
-        {
-          "results": [
-            {
-              "result": "項目A",
-              "group": "デフォルト",
-              "items": ["項目A", "項目B", "項目C"]
+              "items": ["項目A", "項目B", "項目C"],
+              "app_version": "0.4.4",
+              "item_entries_snapshot": [...]
             },
             ...
           ]
         }
         """
-        results = []
-        for e in self._history:
-            record = {}
-            if self._log_timestamp:
-                record["timestamp"] = e["timestamp"]
-            record["result"] = e["result"]
-            record["group"]  = e["group"]
-            record["items"]  = e["items"]
-            results.append(record)
-
-        data = {}
-        if self._log_timestamp:
-            data["exported_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        data["results"] = results
-
+        data = {
+            "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "results": [self._make_log_record(e) for e in self._history],
+        }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -112,22 +140,11 @@ class HistoryManagerMixin:
     # ════════════════════════════════════════════════════════════════
     def _auto_save_log(self):
         """終了時にログを固定ファイルへ自動保存する。
-        タイムスタンプは _log_timestamp 設定に関係なく常に保持する。
+        _make_log_record で詳細ログ出力と同一のレコード構造を使用する。
         """
-        results = [
-            {
-                "timestamp":   e["timestamp"],
-                "result":      e["result"],
-                "group":       e["group"],
-                "items":       e["items"],
-                "app_version": e.get("app_version"),
-                "item_entries_snapshot": e.get("item_entries_snapshot"),
-            }
-            for e in self._history
-        ]
         data = {
             "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "results": results,
+            "results": [self._make_log_record(e) for e in self._history],
         }
         try:
             with open(AUTO_LOG_FILE, "w", encoding="utf-8") as f:

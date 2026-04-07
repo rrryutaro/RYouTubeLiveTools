@@ -37,6 +37,9 @@ _SETTINGS_KEYS = [
     "log_timestamp", "log_overlay_show", "log_box_border", "log_on_top",
     "auto_shuffle", "arrangement_direction", "spin_direction",
     "confirm_reset",
+    "float_win_show_instance",
+    "result_close_mode", "result_hold_sec",
+    "replay_max_count", "replay_show_indicator",
 ]
 
 _SETTINGS_DEFAULTS = {
@@ -62,6 +65,11 @@ _SETTINGS_DEFAULTS = {
     "arrangement_direction": 0,
     "spin_direction": 0,
     "confirm_reset": True,
+    "float_win_show_instance": True,
+    "result_close_mode": 2,   # 0=クリック, 1=自動, 2=両方
+    "result_hold_sec":   5.0,
+    "replay_max_count":      5,
+    "replay_show_indicator": True,
 }
 
 
@@ -111,8 +119,7 @@ class CfgPanelMixin:
             self.cfg_panel.pack(fill=tk.BOTH, expand=True)
             self.cfg_panel.pack_propagate(False)
             self._cfg_sash_right = None
-            if not self._cfg_panel_visible:
-                self._cfg_panel_toplevel.withdraw()
+            # 非表示処理は widget 構築完了後に行う（destroy はウィジェット生成後でないとエラーになるため）
         else:
             self._cfg_panel_toplevel = None
             self.cfg_panel = tk.Frame(self.content, bg=self._design.panel, width=self._cfg_panel_w)
@@ -304,6 +311,22 @@ class CfgPanelMixin:
         tk.Checkbutton(
             g_winvis, text="背景透過",
             variable=self._cfg_transparent_var, command=on_transparent,
+            bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
+            activebackground=self._design.panel, activeforeground=self._design.text,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+
+        # 独立ウィンドウにインスタンス番号を含める
+        self._cfg_float_show_inst_var = tk.BooleanVar(value=self._float_win_show_instance)
+
+        def on_float_win_show_instance():
+            self._float_win_show_instance = self._cfg_float_show_inst_var.get()
+            self._apply_float_win_titles()
+            self._save_config()
+
+        tk.Checkbutton(
+            g_winvis, text="独立ウィンドウにインスタンス番号を表示する",
+            variable=self._cfg_float_show_inst_var, command=on_float_win_show_instance,
             bg=self._design.panel, fg=self._design.text, selectcolor=self._design.separator,
             activebackground=self._design.panel, activeforeground=self._design.text,
             font=("Meiryo", 9),
@@ -619,6 +642,68 @@ class CfgPanelMixin:
                   ).pack(fill=tk.X, padx=12, pady=(0, 6))
 
         # ════════════════════════════════════════════════
+        #  リプレイグループ
+        # ════════════════════════════════════════════════
+        g_replay = make_group(p, "リプレイ")
+
+        tk.Label(
+            g_replay,
+            text="直近のスピンをその場で再生します",
+            bg=self._design.panel, fg=self._design.text, font=("Meiryo", 9),
+        ).pack(anchor="w", padx=16, pady=(6, 4))
+
+        tk.Button(
+            g_replay, text="直前のスピンをリプレイ",
+            command=lambda: self._replay_play(0), **_BTN_ROW
+        ).pack(fill=tk.X, padx=12, pady=(0, 2))
+
+        tk.Button(
+            g_replay, text="リプレイ管理...",
+            command=self._open_replay_dialog, **_BTN_ROW
+        ).pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        # 保存件数
+        max_row = tk.Frame(g_replay, bg=self._design.panel)
+        max_row.pack(fill=tk.X, padx=12, pady=(2, 0))
+        tk.Label(max_row, text="保存件数", bg=self._design.panel, fg=self._design.text,
+                 font=("Meiryo", 9)).pack(side=tk.LEFT)
+        self._cfg_replay_max_var = tk.IntVar(value=getattr(self, "_replay_max_count", 5))
+        self._cfg_replay_max_lbl = tk.Label(
+            max_row, text=f"{self._cfg_replay_max_var.get()} 件",
+            bg=self._design.panel, fg=self._design.gold, font=("Meiryo", 10), width=6,
+        )
+        self._cfg_replay_max_lbl.pack(side=tk.RIGHT)
+
+        def on_replay_max(val):
+            v = int(val)
+            self._replay_max_count = v
+            self._cfg_replay_max_lbl.config(text=f"{v} 件")
+            self._replay_enforce_limit()
+            self._save_config()
+
+        tk.Scale(g_replay, variable=self._cfg_replay_max_var, from_=1, to=20,
+                 orient=tk.HORIZONTAL, resolution=1, showvalue=False,
+                 bg=self._design.panel, fg=self._design.text,
+                 troughcolor=self._design.separator,
+                 highlightthickness=0, bd=0, sliderlength=14,
+                 command=on_replay_max).pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        # リプレイ中表示 ON/OFF
+        self._cfg_replay_indicator_var = tk.BooleanVar(
+            value=getattr(self, "_replay_show_indicator_flag", True)
+        )
+        def on_replay_indicator():
+            self._replay_show_indicator_flag = self._cfg_replay_indicator_var.get()
+            self._save_config()
+        tk.Checkbutton(
+            g_replay, text="リプレイ中表示",
+            variable=self._cfg_replay_indicator_var, command=on_replay_indicator,
+            bg=self._design.panel, fg=self._design.text,
+            selectcolor=self._design.separator, activebackground=self._design.panel,
+            font=("Meiryo", 9),
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        # ════════════════════════════════════════════════
         #  音量グループ
         # ════════════════════════════════════════════════
         g_vol = make_group(p, "音量")
@@ -902,6 +987,53 @@ class CfgPanelMixin:
         self._cfg_triple_sc.config(to=self._double_duration)
 
         # ════════════════════════════════════════════════
+        #  結果表示設定グループ
+        # ════════════════════════════════════════════════
+        g_result = make_group(p, "結果表示")
+
+        _RESULT_CLOSE_NAMES = ["クリックで閉じる", "自動で閉じる", "クリック + 自動"]
+        tk.Label(g_result, text="閉じ方", bg=self._design.panel, fg=self._design.text,
+                 font=("Meiryo", 9)).pack(anchor="w", padx=16, pady=(4, 0))
+        self._cfg_result_close_cb = ttk.Combobox(
+            g_result, values=_RESULT_CLOSE_NAMES, state="readonly", font=("Meiryo", 9))
+        self._cfg_result_close_cb.current(getattr(self, '_result_close_mode', 2))
+        self._cfg_result_close_cb.pack(fill=tk.X, padx=12, pady=(2, 4))
+
+        def on_result_close(e=None):
+            self._result_close_mode = self._cfg_result_close_cb.current()
+            self._save_config()
+
+        self._cfg_result_close_cb.bind("<<ComboboxSelected>>", on_result_close)
+
+        def _fmt_hold(v):
+            v = float(v)
+            return f"{v:.0f} 秒" if v == int(v) else f"{v:.1f} 秒"
+
+        _hold_row = tk.Frame(g_result, bg=self._design.panel)
+        _hold_row.pack(fill=tk.X, padx=12, pady=(2, 0))
+        tk.Label(_hold_row, text="自動クローズ時間", bg=self._design.panel, fg=self._design.text,
+                 font=("Meiryo", 9)).pack(side=tk.LEFT)
+        self._cfg_result_hold_lbl = tk.Label(
+            _hold_row, text=_fmt_hold(getattr(self, '_result_hold_sec', 5.0)),
+            bg=self._design.panel, fg=self._design.gold, font=("Meiryo", 9), width=6)
+        self._cfg_result_hold_lbl.pack(side=tk.RIGHT)
+        self._cfg_result_hold_var = tk.DoubleVar(value=getattr(self, '_result_hold_sec', 5.0))
+        self._cfg_result_hold_sc = tk.Scale(
+            g_result, variable=self._cfg_result_hold_var,
+            from_=0.5, to=30.0, orient=tk.HORIZONTAL, resolution=0.5, showvalue=False,
+            bg=self._design.panel, fg=self._design.text, troughcolor=self._design.separator,
+            highlightthickness=0, bd=0, sliderlength=14)
+        self._cfg_result_hold_sc.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        def on_result_hold(val):
+            v = float(val)
+            self._result_hold_sec = v
+            self._cfg_result_hold_lbl.config(text=_fmt_hold(v))
+            self._save_config()
+
+        self._cfg_result_hold_sc.config(command=on_result_hold)
+
+        # ════════════════════════════════════════════════
         #  配置設定グループ
         # ════════════════════════════════════════════════
         g_arr = make_group(p, "配置設定")
@@ -971,19 +1103,52 @@ class CfgPanelMixin:
                 _collect(c)
         _collect(p)
 
+        # ── 浮動ウィンドウの非表示処理（widget 構築完了後に実行） ───────────────
+        if self._cfg_panel_float and not self._cfg_panel_visible:
+            if not getattr(self, "_float_win_show_instance", True):
+                # OBS 用: ウィジェット構築完了後に destroy（OS 上に同名ウィンドウを残さない）
+                self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
+                self._cfg_panel_toplevel.destroy()
+                self._cfg_panel_toplevel = None
+            else:
+                self._cfg_panel_toplevel.withdraw()
+            self.root.focus_set()  # 非表示 Toplevel にフォーカスを奪われないよう root に戻す
+
+    # ════════════════════════════════════════════════════════════════
+    #  リプレイ管理ダイアログ
+    # ════════════════════════════════════════════════════════════════
+    def _open_replay_dialog(self):
+        from replay_dialog import ReplayDialog
+        win = getattr(self, "_replay_dialog_win", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.lift()
+                    win.focus_set()
+                    win._refresh_list()
+                    return
+            except Exception:
+                pass
+        self._replay_dialog_win = ReplayDialog(self)
+
     # ════════════════════════════════════════════════════════════════
     #  スピン中 UI ロック
     # ════════════════════════════════════════════════════════════════
     def set_cfg_spin_lock(self, locked: bool):
         """スピン中は設定パネルのすべての操作ウィジェットを無効化する。"""
         for w in getattr(self, "_lockable_cfg_widgets", []):
-            if locked:
-                w.config(state=tk.DISABLED)
-            else:
-                if isinstance(w, ttk.Combobox):
-                    w.config(state="readonly")
+            try:
+                if not w.winfo_exists():
+                    continue
+                if locked:
+                    w.config(state=tk.DISABLED)
                 else:
-                    w.config(state=tk.NORMAL)
+                    if isinstance(w, ttk.Combobox):
+                        w.config(state="readonly")
+                    else:
+                        w.config(state=tk.NORMAL)
+            except tk.TclError:
+                pass
 
     # ════════════════════════════════════════════════════════════════
     #  設定 UI への反映（リセット・インポート後に呼び出す）
@@ -1042,6 +1207,9 @@ class CfgPanelMixin:
             self._cfg_overlay_var.set(self._log_overlay_show)
         if hasattr(self, '_cfg_items_vis_var'):
             self._cfg_items_vis_var.set(self._settings_visible)
+        # ウィンドウ表示（独立ウィンドウ番号付与）
+        if hasattr(self, '_cfg_float_show_inst_var'):
+            self._cfg_float_show_inst_var.set(self._float_win_show_instance)
         # ログ設定
         self._cfg_ts_var.set(self._log_timestamp)
         self._cfg_box_border_var.set(self._log_box_border)
@@ -1068,6 +1236,20 @@ class CfgPanelMixin:
             self._cfg_font_min_var.set(_wf.min_size)
         if hasattr(self, '_cfg_font_max_var'):
             self._cfg_font_max_var.set(_wf.max_size)
+        # 結果表示
+        if hasattr(self, '_cfg_result_close_cb'):
+            self._cfg_result_close_cb.current(getattr(self, '_result_close_mode', 2))
+        if hasattr(self, '_cfg_result_hold_var'):
+            _v = getattr(self, '_result_hold_sec', 5.0)
+            self._cfg_result_hold_var.set(_v)
+            self._cfg_result_hold_lbl.config(
+                text=(f"{_v:.0f} 秒" if _v == int(_v) else f"{_v:.1f} 秒"))
+        # リプレイ設定
+        if hasattr(self, '_cfg_replay_max_var'):
+            self._cfg_replay_max_var.set(self._replay_max_count)
+            self._cfg_replay_max_lbl.config(text=f"{self._replay_max_count} 件")
+        if hasattr(self, '_cfg_replay_indicator_var'):
+            self._cfg_replay_indicator_var.set(self._replay_show_indicator_flag)
 
     # ════════════════════════════════════════════════════════════════
     #  設定リセット
@@ -1104,10 +1286,17 @@ class CfgPanelMixin:
         self._auto_shuffle          = d.get("auto_shuffle", False)
         self._arrangement_direction = d.get("arrangement_direction", 0)
         self._spin_direction        = d.get("spin_direction", 0)
+        self._float_win_show_instance = d.get("float_win_show_instance", True)
+        self._result_close_mode = int(d["result_close_mode"])
+        self._result_hold_sec   = float(d["result_hold_sec"])
+        self._replay_max_count         = int(d.get("replay_max_count", 5))
+        self._replay_show_indicator_flag = bool(d.get("replay_show_indicator", True))
+        self._replay_enforce_limit()
         # デザイン設定もデフォルトへ戻す
         self._design = DesignSettings()
         self._apply_pointer_preset(self._pointer_preset)
         self._rebuild_segments()
+        self._apply_float_win_titles()
         self._save_config()
         # パネル全体を再構築してデザイン・フォント UI を含めてすべて反映する
         self._apply_design_to_all()
@@ -1169,12 +1358,19 @@ class CfgPanelMixin:
         self._auto_shuffle          = bool(d.get("auto_shuffle", False))
         self._arrangement_direction = int(d.get("arrangement_direction", 0))
         self._spin_direction        = int(d.get("spin_direction", 0))
+        self._float_win_show_instance = bool(d.get("float_win_show_instance", True))
+        self._result_close_mode = int(d.get("result_close_mode", 2))
+        self._result_hold_sec   = float(d.get("result_hold_sec", 5.0))
+        self._replay_max_count         = int(d.get("replay_max_count", 5))
+        self._replay_show_indicator_flag = bool(d.get("replay_show_indicator", True))
+        self._replay_enforce_limit()
         # design キーが含まれていれば design 設定も復元する
         _has_design = "design" in data
         if _has_design:
             self._design = DesignSettings.from_dict(data["design"])
         self._apply_pointer_preset(self._pointer_preset)
         self._rebuild_segments()
+        self._apply_float_win_titles()
         self._save_config()
         if _has_design:
             # デザイン含む場合はパネル全体を再構築して全 UI を反映する
@@ -1222,13 +1418,31 @@ class CfgPanelMixin:
     # ════════════════════════════════════════════════════════════════
     def _toggle_cfg_panel(self):
         if self._cfg_panel_float:
-            if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
-                if self._cfg_panel_visible:
-                    self._cfg_panel_toplevel.withdraw()
-                    self._cfg_panel_visible = False
+            if self._cfg_panel_visible:
+                # 非表示にする
+                self._cfg_panel_visible = False
+                if not getattr(self, "_float_win_show_instance", True):
+                    # OBS 用: destroy して同名ウィンドウを残さない
+                    if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+                        self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
+                        self._cfg_panel_toplevel.destroy()
+                        self._cfg_panel_toplevel = None
                 else:
-                    self._cfg_panel_toplevel.deiconify()
-                    self._cfg_panel_visible = True
+                    if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+                        self._cfg_panel_toplevel.withdraw()
+                        self.root.focus_set()
+            else:
+                # 再表示する
+                self._cfg_panel_visible = True
+                if not getattr(self, "_float_win_show_instance", True):
+                    # OBS 用: hide 時に destroy 済みなので常に再生成
+                    self._rebuild_cfg_panel_float_win()
+                else:
+                    if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+                        self._cfg_panel_toplevel.deiconify()
+                    else:
+                        # Toplevel が存在しない場合は再生成
+                        self._rebuild_cfg_panel_float_win()
             self._save_config()
             return
         w = self.root.winfo_width()

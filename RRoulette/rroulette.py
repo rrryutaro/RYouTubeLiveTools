@@ -31,6 +31,7 @@ from item_list import ItemListMixin
 from window_manager import WindowManagerMixin
 from history_manager import HistoryManagerMixin
 from graph_view import GraphViewMixin
+from replay_manager import ReplayManagerMixin
 from tooltip_utils import _SimpleTooltip
 from design_settings import DesignSettings, DesignPresetManager
 
@@ -204,13 +205,13 @@ class RouletteApp(
     WheelRendererMixin,
     SpinEngineMixin,
     HistoryManagerMixin,
+    ReplayManagerMixin,
 ):
 
     def __init__(self, root: tk.Tk):
         self.root = root
 
-        _title = "RRoulette" if INSTANCE_NUM == 1 else f"RRoulette #{INSTANCE_NUM}"
-        root.title(_title)
+        root.title(self._main_title())
         root.overrideredirect(True)
         root.configure(bg=BG)
 
@@ -322,6 +323,13 @@ class RouletteApp(
         self._log_overlay_show = cfg.get("log_overlay_show", True)
         self._log_box_border   = cfg.get("log_box_border", False)
         self._log_on_top       = cfg.get("log_on_top", False)
+        self._float_win_show_instance = cfg.get("float_win_show_instance", True)
+        self._result_close_mode = cfg.get("result_close_mode", 2)
+        self._result_hold_sec   = cfg.get("result_hold_sec", 5.0)
+        self._result_showing      = False
+        self._result_overlay_rect = None
+        self._result_auto_timer   = None
+        self._result_close_fn     = None
         self._transparent      = cfg.get("transparent", False)
         self._donut_hole       = cfg.get("donut_hole", True)
         self._layout_cache     = []
@@ -383,6 +391,10 @@ class RouletteApp(
         root.update_idletasks()
         self._clamp_sidebar_w()
 
+        self._replay_max_count = cfg.get("replay_max_count", 5)
+        self._replay_show_indicator_flag = cfg.get("replay_show_indicator", True)
+        self._replay_dialog_geo = cfg.get("replay_dialog_geo", None)
+        self._replay_init()
         self._rebuild_segments()
         self._redraw()
         self.root.after(10, self._set_appwindow)
@@ -474,8 +486,7 @@ class RouletteApp(
             self.sidebar = tk.Frame(parent, bg=self._design.panel)
             self.sidebar.pack(fill=tk.BOTH, expand=True)
             self._sash = None
-            if not self._settings_visible:
-                self._sidebar_toplevel.withdraw()
+            # 非表示処理は widget 構築完了後に行う（destroy はウィジェット生成後でないとエラーになるため）
         else:
             self._sidebar_toplevel = None
             self.sidebar = tk.Frame(self.content, bg=self._design.panel, width=self._sidebar_w)
@@ -569,6 +580,26 @@ class RouletteApp(
         self.sidebar.bind("<Button-3>",    self._show_context_menu)
         self.sidebar.bind("<ButtonPress-1>", self._drag_start)
         self.sidebar.bind("<B1-Motion>",     self._drag_move)
+
+        # ── 浮動ウィンドウ: <Configure> で位置を常に _item_list_float_geo に反映 ───
+        if self._item_list_float and self._sidebar_toplevel:
+            _tl = self._sidebar_toplevel  # クロージャ用ローカル変数
+            def _on_float_configure(event, _w=_tl):
+                if event.widget is _w:
+                    self._item_list_float_geo = _w.geometry()
+            _tl.bind("<Configure>", _on_float_configure)
+
+        # ── 浮動ウィンドウの非表示処理（widget 構築完了後に実行） ───────────────
+        if self._item_list_float and not self._settings_visible:
+            if not getattr(self, "_float_win_show_instance", True):
+                # OBS 用: ウィジェット構築完了後に destroy（OS 上に同名ウィンドウを残さない）
+                # ※ここで geometry() を読んではいけない。未表示ウィンドウは正しい位置を返さない。
+                #   _item_list_float_geo は設定ファイルから読み込んだ値をそのまま維持する。
+                self._sidebar_toplevel.destroy()
+                self._sidebar_toplevel = None
+            else:
+                self._sidebar_toplevel.withdraw()
+            self.root.focus_set()  # 非表示 Toplevel にフォーカスを奪われないよう root に戻す
 
     def _build_ctrl_box(self):
         """メインパネル右上のコントロールボックスを構築する。"""
@@ -665,7 +696,7 @@ class RouletteApp(
 
         self.cv.bind("<ButtonRelease-1>", self._on_cv_release)
         self.cv.bind("<Motion>", self._on_cv_motion)
-        self.root.bind("<KeyPress-space>", self._on_space_press)
+        self.root.bind_all("<KeyPress-space>", self._on_space_press)
 
         for w in (self.cv, self.main_frame, self.content, self.root):
             w.bind("<Button-3>", self._show_context_menu)
@@ -774,6 +805,9 @@ class RouletteApp(
             "log_overlay_show":  self._log_overlay_show,
             "log_box_border":    self._log_box_border,
             "log_on_top":        self._log_on_top,
+            "float_win_show_instance": self._float_win_show_instance,
+            "result_close_mode": self._result_close_mode,
+            "result_hold_sec":   self._result_hold_sec,
             "transparent":       self._transparent,
             "donut_hole":        self._donut_hole,
             "grip_visible":      self._grip_visible,
@@ -792,6 +826,9 @@ class RouletteApp(
             ),
             "design": self._design.to_dict(),
             "design_preset_manager": self._design_preset_mgr.to_dict(),
+            "replay_max_count": self._replay_max_count,
+            "replay_show_indicator": self._replay_show_indicator_flag,
+            "replay_dialog_geo": self._replay_dialog_geo,
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -811,6 +848,17 @@ class RouletteApp(
     # ════════════════════════════════════════════════════════════════
     def _on_close(self):
         self._auto_save_log()
+        self._replay_save()
+        # 管理画面が開いていれば位置を保存して閉じる
+        win = getattr(self, "_replay_dialog_win", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    self._replay_dialog_geo = win.geometry()
+                    win.destroy()
+            except Exception:
+                pass
+            self._replay_dialog_win = None
         self._save_config()
         self.root.destroy()
 

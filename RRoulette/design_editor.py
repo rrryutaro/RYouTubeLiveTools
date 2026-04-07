@@ -292,12 +292,14 @@ class DesignEditor(tk.Toplevel):
         self._tab_pointer = _ScrollFrame(self._sub_nb, bg=d.panel)
         self._tab_log = _ScrollFrame(self._sub_nb, bg=d.panel)
         self._tab_fonts = _ScrollFrame(self._sub_nb, bg=d.panel)
+        self._tab_result = _ScrollFrame(self._sub_nb, bg=d.panel)
 
         self._sub_nb.add(self._tab_global, text="全体色")
         self._sub_nb.add(self._tab_wheel, text="ホイール")
         self._sub_nb.add(self._tab_pointer, text="ポインター")
         self._sub_nb.add(self._tab_log, text="ログ")
         self._sub_nb.add(self._tab_fonts, text="フォント")
+        self._sub_nb.add(self._tab_result, text="結果表示")
 
     # ── セグメント配色タブ ──────────────────────────────────────────
 
@@ -423,6 +425,7 @@ class DesignEditor(tk.Toplevel):
         self._refresh_tab_pointer()
         self._refresh_tab_log()
         self._refresh_tab_fonts()
+        self._refresh_tab_result()
 
     def _make_color_row(self, parent: tk.Frame, label: str, getter, setter):
         d = self._app._design
@@ -614,7 +617,7 @@ class DesignEditor(tk.Toplevel):
         _make_font_row("ホイール文字", lambda: wf.family, lambda v: setattr(wf, "family", v))
         _make_font_row("UI フォント", lambda: fnt.ui_family, lambda v: setattr(fnt, "ui_family", v))
         _make_font_row("ログフォント", lambda: fnt.log_family, lambda v: setattr(fnt, "log_family", v))
-        _make_font_row("結果フォント", lambda: fnt.result_family, lambda v: setattr(fnt, "result_family", v))
+        _make_font_row("結果フォント（result_family）", lambda: fnt.result_family, lambda v: setattr(fnt, "result_family", v))
 
         tk.Label(p, text="── ホイールフォントサイズ ──",
                  bg=d.panel, fg=d.text_sub, font=("Meiryo", 8),
@@ -629,6 +632,106 @@ class DesignEditor(tk.Toplevel):
             self._make_int_row(p, label,
                                lambda a=attr: getattr(wf, a),
                                lambda v, a=attr: setattr(wf, a, v), lo, hi)
+
+    def _refresh_tab_result(self):
+        p = self._tab_result.inner
+        for w in p.winfo_children():
+            w.destroy()
+        d = self._app._design
+        rd = self._editing_design.result
+        fnt = self._editing_design.fonts
+        _all_fonts = sorted(set(f for f in _tkfont.families(root=self._app.root) if f))
+
+        tk.Label(p, text="結果表示オーバーレイ設定",
+                 bg=d.panel, fg=d.text_sub, font=("Meiryo", 8),
+                 ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        # 色設定
+        for label, attr in [
+            ("背景色 (bg_color)", "bg_color"),
+            ("枠線色 (outline_color)", "outline_color"),
+            ("文字色 (text_color)", "text_color"),
+        ]:
+            self._make_color_row(p, label,
+                                 lambda a=attr: getattr(rd, a),
+                                 lambda v, a=attr: setattr(rd, a, v))
+
+        # 数値設定
+        for label, attr, lo, hi in [
+            ("枠線幅 (outline_width)", "outline_width", 0, 20),
+            ("角丸量 (corner_radius)", "corner_radius", 0, 50),
+            ("内側余白 (padding)", "padding", 0, 40),
+        ]:
+            self._make_int_row(p, label,
+                               lambda a=attr: getattr(rd, a),
+                               lambda v, a=attr: setattr(rd, a, v), lo, hi)
+
+        # フォント設定
+        tk.Label(p, text="── フォント設定 ──",
+                 bg=d.panel, fg=d.text_sub, font=("Meiryo", 8),
+                 ).pack(anchor="w", padx=12, pady=(8, 2))
+
+        _font_row = tk.Frame(p, bg=d.panel)
+        _font_row.pack(fill=tk.X, padx=12, pady=3)
+        tk.Label(_font_row, text="フォントファミリー", bg=d.panel, fg=d.text,
+                 font=("Meiryo", 9), width=26, anchor="w").pack(side=tk.LEFT)
+        _font_var = tk.StringVar(value=fnt.result_family)
+        _font_cb = ttk.Combobox(_font_row, textvariable=_font_var, values=_all_fonts,
+                                state="readonly", font=("Meiryo", 9), width=20)
+        _font_cb.pack(side=tk.LEFT)
+
+        def _on_font_sel(e=None):
+            v = _font_var.get().strip()
+            if v:
+                fnt.result_family = v
+                self._on_design_value_changed()
+
+        _font_cb.bind("<<ComboboxSelected>>", _on_font_sel)
+
+        # 文字表示方式
+        tk.Label(p, text="── 文字表示方式 ──",
+                 bg=d.panel, fg=d.text_sub, font=("Meiryo", 8),
+                 ).pack(anchor="w", padx=12, pady=(8, 2))
+
+        _FIT_NAMES = ["省略（…で省略）", "収める（縮小して全文表示）"]
+        _fit_row = tk.Frame(p, bg=d.panel)
+        _fit_row.pack(fill=tk.X, padx=12, pady=3)
+        tk.Label(_fit_row, text="文字表示方式", bg=d.panel, fg=d.text,
+                 font=("Meiryo", 9), width=26, anchor="w").pack(side=tk.LEFT)
+        _fit_cb = ttk.Combobox(_fit_row, values=_FIT_NAMES, state="readonly",
+                               font=("Meiryo", 9), width=20)
+        _fit_cb.current(getattr(rd, "text_fit_mode", 0))
+        _fit_cb.pack(side=tk.LEFT)
+
+        def _on_fit(e=None):
+            rd.text_fit_mode = _fit_cb.current()
+            self._on_design_value_changed()
+
+        _fit_cb.bind("<<ComboboxSelected>>", _on_fit)
+
+        # 定常表示の配色モード
+        _STEADY_NAMES = ["デザイン色を使う", "当選セグメント色を維持する"]
+        _steady_row = tk.Frame(p, bg=d.panel)
+        _steady_row.pack(fill=tk.X, padx=12, pady=3)
+        tk.Label(_steady_row, text="定常表示の配色モード", bg=d.panel, fg=d.text,
+                 font=("Meiryo", 9), width=26, anchor="w").pack(side=tk.LEFT)
+        _steady_cb = ttk.Combobox(_steady_row, values=_STEADY_NAMES, state="readonly",
+                                  font=("Meiryo", 9), width=20)
+        _steady_cb.current(getattr(rd, "steady_color_mode", 0))
+        _steady_cb.pack(side=tk.LEFT)
+
+        def _on_steady(e=None):
+            rd.steady_color_mode = _steady_cb.current()
+            self._on_design_value_changed()
+
+        _steady_cb.bind("<<ComboboxSelected>>", _on_steady)
+
+        tk.Label(p,
+                 text="※ フォントサイズはホイールサイズに連動して自動計算されます\n"
+                      "（フォントファミリーは「フォント」タブでも変更できます）",
+                 bg=d.panel, fg=d.text_sub, font=("Meiryo", 8),
+                 justify=tk.LEFT,
+                 ).pack(anchor="w", padx=12, pady=(4, 8))
 
     # ── プリセット読み込み / 反映 ───────────────────────────────────
 
@@ -653,6 +756,7 @@ class DesignEditor(tk.Toplevel):
         d.pointer = ds.pointer
         d.log = ds.log
         d.fonts = ds.fonts
+        d.result = ds.result
         app._apply_design_to_all()
 
     def _apply_now(self):

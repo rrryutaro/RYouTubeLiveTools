@@ -229,6 +229,19 @@ class CfgPanelDesign:
     accent: Optional[str] = None
 
 
+@dataclass
+class ResultDesign:
+    """結果表示オーバーレイ用設定"""
+    bg_color: str = "#0d0d2e"        # 背景色（フラッシュ後の定常表示）
+    outline_color: str = "#ffaa00"   # 枠線色
+    outline_width: int = 3           # 枠線幅
+    corner_radius: int = 10          # 角丸量（0=角丸なし）
+    padding: int = 12                # 内側余白
+    text_color: str = "#ffffff"      # 文字色
+    text_fit_mode: int = 0           # 0=省略, 1=収める
+    steady_color_mode: int = 0      # 0=デザイン色を使う, 1=当選セグメント色を維持する
+
+
 # ════════════════════════════════════════════════════════════════════
 #  DesignSettings — トップレベルコンテナ
 # ════════════════════════════════════════════════════════════════════
@@ -254,6 +267,7 @@ class DesignSettings:
     item_list: ItemListDesign = field(default_factory=ItemListDesign)
     cfg_panel: CfgPanelDesign = field(default_factory=CfgPanelDesign)
     fonts: FontSettings = field(default_factory=FontSettings)
+    result: ResultDesign = field(default_factory=ResultDesign)
 
     # ── GlobalColors へのショートカット ──────────────────────────────
     # 既存の定数名と対応させ、描画コードの移行コストを最小化する
@@ -317,6 +331,7 @@ class DesignSettings:
                 log=_safe_from_dict(LogDesign, d.get("log", {})),
                 item_list=_safe_from_dict(ItemListDesign, d.get("item_list", {})),
                 cfg_panel=_safe_from_dict(CfgPanelDesign, d.get("cfg_panel", {})),
+                result=_safe_from_dict(ResultDesign, d.get("result", {})),
                 fonts=FontSettings(
                     wheel=_safe_from_dict(WheelFontSettings, wheel_font_raw),
                     ui_family=fonts_raw.get("ui_family", "Meiryo"),
@@ -338,7 +353,7 @@ class DesignSettings:
         self.wheel = WheelDesign(**asdict(preset.wheel))
         self.pointer = PointerDesign(**asdict(preset.pointer))
         self.log = LogDesign(**asdict(preset.log))
-        # segment, fonts, item_list, cfg_panel は維持
+        # segment, fonts, item_list, cfg_panel, result は維持
 
 
 # ════════════════════════════════════════════════════════════════════

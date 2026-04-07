@@ -1454,12 +1454,27 @@ class ItemListMixin:
         state    = tk.DISABLED if locked else tk.NORMAL
         cb_state = "disabled" if locked else "readonly"
 
-        self._pattern_cb.config(state="disabled" if locked else "normal")
-        self._edit_btn.config(state=state)
-        self._save_btn.config(state=tk.DISABLED)
+        # OBS モードで Toplevel が destroy 済みの場合にウィジェットが無効になるため
+        # winfo_exists() で存在確認してから操作する
+        for w, kwargs in [
+            (getattr(self, '_pattern_cb', None), {"state": "disabled" if locked else "normal"}),
+            (getattr(self, '_edit_btn',    None), {"state": state}),
+            (getattr(self, '_save_btn',    None), {"state": tk.DISABLED}),
+        ]:
+            if w is None:
+                continue
+            try:
+                if w.winfo_exists():
+                    w.config(**kwargs)
+            except tk.TclError:
+                pass
 
         for btn in getattr(self, "_item_list_title_btns", []):
-            btn.config(state=state)
+            try:
+                if btn.winfo_exists():
+                    btn.config(state=state)
+            except tk.TclError:
+                pass
 
         # クイック操作帯ボタン
         for btn in getattr(self, "_qs_lockable_btns", []):

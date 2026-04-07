@@ -299,6 +299,10 @@ class WheelRendererMixin:
         if log_on_top:
             self._draw_log_overlay()
 
+        # リプレイ中表示（_replaying 中は毎フレーム再描画）
+        if getattr(self, "_replaying", False):
+            self._replay_show_indicator()
+
     # ════════════════════════════════════════════════════════════════
     #  ログオーバーレイ描画
     # ════════════════════════════════════════════════════════════════

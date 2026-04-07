@@ -9,8 +9,72 @@ RRoulette — スピンエンジン Mixin
 
 import math
 import random
+import tkinter.font as _tkfont
 
 from constants import DONUT_HIT_RADIUS
+
+
+# ────────────────────────────────────────────────────────────────────
+#  結果オーバーレイ描画ユーティリティ
+# ────────────────────────────────────────────────────────────────────
+
+def _draw_rounded_rect(cv, x0: int, y0: int, x1: int, y1: int,
+                       r: int = 10, tags: str = "", **kwargs):
+    """角丸矩形を create_polygon (smooth=True) で描画する。
+    r=0 の場合は通常の create_rectangle にフォールバックする。"""
+    if r <= 0:
+        cv.create_rectangle(x0, y0, x1, y1, tags=tags, **kwargs)
+        return
+    # smooth=True B-spline の重複制御点による角丸近似
+    pts = [
+        x0 + r, y0,   x0 + r, y0,
+        x1 - r, y0,   x1 - r, y0,
+        x1,     y0,   x1,     y0 + r,
+        x1,     y0 + r,
+        x1,     y1 - r,   x1,     y1 - r,
+        x1,     y1,   x1 - r, y1,   x1 - r, y1,
+        x0 + r, y1,   x0 + r, y1,
+        x0,     y1,   x0,     y1 - r,   x0, y1 - r,
+        x0,     y0 + r,   x0, y0 + r,
+        x0,     y0,   x0 + r, y0,
+    ]
+    cv.create_polygon(pts, smooth=True, tags=tags, **kwargs)
+
+
+def _fit_text_ellipsis(root, text: str, max_w: int,
+                       font_family: str, fsize: int) -> str:
+    """省略モード: 目標フォントサイズでテキスト幅が max_w を超える場合、
+    末尾を '…' で省略する。フォントサイズは変更しない。"""
+    if not text:
+        return text
+    f = _tkfont.Font(root=root, family=font_family, size=fsize, weight="bold")
+    if f.measure(text) <= max_w:
+        return text
+    t = text
+    while t and f.measure(t + "…") > max_w:
+        t = t[:-1]
+    return (t + "…") if t else "…"
+
+
+_RESULT_MIN_FONT_SIZE = 10  # 収めるモード最小フォントサイズ
+
+
+def _fit_text_shrink(root, text: str, max_w: int,
+                     target_size: int, font_family: str) -> tuple:
+    """収めるモード: フォントサイズを target_size から縮小して max_w に収める。
+    Returns (actual_size: int, display_text: str)"""
+    if not text:
+        return target_size, text
+    for size in range(target_size, _RESULT_MIN_FONT_SIZE - 1, -1):
+        f = _tkfont.Font(root=root, family=font_family, size=size, weight="bold")
+        if f.measure(text) <= max_w:
+            return size, text
+    # 最小サイズでも収まらない場合のみ省略
+    f = _tkfont.Font(root=root, family=font_family, size=_RESULT_MIN_FONT_SIZE, weight="bold")
+    t = text
+    while t and f.measure(t + "…") > max_w:
+        t = t[:-1]
+    return _RESULT_MIN_FONT_SIZE, (t + "…") if t != text else text
 
 
 class SpinEngineMixin:
@@ -20,8 +84,10 @@ class SpinEngineMixin:
     # ════════════════════════════════════════════════════════════════
     #  スピン制御
     # ════════════════════════════════════════════════════════════════
-    def _start_spin(self):
-        if self.spinning or len(getattr(self, 'current_segments', [])) < 2:
+    def _start_spin(self, _replay_source: str = "unknown"):
+        if self.spinning or getattr(self, '_replaying', False):
+            return
+        if len(getattr(self, 'current_segments', [])) < 2:
             return
         # auto_shuffle が有効なら spinning=True にする前に配置をランダム化する
         # （spinning=True 後に呼ぶと _redraw() 内でキャッシュ再構築がスキップされ
@@ -39,6 +105,12 @@ class SpinEngineMixin:
             self.root.after_cancel(self._action_timer)
             self._action_timer = None
         self.cv.delete("result_overlay")
+        self._result_showing = False
+        self._result_overlay_rect = None
+        if getattr(self, '_result_auto_timer', None):
+            self.root.after_cancel(self._result_auto_timer)
+            self._result_auto_timer = None
+        self._result_close_fn = None
 
         target_frames = max(1, self._spin_duration * 1000 / 16)
 
@@ -86,6 +158,8 @@ class SpinEngineMixin:
         self.decel    = (0.06 / self.velocity) ** (1.0 / target_frames)
 
         self.prev_seg = self._seg_at_pointer()
+        if hasattr(self, '_replay_record_start'):
+            self._replay_record_start(_replay_source)
         self._frame()
 
     def _frame(self):
@@ -100,7 +174,11 @@ class SpinEngineMixin:
             self.prev_seg = seg
             if self.velocity > 0.6:
                 self.snd.play_tick()
+                if hasattr(self, '_replay_record_sound'):
+                    self._replay_record_sound("tick")
 
+        if hasattr(self, '_replay_record_frame'):
+            self._replay_record_frame(self.angle)
         self._redraw()
 
         if self.velocity < 0.06:
@@ -118,9 +196,14 @@ class SpinEngineMixin:
         seg = self._seg_at_pointer()
         if seg >= 0:
             winner = self.current_segments[seg].item_text
+            winner_idx = self.current_segments[seg].item_index
+            seg_color = self._design.segment.color_for(winner_idx)
+            if hasattr(self, '_replay_record_sound'):
+                self._replay_record_sound("win")   # finish前に記録（finish後は_replay_rec=None）
+            if hasattr(self, '_replay_record_finish'):
+                self._replay_record_finish(winner, winner_idx, self.angle, seg_color)
             self._record_result(winner)
             self.snd.play_win()
-            seg_color = self._design.segment.color_for(self.current_segments[seg].item_index)
             self._flash(4, winner, seg_color)
         else:
             self.set_item_spin_lock(False)
@@ -142,37 +225,118 @@ class SpinEngineMixin:
             self._flashing = False  # フラッシュ完了
             self.set_item_spin_lock(False)
             self.set_cfg_spin_lock(False)
+            # 結果表示の閉じ方を設定に従って制御
+            mode = getattr(self, '_result_close_mode', 2)
+            hold = getattr(self, '_result_hold_sec', 5.0)
+            self._result_showing = True
+            self._result_close_fn = lambda: self.cv.delete("result_overlay")
+            if mode in (1, 2):  # 自動 or 両方
+                ms = max(500, int(hold * 1000))
+                self._result_auto_timer = self.root.after(ms, self._close_result_overlay)
 
     def _draw_result_overlay(self, winner: str, times: int, seg_color: str):
         """結果フラッシュ枠とテキストを canvas item として描画する。
         描画順（呼び出し順）で Z-order を制御するため use_window は使わない。
+
+        - ホイール半径 R に連動してボックスサイズ・目標フォントサイズを計算する。
+        - times > 0（フラッシュ中）: セグメント色で演出（既存挙動維持）。
+        - times == 0（フラッシュ完了・定常表示）: デザイン設定の色を使用。
+        - 文字フィット: design.result.text_fit_mode に従い省略 / 収めるを適用。
         """
-        pw, ph = 280, 90
-        text_color = self._design.wheel.text_color if times % 2 else self._design.gold
+        R = getattr(self, 'R', 140)
+        rd = self._design.result
+
+        # ── ボックスサイズ（ホイールサイズ連動）────────────────────────
+        pw = max(160, int(R * 1.1))
+        ph = max(55,  int(R * 0.35))
+
+        # ── 目標フォントサイズ（ホイールサイズ連動・デザインエディタは使わない）─
+        target_fsize = max(14, int(R * 0.13))
+
+        # ── 座標 ────────────────────────────────────────────────────────
         x0 = self.CX - pw // 2
         y0 = self.CY - ph // 2
         x1 = self.CX + pw // 2
         y1 = self.CY + ph // 2
-        self.cv.create_rectangle(
-            x0, y0, x1, y1,
-            fill=seg_color, outline="#ff0000", width=3,
+        # ヒットテスト用に矩形を保持（フラッシュ中もクリックブロックに使う）
+        self._result_overlay_rect = (x0, y0, x1, y1)
+
+        # ── 色・スタイル: フラッシュ中と定常表示で切り替え ──────────────
+        is_flash = times > 0
+        if is_flash:
+            bg_col      = seg_color
+            outline_col = "#ff0000"
+            outline_w   = 3
+            corner_r    = 0
+            text_col    = self._design.wheel.text_color if times % 2 else self._design.gold
+        else:
+            # 定常表示: 配色モードに従って背景色を決定
+            steady_mode = getattr(rd, 'steady_color_mode', 0)
+            bg_col      = seg_color if steady_mode == 1 else rd.bg_color
+            outline_col = rd.outline_color
+            outline_w   = rd.outline_width
+            corner_r    = min(rd.corner_radius, min(pw, ph) // 4)
+            text_col    = rd.text_color
+
+        # ── 背景ボックス描画 ────────────────────────────────────────────
+        _draw_rounded_rect(
+            self.cv, x0, y0, x1, y1,
+            r=corner_r,
+            fill=bg_col, outline=outline_col, width=outline_w,
             tags="result_overlay",
         )
+
+        # ── フォントファミリー ───────────────────────────────────────────
+        font_family = getattr(self._design.fonts, 'result_family', 'Meiryo')
+
+        # ── テキスト幅上限 ──────────────────────────────────────────────
+        padding = rd.padding if not is_flash else 12
+        text_max_w = max(20, pw - 2 * padding)
+
+        # ── 文字フィット ────────────────────────────────────────────────
+        fit_mode = getattr(rd, 'text_fit_mode', 0)
+        if fit_mode == 1:
+            # 収めるモード: 入りきるまでフォントサイズを縮小
+            fsize, display_text = _fit_text_shrink(
+                self.root, winner, text_max_w, target_fsize, font_family
+            )
+        else:
+            # 省略モード（デフォルト）: 目標サイズで収まらなければ末尾を省略
+            fsize = target_fsize
+            display_text = _fit_text_ellipsis(
+                self.root, winner, text_max_w, font_family, fsize
+            )
+
+        # ── テキスト描画（1行固定・中央揃え）─────────────────────────────
         # 疑似アウトライン（4方向オフセットで黒縁）
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             self.cv.create_text(
                 self.CX + dx, self.CY + dy,
-                text=winner, fill="#000000",
-                font=("Meiryo", 16, "bold"), tags="result_overlay",
-                width=pw - 20,
+                text=display_text, fill="#000000",
+                font=(font_family, fsize, "bold"),
+                tags="result_overlay",
             )
         # 本体テキスト
         self.cv.create_text(
             self.CX, self.CY,
-            text=winner, fill=text_color,
-            font=("Meiryo", 16, "bold"), tags="result_overlay",
-            width=pw - 20,
+            text=display_text, fill=text_col,
+            font=(font_family, fsize, "bold"),
+            tags="result_overlay",
         )
+
+    def _close_result_overlay(self):
+        """結果オーバーレイを閉じる（タイマーキャンセル + canvas 削除 / クロージャ実行）。"""
+        self._result_showing = False
+        self._result_overlay_rect = None
+        if getattr(self, '_result_auto_timer', None):
+            self.root.after_cancel(self._result_auto_timer)
+            self._result_auto_timer = None
+        fn = getattr(self, '_result_close_fn', None)
+        self._result_close_fn = None
+        if fn:
+            fn()
+        else:
+            self.cv.delete("result_overlay")
 
     # ════════════════════════════════════════════════════════════════
     #  クリック / スペースキー操作
@@ -195,11 +359,25 @@ class SpinEngineMixin:
         dy = abs(event.y_root - self._click_start_y)
         if dx > 5 or dy > 5:
             return
+        # 結果オーバーレイ領域内クリック判定
+        # フラッシュ中（_flashing=True）も含めて領域内クリックはスピンへ流さない
+        _rect = getattr(self, '_result_overlay_rect', None)
+        if _rect and (getattr(self, '_flashing', False) or getattr(self, '_result_showing', False)):
+            rx0, ry0, rx1, ry1 = _rect
+            if rx0 <= event.x <= rx1 and ry0 <= event.y <= ry1:
+                # 領域内: 表示済み（フラッシュ完了後）なら閉じる、フラッシュ中はブロックのみ
+                if getattr(self, '_result_showing', False):
+                    mode = getattr(self, '_result_close_mode', 2)
+                    if mode in (0, 2):  # クリック or 両方
+                        self._close_result_overlay()
+                return  # スピン開始には渡さない
+        if getattr(self, '_replaying', False):
+            return
         # ドーナツ判定: セグメント描画領域（外周R以内 かつ 中心ハブDONUT_HIT_RADIUS超）のみ受け付ける
         dist = math.hypot(event.x - self.CX, event.y - self.CY)
         if dist > self.R or dist <= DONUT_HIT_RADIUS:
             return
-        self._handle_action()
+        self._handle_action("mouse")
 
     def _is_global_key_blocked(self) -> bool:
         """グローバルショートカットを無効にすべき状況なら True を返す。
@@ -218,16 +396,19 @@ class SpinEngineMixin:
         入力系ウィジェットにフォーカスがある場合は何もしない（文字入力を優先）。"""
         if self._is_global_key_blocked():
             return
-        self._handle_action()
+        self._handle_action("space")
 
-    def _handle_action(self):
+    def _handle_action(self, source: str = "unknown"):
         """操作の共通ハンドラ。
         - 非スピン中: スピン開始
         - スピン中 ダブル操作: 停止フェーズ開始
         - スピン中 トリプル操作: 即時停止
+        source: "mouse" / "space" / "unknown"
         """
+        if getattr(self, '_replaying', False):
+            return
         if not self.spinning:
-            self._start_spin()
+            self._start_spin(source)
             return
 
         self._action_count += 1
@@ -239,12 +420,16 @@ class SpinEngineMixin:
 
         if self._action_count == 2:
             self._compress_to(self._double_duration)
+            if hasattr(self, '_replay_record_event'):
+                self._replay_record_event("double_stop", source)
         elif self._action_count >= 3:
             self._action_count = 0
             if self._action_timer:
                 self.root.after_cancel(self._action_timer)
                 self._action_timer = None
             self._compress_to(self._triple_duration)
+            if hasattr(self, '_replay_record_event'):
+                self._replay_record_event("triple_stop", source)
 
     def _reset_action_count(self):
         """連打タイマー満了 → カウントをリセット"""

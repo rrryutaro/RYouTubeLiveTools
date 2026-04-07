@@ -2,7 +2,7 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20

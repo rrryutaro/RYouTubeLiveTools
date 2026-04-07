@@ -17,7 +17,7 @@ from constants import (
     CFG_PANEL_W, SIZE_PROFILES, TRANSPARENT_KEY, MAIN_PANEL_PAD,
     MAIN_MIN_W, MAIN_MIN_H, SIDEBAR_MIN_W,
 )
-from config_utils import _is_on_any_monitor, _parse_geometry
+from config_utils import INSTANCE_NUM, _is_on_any_monitor, _parse_geometry
 
 # 浮動ウィンドウの最小サイズ（px）
 _FLOAT_WIN_MIN_W = 150
@@ -87,7 +87,17 @@ class WindowManagerMixin:
 
         self._ctx.add_separator()
 
-        # ── C. 終了 ───────────────────────────────────────
+        # ── C. リプレイ ───────────────────────────────────
+        has_replay = bool(getattr(self, '_replay_records', None))
+        self._ctx.add_command(
+            label="  直前のスピンをリプレイ",
+            command=lambda: self._replay_play(0),
+            state="normal" if has_replay else "disabled",
+        )
+
+        self._ctx.add_separator()
+
+        # ── D. 終了 ───────────────────────────────────────
         self._ctx.add_command(label="  終了", command=self._on_close)
 
         x, y = event.x_root, event.y_root
@@ -325,13 +335,31 @@ class WindowManagerMixin:
     # ════════════════════════════════════════════════════════════════
     def _toggle_settings(self):
         if self._item_list_float:
-            if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
-                if self._settings_visible:
-                    self._sidebar_toplevel.withdraw()
-                    self._settings_visible = False
+            if self._settings_visible:
+                # 非表示にする
+                self._settings_visible = False
+                if not getattr(self, "_float_win_show_instance", True):
+                    # OBS 用: destroy して同名ウィンドウを残さない
+                    if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+                        self._item_list_float_geo = self._sidebar_toplevel.geometry()
+                        self._sidebar_toplevel.destroy()
+                        self._sidebar_toplevel = None
                 else:
-                    self._sidebar_toplevel.deiconify()
-                    self._settings_visible = True
+                    if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+                        self._sidebar_toplevel.withdraw()
+                        self.root.focus_set()
+            else:
+                # 再表示する
+                self._settings_visible = True
+                if not getattr(self, "_float_win_show_instance", True):
+                    # OBS 用: hide 時に destroy 済みなので常に再生成
+                    self._rebuild_item_list_float_win()
+                else:
+                    if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+                        self._sidebar_toplevel.deiconify()
+                    else:
+                        # Toplevel が存在しない場合は再生成
+                        self._rebuild_item_list_float_win()
             self._save_config()
             return
         w = self.root.winfo_width()
@@ -448,10 +476,110 @@ class WindowManagerMixin:
     # ════════════════════════════════════════════════════════════════
     #  浮動ウィンドウ管理
     # ════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _main_title() -> str:
+        """メインウィンドウタイトルを返す。
+        インスタンス 1: "RRoulette"
+        インスタンス 2+: "RRoulette #N"
+        （#1 は付けない）
+        """
+        return "RRoulette" if INSTANCE_NUM == 1 else f"RRoulette #{INSTANCE_NUM}"
+
+    def _float_win_title(self, label: str) -> str:
+        """独立ウィンドウのタイトルを生成する。
+        _float_win_show_instance=True（デフォルト）:
+            "RRoulette #2 — 設定"  （メインウィンドウタイトルをそのまま前置）
+        _float_win_show_instance=False:
+            "RRoulette — 設定"  （インスタンス番号を含めない）
+        """
+        if getattr(self, "_float_win_show_instance", True):
+            base = self._main_title()
+        else:
+            base = "RRoulette"
+        return f"{base} \u2014 {label}"
+
+    def _apply_float_win_titles(self):
+        """設定変更時に既存の独立ウィンドウタイトルを即時更新する（インスタンスON時）。
+        インスタンス番号なし設定に変わった場合は開いているウィンドウを destroy して
+        タイトル変更を確実に反映する。再表示は次回 _toggle_settings / _toggle_cfg_panel 時。
+        """
+        show = getattr(self, "_float_win_show_instance", True)
+        if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+            if show:
+                self._sidebar_toplevel.title(self._float_win_title("項目リスト"))
+            else:
+                # OBS 用設定に変更 → destroy して同名ウィンドウが残らないようにする
+                self._item_list_float_geo = self._sidebar_toplevel.geometry()
+                self._sidebar_toplevel.destroy()
+                self._sidebar_toplevel = None
+                self._settings_visible = False
+        if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+            if show:
+                self._cfg_panel_toplevel.title(self._float_win_title("設定"))
+            else:
+                self._cfg_panel_float_geo = self._cfg_panel_toplevel.geometry()
+                self._cfg_panel_toplevel.destroy()
+                self._cfg_panel_toplevel = None
+                self._cfg_panel_visible = False
+        # リプレイ管理画面のタイトルも更新
+        _rdw = getattr(self, "_replay_dialog_win", None)
+        if _rdw is not None:
+            try:
+                if _rdw.winfo_exists():
+                    _rdw.title(self._float_win_title("リプレイ管理"))
+            except Exception:
+                pass
+
+    def _rebuild_item_list_float_win(self):
+        """独立表示中の項目リストウィンドウを再生成する。
+        OBS 用 destroy/recreate フローから呼ばれる。
+        Toplevel が存在・非表示状態なら deiconify のみ行う。
+        """
+        if self._sidebar_toplevel and self._sidebar_toplevel.winfo_exists():
+            # 既に実体がある（withdrawn 含む）→ deiconify のみ
+            self._sidebar_toplevel.deiconify()
+            return
+        if self._sash is not None:
+            try:
+                self._sash.destroy()
+            except Exception:
+                pass
+            self._sash = None
+        try:
+            if self.sidebar.winfo_exists():
+                self.sidebar.destroy()
+        except Exception:
+            pass
+        self._build_sidebar()
+        self._apply_right_panel_layout()
+
+    def _rebuild_cfg_panel_float_win(self):
+        """独立表示中の設定パネルウィンドウを再生成する。
+        OBS 用 destroy/recreate フローから呼ばれる。
+        Toplevel が存在・非表示状態なら deiconify のみ行う。
+        """
+        if self._cfg_panel_toplevel and self._cfg_panel_toplevel.winfo_exists():
+            # 既に実体がある（withdrawn 含む）→ deiconify のみ
+            self._cfg_panel_toplevel.deiconify()
+            return
+        if getattr(self, '_cfg_sash_right', None) is not None:
+            try:
+                self._cfg_sash_right.destroy()
+            except Exception:
+                pass
+            self._cfg_sash_right = None
+        try:
+            if self.cfg_panel.winfo_exists():
+                self.cfg_panel.destroy()
+        except Exception:
+            pass
+        self._build_cfg_panel()
+        self._apply_right_panel_layout()
+
     def _open_float_win(self, title, saved_geo=None):
         """モードレスの浮動ウィンドウを作成して返す。"""
         win = tk.Toplevel(self.root)
-        win.title(f"RRoulette — {title}")
+        win.title(self._float_win_title(title))
         win.configure(bg=self._design.panel)
         win.resizable(True, True)
         win.attributes("-topmost", self._topmost)
