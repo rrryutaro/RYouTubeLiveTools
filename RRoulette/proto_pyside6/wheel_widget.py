@@ -57,7 +57,7 @@ class WheelWidget(QWidget):
         self._text_size_mode: int = 1
         self._text_direction: int = 0
         self._donut_hole: bool = False
-        self._spin_direction: int = 0  # 0=反時計回り, 1=時計回り
+        self._spin_direction: int = 1  # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
 
         # --- 描画パラメータ ---
         self._cx: float = 0.0

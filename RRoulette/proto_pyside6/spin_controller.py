@@ -132,7 +132,8 @@ class SpinController(QObject):
         ref_total = ref_cruise_dist + fixed_dist
         base_rots = max(3, int(ref_total / 360))
 
-        spin_sign = -1 if self._wheel._spin_direction == 1 else 1
+        # 時計回り(1) → angle 増加 → 視覚的 CW、反時計回り(0) → angle 減少
+        spin_sign = 1 if self._wheel._spin_direction == 1 else -1
         current_angle = self._wheel._angle
         if spin_sign == 1:
             needed_residual = (target_angle - current_angle) % 360

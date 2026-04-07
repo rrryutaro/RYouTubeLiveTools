@@ -47,7 +47,7 @@ class AppSettings:
     #    対応: SpinController, WheelWidget
     # ============================================================
 
-    spin_direction: int = 0        # 0=反時計回り, 1=時計回り
+    spin_direction: int = 1        # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
     spin_preset_name: str = ""     # スピンプリセット名（空 = デフォルト）
 
     # ============================================================
@@ -87,7 +87,7 @@ class AppSettings:
             donut_hole=config.get("donut_hole", False),
             pointer_angle=config.get("pointer_angle", 0.0),
             profile_idx=config.get("profile_idx", 1),
-            spin_direction=config.get("spin_direction", 0),
+            spin_direction=config.get("spin_direction", 1),
             spin_preset_name=config.get("spin_preset_name", DEFAULT_PRESET_NAME),
             design_preset_name=config.get("design", {}).get("preset_name", "")
                 if isinstance(config.get("design"), dict) else "",

@@ -392,7 +392,10 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     # ================================================================
-    #  マウス操作（ドラッグでポインター移動、クリックでは spin しない）
+    #  マウス操作
+    #    - ポインター上ドラッグ → 角度移動
+    #    - ホイール上クリック（ポインター以外） → spin 開始
+    #    - スピン中はドラッグ不可
     # ================================================================
 
     def mousePressEvent(self, event):
@@ -401,13 +404,17 @@ class MainWindow(QMainWindow):
             if self._result_overlay.isVisible():
                 super().mousePressEvent(event)
                 return
-            # wheel 領域内でポインターをつかんだらドラッグ開始
+            # wheel 領域内の判定
             local_pos = self._wheel_container.mapFrom(self, event.pos())
             if self._wheel_container.rect().contains(local_pos):
                 wheel_pos = self._wheel.mapFrom(self._wheel_container, local_pos)
-                if (not self._spin_ctrl.is_spinning
-                        and self._wheel.pointer_hit(wheel_pos.x(), wheel_pos.y())):
-                    self._dragging_pointer = True
+                if not self._spin_ctrl.is_spinning:
+                    # ポインター上 → ドラッグ開始（spin より優先）
+                    if self._wheel.pointer_hit(wheel_pos.x(), wheel_pos.y()):
+                        self._dragging_pointer = True
+                        return
+                    # ポインター以外のホイール内クリック → spin 開始
+                    self._start_spin()
                     return
         super().mousePressEvent(event)
 
