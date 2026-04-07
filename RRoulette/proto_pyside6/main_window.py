@@ -107,6 +107,8 @@ class MainWindow(QMainWindow):
 
         self._result_overlay = ResultOverlay(self._wheel_container)
         self._result_overlay.apply_style(self._design)
+        self._result_overlay.set_close_mode(self._settings.result_close_mode)
+        self._result_overlay.set_hold_sec(self._settings.result_hold_sec)
 
         # ============================================================
         #  操作・設定パネル（デフォルト非表示）
@@ -185,7 +187,7 @@ class MainWindow(QMainWindow):
     def _start_spin(self):
         if self._spin_ctrl.is_spinning:
             return
-        self._result_overlay.hide()
+        self._result_overlay.dismiss()
         self._settings_panel.set_spinning(True)
         self._spin_ctrl.start_spin()
 
@@ -222,13 +224,14 @@ class MainWindow(QMainWindow):
             self._wheel.set_pointer_angle(value)
         elif key == "spin_direction":
             self._wheel._spin_direction = value
+        # 結果表示設定
+        elif key == "result_close_mode":
+            self._result_overlay.set_close_mode(value)
+        elif key == "result_hold_sec":
+            self._result_overlay.set_hold_sec(value)
         # 将来設定の更新先はここに追加:
         # elif key == "auto_shuffle":
         #     self._spin_ctrl.set_auto_shuffle(value)
-        # elif key == "result_close_mode":
-        #     self._result_overlay.set_close_mode(value)
-        # elif key == "result_hold_sec":
-        #     self._result_overlay.set_hold_sec(value)
 
     # ================================================================
     #  パネル開閉（F1 でトグル、ウィンドウ幅を連動）

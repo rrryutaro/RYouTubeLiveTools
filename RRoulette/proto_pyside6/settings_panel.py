@@ -26,6 +26,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
+    QDoubleSpinBox,
 )
 
 from bridge import SIDEBAR_W, DesignSettings
@@ -130,6 +131,7 @@ class SettingsPanel(QFrame):
         # --- セクション構築 ---
         self._build_spin_section(design)
         self._build_display_section(settings, design)
+        self._build_result_section(settings, design)
         self._build_items_section(items, design)
         self._build_future_sections(design)
 
@@ -217,7 +219,80 @@ class SettingsPanel(QFrame):
         self._layout.addWidget(self._donut_cb)
 
     # ================================================================
-    #  セクション 3: 項目リスト（読み取り専用）
+    #  セクション 3: 結果表示設定（実装済み）
+    # ================================================================
+
+    def _build_result_section(self, settings: AppSettings,
+                              design: DesignSettings):
+        self._result_header = _SectionHeader("結果表示", design)
+        self._layout.addWidget(self._result_header)
+
+        # 閉じ方モード
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(4)
+        mode_lbl = QLabel("閉じ方:")
+        mode_lbl.setFont(QFont("Meiryo", 8))
+        mode_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._result_mode_lbl = mode_lbl
+        mode_row.addWidget(mode_lbl)
+
+        self._result_mode_combo = QComboBox()
+        self._result_mode_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._result_mode_combo, design)
+        for name in ["クリック", "自動", "両方"]:
+            self._result_mode_combo.addItem(name)
+        self._result_mode_combo.setCurrentIndex(settings.result_close_mode)
+        self._result_mode_combo.currentIndexChanged.connect(
+            self._on_result_mode_changed
+        )
+        mode_row.addWidget(self._result_mode_combo, stretch=1)
+        self._layout.addLayout(mode_row)
+
+        # 保持秒数
+        sec_row = QHBoxLayout()
+        sec_row.setSpacing(4)
+        sec_lbl = QLabel("保持秒数:")
+        sec_lbl.setFont(QFont("Meiryo", 8))
+        sec_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._result_sec_lbl = sec_lbl
+        sec_row.addWidget(sec_lbl)
+
+        self._result_sec_spin = QDoubleSpinBox()
+        self._result_sec_spin.setFont(QFont("Meiryo", 8))
+        self._result_sec_spin.setRange(0.5, 30.0)
+        self._result_sec_spin.setSingleStep(0.5)
+        self._result_sec_spin.setDecimals(1)
+        self._result_sec_spin.setSuffix(" 秒")
+        self._result_sec_spin.setValue(settings.result_hold_sec)
+        self._result_sec_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._result_sec_spin.valueChanged.connect(
+            lambda v: self.setting_changed.emit("result_hold_sec", v)
+        )
+        sec_row.addWidget(self._result_sec_spin, stretch=1)
+        self._layout.addLayout(sec_row)
+
+        # 保持秒数の有効/無効を閉じ方モードに連動
+        self._update_hold_sec_enabled()
+
+    def _on_result_mode_changed(self, idx: int):
+        """閉じ方モード変更時のハンドラ。"""
+        self.setting_changed.emit("result_close_mode", idx)
+        self._update_hold_sec_enabled()
+
+    def _update_hold_sec_enabled(self):
+        """保持秒数の入力を閉じ方モードに応じて有効/無効化する。"""
+        mode = self._result_mode_combo.currentIndex()
+        enabled = mode in (1, 2)  # 自動 or 両方
+        self._result_sec_spin.setEnabled(enabled)
+
+    # ================================================================
+    #  セクション 4: 項目リスト（読み取り専用）
     # ================================================================
 
     def _build_items_section(self, items: list[str], design: DesignSettings):
@@ -268,7 +343,6 @@ class SettingsPanel(QFrame):
             ("分割", "項目の分割数を変更（未実装）"),
             ("配置", "segment の並び順を変更（未実装）"),
             ("常時ランダム", "spin ごとに配置をランダム化（未実装）"),
-            ("結果表示", "overlay の見た目・自動クローズ等（未実装）"),
         ]
         for title, desc in sections:
             section = _PlaceholderSection(title, desc, design)
@@ -338,6 +412,15 @@ class SettingsPanel(QFrame):
             self._donut_cb.blockSignals(True)
             self._donut_cb.setChecked(value)
             self._donut_cb.blockSignals(False)
+        elif key == "result_close_mode":
+            self._result_mode_combo.blockSignals(True)
+            self._result_mode_combo.setCurrentIndex(value)
+            self._result_mode_combo.blockSignals(False)
+            self._update_hold_sec_enabled()
+        elif key == "result_hold_sec":
+            self._result_sec_spin.blockSignals(True)
+            self._result_sec_spin.setValue(value)
+            self._result_sec_spin.blockSignals(False)
 
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
@@ -350,13 +433,24 @@ class SettingsPanel(QFrame):
         self._apply_spin_btn_style(design)
 
         # セクションヘッダー
-        for header in [self._spin_header, self._display_header, self._items_header]:
+        for header in [self._spin_header, self._display_header,
+                       self._result_header, self._items_header]:
             header._apply_style(design)
 
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._donut_cb.setStyleSheet(f"color: {design.text};")
+        self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._result_mode_combo, design)
+        self._result_sec_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
 
         # 項目カード
         for lbl in self._item_labels:

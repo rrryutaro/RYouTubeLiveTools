@@ -7,29 +7,38 @@ MainWindow から分離し、見た目や挙動の管理を集約する。
 責務:
   - overlay の生成・表示・非表示
   - クリック時の閉じ処理
+  - 自動クローズタイマー管理
   - デザイン連動のスタイル適用
   - コンテナ内の中央配置
 
+設定:
+  - close_mode: 0=クリックのみ, 1=自動のみ, 2=両方
+  - hold_sec: 自動クローズまでの秒数
+
 今後の拡張ポイント:
   - 表示アニメーション（フラッシュ等）
-  - 自動クローズタイマー
   - テキスト表示モード（省略 / 縮小）
   - 背景色モード（デザイン色 / セグメント色）
   - フォント / パディング / 角丸の設定化
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtWidgets import QLabel, QWidget
 
 from bridge import DesignSettings
+
+# close_mode 定数
+CLOSE_CLICK = 0    # クリックで閉じる
+CLOSE_AUTO = 1     # 自動で閉じる
+CLOSE_BOTH = 2     # クリックでも自動でも閉じる
 
 
 class ResultOverlay(QLabel):
     """spin 結果を表示するオーバーレイラベル。
 
     parent（wheel_container）の中央に配置され、
-    クリックで閉じる。
+    close_mode に応じてクリックまたは自動タイマーで閉じる。
 
     Signals:
         closed: overlay が閉じられた
@@ -47,16 +56,44 @@ class ResultOverlay(QLabel):
         )
         self.hide()
 
+        # --- 設定 ---
+        self._close_mode: int = CLOSE_CLICK
+        self._hold_sec: float = 5.0
+
+        # --- 自動クローズタイマー ---
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.timeout.connect(self._on_auto_close)
+
     # ================================================================
     #  公開 API
     # ================================================================
 
     def show_result(self, winner: str):
         """結果テキストを表示し、中央に配置する。"""
+        self._stop_auto_timer()
         self.setText(f"  \U0001f3af {winner}  ")
         self.show()
         self.raise_()
         self.update_position()
+        self._start_auto_timer_if_needed()
+
+    def dismiss(self):
+        """overlay を確実に閉じる。タイマーも停止する。
+
+        spin 開始時に MainWindow から呼ばれ、残留を防止する。
+        """
+        self._stop_auto_timer()
+        if self.isVisible():
+            self.hide()
+
+    def set_close_mode(self, mode: int):
+        """閉じ方モードを設定する。"""
+        self._close_mode = mode
+
+    def set_hold_sec(self, sec: float):
+        """自動クローズまでの秒数を設定する。"""
+        self._hold_sec = max(0.5, sec)
 
     def update_position(self):
         """親コンテナの中央にオーバーレイを配置する。"""
@@ -82,11 +119,34 @@ class ResultOverlay(QLabel):
         )
 
     # ================================================================
+    #  自動クローズタイマー
+    # ================================================================
+
+    def _start_auto_timer_if_needed(self):
+        """close_mode に応じて自動クローズタイマーを開始する。"""
+        if self._close_mode in (CLOSE_AUTO, CLOSE_BOTH):
+            ms = int(self._hold_sec * 1000)
+            self._auto_timer.start(ms)
+
+    def _stop_auto_timer(self):
+        """タイマーが動いていれば停止する。"""
+        if self._auto_timer.isActive():
+            self._auto_timer.stop()
+
+    def _on_auto_close(self):
+        """タイマー満了時のハンドラ。"""
+        if self.isVisible():
+            self.hide()
+            self.closed.emit()
+
+    # ================================================================
     #  イベント
     # ================================================================
 
     def mousePressEvent(self, event: QMouseEvent):
-        """左クリック -> overlay を閉じるだけ（spin しない）。"""
+        """左クリック -> close_mode に応じて閉じる。"""
         if event.button() == Qt.MouseButton.LeftButton:
-            self.hide()
-            self.closed.emit()
+            if self._close_mode in (CLOSE_CLICK, CLOSE_BOTH):
+                self._stop_auto_timer()
+                self.hide()
+                self.closed.emit()
