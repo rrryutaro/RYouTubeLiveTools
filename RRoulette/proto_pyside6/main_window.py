@@ -240,6 +240,7 @@ class MainWindow(QMainWindow):
     def _on_preset_changed(self, name: str):
         self._spin_ctrl.set_spin_preset(name)
         self._settings.spin_preset_name = name
+        self._save_config()
 
     # ================================================================
     #  設定変更ハンドラ（SettingsPanel → MainWindow → コンポーネント）
@@ -250,6 +251,7 @@ class MainWindow(QMainWindow):
 
         設定更新の集約ポイント。将来設定を追加する場合は、
         ここに elif ブランチを足すだけで経路が通る。
+        変更後に自動保存する（pointer_angle はドラッグ終了時に保存）。
         """
         # AppSettings を更新
         if hasattr(self._settings, key):
@@ -264,6 +266,7 @@ class MainWindow(QMainWindow):
             self._wheel.set_donut_hole(value)
         elif key == "pointer_angle":
             self._wheel.set_pointer_angle(value)
+            return  # ドラッグ中に大量発火するため、保存は mouseReleaseEvent で行う
         elif key == "spin_direction":
             self._wheel._spin_direction = value
         # サイズプロファイル
@@ -286,6 +289,9 @@ class MainWindow(QMainWindow):
             self._spin_ctrl.set_sound_tick_enabled(value)
         elif key == "sound_result_enabled":
             self._spin_ctrl.set_sound_result_enabled(value)
+
+        # 自動保存（pointer_angle 以外）
+        self._save_config()
 
     # ================================================================
     #  項目データ変更ハンドラ
@@ -411,6 +417,7 @@ class MainWindow(QMainWindow):
             total_w += SIDEBAR_W
         self.resize(total_w, h)
         self._settings_panel.update_setting("profile_idx", idx)
+        self._save_config()
 
     def _apply_design_preset(self, name: str):
         preset = DESIGN_PRESETS.get(name)
@@ -424,16 +431,19 @@ class MainWindow(QMainWindow):
         self.centralWidget().setStyleSheet(f"background-color: {self._design.bg};")
         self._settings_panel.update_design(self._design)
         self._result_overlay.apply_style(self._design)
+        self._save_config()
 
     def _set_text_size_mode(self, mode: int):
         self._settings.text_size_mode = mode
         self._wheel.set_text_mode(mode, self._settings.text_direction)
         self._settings_panel.update_setting("text_size_mode", mode)
+        self._save_config()
 
     def _toggle_donut(self):
         self._settings.donut_hole = not self._settings.donut_hole
         self._wheel.set_donut_hole(self._settings.donut_hole)
         self._settings_panel.update_setting("donut_hole", self._settings.donut_hole)
+        self._save_config()
 
     # ================================================================
     #  入力操作（一覧）
@@ -507,6 +517,7 @@ class MainWindow(QMainWindow):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging_pointer:
             self._dragging_pointer = False
+            self._save_config()  # ドラッグ完了時に pointer_angle を保存
             return
         super().mouseReleaseEvent(event)
 
