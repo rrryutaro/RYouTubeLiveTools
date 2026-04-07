@@ -372,6 +372,8 @@ class WindowManagerMixin:
         else:
             self._settings_visible = True
             self.root.geometry(f"{w + total}x{h}")
+        # geometry 変更を同期的に確定させてからパネル再配置
+        self.root.update_idletasks()
         self._apply_right_panel_layout()
         self._save_config()
 

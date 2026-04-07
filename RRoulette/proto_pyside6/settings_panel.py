@@ -4,21 +4,25 @@ PySide6 プロトタイプ — 操作・設定パネル
 右側パネルの責務:
   - spin 操作（開始ボタン、プリセット切替）
   - 表示設定（テキストモード、ドーナツ穴 等）
-  - 現在の項目リスト表示
+  - 項目データ表示（ItemEntry リスト）
   - 将来機能の受け皿セクション（プレースホルダー）
 
 設定変更の通知フロー:
   SettingsPanel → setting_changed(key, value) → MainWindow → 各コンポーネント
 
-セクション構成（今後の追加先が明確）:
-  1. スピン操作 — 実装済み
-  2. 表示設定 — 実装済み
-  3. 項目リスト — 実装済み（読み取り専用）
-  4. 確率変更 — プレースホルダー
-  5. 分割 — プレースホルダー
-  6. 配置 — プレースホルダー
-  7. 常時ランダム — プレースホルダー
-  8. 結果表示 — プレースホルダー
+セクション構成（2系統で整理）:
+
+  【アプリ設定セクション】AppSettings 側
+    1. スピン操作 — 実装済み
+    2. 表示設定 — 実装済み
+    3. 結果表示 — 実装済み
+
+  【項目データセクション】ItemEntry 側
+    4. 項目リスト — 実装済み（読み取り専用）
+    5. 確率変更 — プレースホルダー（項目データの編集）
+    6. 分割 — プレースホルダー（項目データの編集）
+    7. 配置 — プレースホルダー（項目データの編集）
+    8. 常時ランダム — プレースホルダー（spin 前の配置制御）
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -34,6 +38,7 @@ from bridge import (
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
 )
 from app_settings import AppSettings
+from item_entry import ItemEntry
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 
 
@@ -107,14 +112,15 @@ class SettingsPanel(QFrame):
     preset_changed = Signal(str)
     setting_changed = Signal(str, object)
 
-    def __init__(self, item_entries: list[dict], settings: AppSettings,
+    def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
                  design: DesignSettings, parent=None):
         """操作・設定パネル。
 
         Args:
             item_entries: 項目データ（bridge.load_item_entries() の戻り値）。
-                設定データ（AppSettings）とは別管理。
-            settings: アプリ設定データ。
+                設定データ（AppSettings）とは別管理。各項目のテキスト・
+                確率・分割等を保持する ItemEntry のリスト。
+            settings: アプリ設定データ（AppSettings）。
             design: デザイン設定。
         """
         super().__init__(parent)
@@ -140,17 +146,16 @@ class SettingsPanel(QFrame):
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(8)
 
-        # --- 設定セクション群 ---
+        # ── アプリ設定セクション（AppSettings 側） ──
         self._build_spin_section(design)
         self._build_display_section(settings, design)
         self._build_result_section(settings, design)
 
-        # --- 項目データセクション（設定とは別管理） ---
-        items_text = [e["text"] for e in item_entries]
-        self._build_items_section(items_text, design)
+        # ── 項目データセクション（ItemEntry 側） ──
+        self._build_items_section(item_entries, design)
 
-        # --- 将来機能（項目編集系プレースホルダー） ---
-        self._build_future_sections(design)
+        # ── 将来の項目編集セクション（ItemEntry 側の拡張） ──
+        self._build_item_edit_sections(design)
 
         self._layout.addStretch()
 
@@ -408,16 +413,22 @@ class SettingsPanel(QFrame):
         self._result_sec_spin.setEnabled(enabled)
 
     # ================================================================
-    #  セクション 4: 項目リスト（読み取り専用）
+    #  セクション 4: 項目リスト（読み取り専用・ItemEntry 側）
     # ================================================================
 
-    def _build_items_section(self, items: list[str], design: DesignSettings):
+    def _build_items_section(self, entries: list[ItemEntry],
+                             design: DesignSettings):
+        """項目データセクションを構築する。
+
+        ItemEntry リストから項目カードを生成。将来の項目編集 UI は
+        このセクション周辺に追加する想定。
+        """
         self._items_header = _SectionHeader("項目リスト", design)
         self._layout.addWidget(self._items_header)
 
         self._item_labels: list[QLabel] = []
 
-        if not items:
+        if not entries:
             empty = QLabel("  （項目なし）")
             empty.setFont(QFont("Meiryo", 9))
             empty.setStyleSheet(f"color: {design.text_sub};")
@@ -425,8 +436,8 @@ class SettingsPanel(QFrame):
             self._item_labels.append(empty)
             return
 
-        for item in items[:20]:
-            card = QLabel(f"  {item}")
+        for entry in entries[:20]:
+            card = QLabel(f"  {entry.text}")
             card.setFont(QFont("Meiryo", 9))
             card.setStyleSheet(
                 f"color: {design.text}; background-color: {design.separator}; "
@@ -435,24 +446,28 @@ class SettingsPanel(QFrame):
             self._layout.addWidget(card)
             self._item_labels.append(card)
 
-        if len(items) > 20:
-            more = QLabel(f"  ... 他 {len(items) - 20} 件")
+        if len(entries) > 20:
+            more = QLabel(f"  ... 他 {len(entries) - 20} 件")
             more.setFont(QFont("Meiryo", 8))
             more.setStyleSheet(f"color: {design.text_sub};")
             self._layout.addWidget(more)
             self._item_labels.append(more)
 
     # ================================================================
-    #  セクション 4-8: 将来機能（プレースホルダー）
+    #  セクション 5-8: 項目編集系（ItemEntry 側の将来拡張）
+    #
+    #  これらは項目データ（ItemEntry）に対する編集 UI。
+    #  AppSettings 側のセクションとは責務が異なる。
     #
     #  本実装時の手順:
-    #    1. _PlaceholderSection を専用クラスに差し替え
-    #    2. setting_changed.emit("key", value) で MainWindow に通知
-    #    3. AppSettings に対応フィールドを追加（既にスロットあり）
+    #    1. _PlaceholderSection を専用セクションクラスに差し替え
+    #    2. 項目データの変更は ItemEntry リストを更新
+    #    3. MainWindow 経由で segments 再構築 → WheelWidget 更新
     # ================================================================
 
-    def _build_future_sections(self, design: DesignSettings):
-        self._future_sections: list[_PlaceholderSection] = []
+    def _build_item_edit_sections(self, design: DesignSettings):
+        """項目データに関する将来の編集セクション（プレースホルダー）。"""
+        self._item_edit_sections: list[_PlaceholderSection] = []
 
         sections = [
             ("確率変更", "各項目の当選確率を変更（未実装）"),
@@ -463,7 +478,7 @@ class SettingsPanel(QFrame):
         for title, desc in sections:
             section = _PlaceholderSection(title, desc, design)
             self._layout.addWidget(section)
-            self._future_sections.append(section)
+            self._item_edit_sections.append(section)
 
     # ================================================================
     #  内部ヘルパー
@@ -603,6 +618,6 @@ class SettingsPanel(QFrame):
                     f"padding: 5px; border-radius: 3px;"
                 )
 
-        # プレースホルダーセクション
-        for section in self._future_sections:
+        # 項目編集プレースホルダーセクション
+        for section in self._item_edit_sections:
             section._apply_style(design)

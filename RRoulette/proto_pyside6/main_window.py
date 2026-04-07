@@ -10,11 +10,12 @@ PySide6 プロトタイプ — メインウィンドウ
   - サイズプロファイル
   - コンポーネント間のオーケストレーション
 
-設定の流れ:
+データの流れ（2系統）:
   bridge.load_config() → config dict
-    → bridge.load_app_settings(config) → AppSettings → 各コンポーネント配布
-    → bridge.load_design(config)       → DesignSettings → 各コンポーネント配布
-    → bridge.build_segments_from_config(config) → segments → WheelWidget
+    【アプリ設定】→ load_app_settings() → AppSettings → 各コンポーネント
+                 → load_design()       → DesignSettings → 各コンポーネント
+    【項目データ】→ load_item_entries()            → list[ItemEntry] → SettingsPanel
+                 → build_segments_from_config()   → list[Segment]  → WheelWidget
 
 設定変更の通知:
   SettingsPanel.setting_changed(key, value) → MainWindow._on_setting_changed()

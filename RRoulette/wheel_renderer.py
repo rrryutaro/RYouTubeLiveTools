@@ -25,6 +25,9 @@ class WheelRendererMixin:
         if getattr(self, "_sashing", False) or getattr(self, "_cfg_resizing", False):
             return
         cw, ch = event.width, event.height
+        # レイアウト確定前の中間サイズ（極端に小さい）では描画をスキップ
+        if cw < 50 or ch < 50:
+            return
         # ポインターが縁から POINTER_OVERHANG px 飛び出すため WHEEL_OUTER_MARGIN px 確保
         r = max(MIN_R, min(cw, ch) // 2 - WHEEL_OUTER_MARGIN)
         self.CX = cw // 2
@@ -87,7 +90,8 @@ class WheelRendererMixin:
         self._layout_cache_key = (
             tuple(self.items),
             tuple(int(seg.arc * 100) for seg in getattr(self, 'current_segments', [])),
-            self.R, mode, self._text_direction,
+            self.CX, self.CY, self.R,
+            mode, self._text_direction,
             self._donut_hole,
             _wf.family, _wf.omit_base_size, _wf.fit_base_size, _wf.shrink_base_size,
             _wf.min_size, _wf.max_size,
@@ -171,7 +175,8 @@ class WheelRendererMixin:
             _cache_key = (
                 tuple(self.items),
                 tuple(int(seg.arc * 100) for seg in segs),
-                self.R, self._text_size_mode, self._text_direction,
+                self.CX, self.CY, self.R,
+                self._text_size_mode, self._text_direction,
                 self._donut_hole,
                 _wf_key.family, _wf_key.omit_base_size, _wf_key.fit_base_size,
                 _wf_key.shrink_base_size, _wf_key.min_size, _wf_key.max_size,

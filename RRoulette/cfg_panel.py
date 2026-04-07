@@ -102,6 +102,8 @@ class CfgPanelMixin:
         if not self._item_list_float and self._settings_visible:
             self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=8)
             self._sash.pack(side=tk.RIGHT, fill=tk.Y, pady=8)
+        # pack 変更を同期的に確定し、後続の Canvas Configure が正しいサイズで発火するようにする
+        self.root.update_idletasks()
 
     # ════════════════════════════════════════════════════════════════
     #  右設定パネル 構築
@@ -1454,5 +1456,7 @@ class CfgPanelMixin:
         else:
             self._cfg_panel_visible = True
             self.root.geometry(f"{w + total}x{h}")
+        # geometry 変更を同期的に確定させてからパネル再配置
+        self.root.update_idletasks()
         self._apply_right_panel_layout()
         self._save_config()

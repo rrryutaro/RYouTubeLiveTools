@@ -8,15 +8,22 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
   - sys.path を通して既存モジュールを import 可能にする
   - layout_search の tkinter.font 依存を QtFontAdapter でモンキーパッチ
   - 設定読み込み（raw config dict / AppSettings / DesignSettings）
+  - 項目データ読み込み（ItemEntry リスト）
   - セグメント構築（確率・分割・配置の既存ロジック呼び出し）
   - UI 側へ渡すデータの整形
 
-設定の流れ:
-  config file → load_config() → raw dict
-                                  ├→ load_app_settings() → AppSettings  (型付き設定)
-                                  ├→ load_design()       → DesignSettings (デザイン)
-                                  ├→ load_items()         → list[str]     (項目テキスト)
-                                  └→ build_segments_from_config() → segments (セグメント)
+データの流れ（2系統）:
+
+  【アプリ設定】AppSettings — 表示・スピン・デザイン等のアプリ全体設定
+    config file → load_config() → raw dict
+                                    ├→ load_app_settings() → AppSettings
+                                    └→ load_design()       → DesignSettings
+
+  【項目データ】ItemEntry — 各項目固有のテキスト・確率・分割等
+    config file → load_config() → raw dict
+                                    ├→ load_item_entries()            → list[ItemEntry]
+                                    ├→ load_items()                   → list[str]
+                                    └→ build_segments_from_config()   → list[Segment]
 """
 
 import sys
@@ -86,6 +93,7 @@ layout_search._make_font = make_qt_font
 # ── 設定読み込み ──────────────────────────────────────────────────
 
 from app_settings import AppSettings
+from item_entry import ItemEntry
 
 
 def load_app_settings(config: dict | None = None) -> AppSettings:
@@ -115,6 +123,19 @@ def load_design(config: dict | None = None) -> DesignSettings:
     return DesignSettings.from_dict(config.get("design", {}))
 
 
+def _get_current_pattern_items(config: dict) -> list:
+    """config dict から現在のパターンの raw 項目リストを取得する。"""
+    patterns = config.get("item_patterns", {})
+    current = config.get("current_pattern", "デフォルト")
+    raw_items = patterns.get(current, [])
+    if not raw_items:
+        for v in patterns.values():
+            if v:
+                raw_items = v
+                break
+    return raw_items
+
+
 def _extract_item_text(entry) -> str | None:
     """項目エントリからテキストを抽出する。
     既存の設定形式では項目は dict（{'text': ..., 'enabled': ..., ...}）で保存されている。
@@ -133,15 +154,7 @@ def load_items(config: dict | None = None) -> list[str]:
     """設定辞書から現在の有効な項目テキストリストを取得する。"""
     if config is None:
         config = load_config()
-    patterns = config.get("item_patterns", {})
-    current = config.get("current_pattern", "デフォルト")
-    raw_items = patterns.get(current, [])
-    if not raw_items:
-        for v in patterns.values():
-            if v:
-                raw_items = v
-                break
-    # dict → str 変換 + enabled フィルタ
+    raw_items = _get_current_pattern_items(config)
     items = []
     for entry in raw_items:
         text = _extract_item_text(entry)
@@ -150,49 +163,23 @@ def load_items(config: dict | None = None) -> list[str]:
     return items
 
 
-def load_item_entries(config: dict | None = None) -> list[dict]:
-    """設定辞書から現在の有効な項目エントリをリストで返す。
-
-    各エントリは dict 形式で、少なくとも以下のキーを含む:
-      - text: 項目テキスト
-      - enabled: 有効かどうか（True のみ返す）
-      - split_count: 分割数
-      - prob_mode: 確率モード (None / "fixed" / "weight")
-      - prob_value: 確率値
+def load_item_entries(config: dict | None = None) -> list[ItemEntry]:
+    """設定辞書から現在の有効な項目エントリを ItemEntry リストで返す。
 
     項目データ（テキスト・確率・分割等）と設定データ（AppSettings）を
     分離して扱うための入口。将来の項目編集 UI はこのデータを基にする。
+
+    Returns:
+        有効な項目の ItemEntry リスト（enabled=False はフィルタ済み）
     """
     if config is None:
         config = load_config()
-    patterns = config.get("item_patterns", {})
-    current = config.get("current_pattern", "デフォルト")
-    raw_items = patterns.get(current, [])
-    if not raw_items:
-        for v in patterns.values():
-            if v:
-                raw_items = v
-                break
+    raw_items = _get_current_pattern_items(config)
     entries = []
-    for entry in raw_items:
-        if isinstance(entry, str):
-            if entry.strip():
-                entries.append({
-                    "text": entry,
-                    "enabled": True,
-                    "split_count": 1,
-                    "prob_mode": None,
-                    "prob_value": None,
-                })
-        elif isinstance(entry, dict):
-            if entry.get("enabled", True):
-                entries.append({
-                    "text": entry.get("text", ""),
-                    "enabled": True,
-                    "split_count": entry.get("split_count", 1),
-                    "prob_mode": entry.get("prob_mode"),
-                    "prob_value": entry.get("prob_value"),
-                })
+    for raw in raw_items:
+        item = ItemEntry.from_config_entry(raw)
+        if item is not None:
+            entries.append(item)
     return entries
 
 
@@ -200,14 +187,7 @@ def load_weights_from_config(config: dict | None = None) -> list[float]:
     """設定辞書から項目の重み（split_count ベース）を取得する。"""
     if config is None:
         config = load_config()
-    patterns = config.get("item_patterns", {})
-    current = config.get("current_pattern", "デフォルト")
-    raw_items = patterns.get(current, [])
-    if not raw_items:
-        for v in patterns.values():
-            if v:
-                raw_items = v
-                break
+    raw_items = _get_current_pattern_items(config)
     weights = []
     for entry in raw_items:
         text = _extract_item_text(entry)
@@ -237,14 +217,7 @@ def build_segments_from_config(config: dict | None = None) -> tuple[list[Segment
     """
     if config is None:
         config = load_config()
-    patterns = config.get("item_patterns", {})
-    current = config.get("current_pattern", "デフォルト")
-    raw_entries = patterns.get(current, [])
-    if not raw_entries:
-        for v in patterns.values():
-            if v:
-                raw_entries = v
-                break
+    raw_entries = _get_current_pattern_items(config)
 
     # 1. enabled フィルタ（orig_index を保持）
     enabled = []
@@ -253,7 +226,7 @@ def build_segments_from_config(config: dict | None = None) -> tuple[list[Segment
             if entry.get("enabled", True):
                 enabled.append((entry, i))
         elif isinstance(entry, str) and entry.strip():
-            enabled.append({"text": entry, "prob_mode": None, "prob_value": None, "split_count": 1}, i)
+            enabled.append(({"text": entry, "prob_mode": None, "prob_value": None, "split_count": 1}, i))
 
     if not enabled:
         return [], []
