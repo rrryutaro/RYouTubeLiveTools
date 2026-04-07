@@ -7,8 +7,16 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
 責務:
   - sys.path を通して既存モジュールを import 可能にする
   - layout_search の tkinter.font 依存を QtFontAdapter でモンキーパッチ
-  - 設定読み込み・デザイン設定の取得
-  - セグメント構築
+  - 設定読み込み（raw config dict / AppSettings / DesignSettings）
+  - セグメント構築（確率・分割・配置の既存ロジック呼び出し）
+  - UI 側へ渡すデータの整形
+
+設定の流れ:
+  config file → load_config() → raw dict
+                                  ├→ load_app_settings() → AppSettings  (型付き設定)
+                                  ├→ load_design()       → DesignSettings (デザイン)
+                                  ├→ load_items()         → list[str]     (項目テキスト)
+                                  └→ build_segments_from_config() → segments (セグメント)
 """
 
 import sys
@@ -76,6 +84,20 @@ layout_search._make_font = make_qt_font
 
 
 # ── 設定読み込み ──────────────────────────────────────────────────
+
+from app_settings import AppSettings
+
+
+def load_app_settings(config: dict | None = None) -> AppSettings:
+    """config dict から型付き AppSettings を構築する。
+
+    MainWindow は raw config dict ではなくこの関数経由で設定を取得する。
+    将来設定の追加時は AppSettings.from_config() のみ修正すればよい。
+    """
+    if config is None:
+        config = load_config()
+    return AppSettings.from_config(config)
+
 
 def load_config() -> dict:
     """既存の設定ファイルを読み込む。ファイルがなければ空辞書を返す。"""

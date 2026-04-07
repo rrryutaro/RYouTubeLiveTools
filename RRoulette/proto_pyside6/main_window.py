@@ -8,13 +8,17 @@ PySide6 プロトタイプ — メインウィンドウ
   - キーボードショートカット
   - コンテキストメニュー（表示系の設定）
   - サイズプロファイル
+  - コンポーネント間のオーケストレーション
 
-スピン制御は SpinController、結果表示は ResultOverlay に委譲。
+設定の流れ:
+  bridge.load_config() → config dict
+    → bridge.load_app_settings(config) → AppSettings → 各コンポーネント配布
+    → bridge.load_design(config)       → DesignSettings → 各コンポーネント配布
+    → bridge.build_segments_from_config(config) → segments → WheelWidget
 
-既存ロジック接続:
-  - constants.py: SIZE_PROFILES, SIDEBAR_W, MIN_W, MIN_H, VERSION
-  - design_settings.py: DesignSettings, DESIGN_PRESET_NAMES
-  - config_utils.py: CONFIG_FILE -> 設定読み込み
+設定変更の通知:
+  SettingsPanel.setting_changed(key, value) → MainWindow._on_setting_changed()
+    → AppSettings 更新 → 該当コンポーネント更新
 """
 
 from PySide6.QtCore import Qt, QTimer
@@ -26,8 +30,10 @@ from PySide6.QtWidgets import (
 from bridge import (
     SIZE_PROFILES, SIDEBAR_W, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
-    load_config, load_design, load_items, build_segments_from_config,
+    load_config, load_design, load_items, load_app_settings,
+    build_segments_from_config,
 )
+from app_settings import AppSettings
 from wheel_widget import WheelWidget
 from settings_panel import SettingsPanel
 from spin_controller import SpinController
@@ -51,22 +57,16 @@ class MainWindow(QMainWindow):
 
         # --- 既存設定の読み込み ---
         self._config = load_config()
+        self._settings = load_app_settings(self._config)
         self._design = load_design(self._config)
         self._segments, self._items = build_segments_from_config(self._config)
-
-        # 既存設定からの復元
-        self._pointer_angle = self._config.get("pointer_angle", 0.0)
-        self._text_size_mode = self._config.get("text_size_mode", 1)
-        self._text_direction = self._config.get("text_direction", 0)
-        self._donut_hole = self._config.get("donut_hole", False)
-        self._profile_idx = self._config.get("profile_idx", 1)
-        self._spin_direction = self._config.get("spin_direction", 0)
 
         self.setWindowTitle(f"RRoulette (PySide6 Proto) v{VERSION}")
         self.setMinimumSize(MIN_W, MIN_H)
 
         # サイズプロファイル適用（パネル非表示 = wheel のみ）
-        _, main_w, h = SIZE_PROFILES[min(self._profile_idx, len(SIZE_PROFILES) - 1)]
+        prof_idx = min(self._settings.profile_idx, len(SIZE_PROFILES) - 1)
+        _, main_w, h = SIZE_PROFILES[prof_idx]
         self._wheel_base_w = main_w
         self._wheel_base_h = h
         self.resize(main_w, h)
@@ -90,12 +90,7 @@ class MainWindow(QMainWindow):
         )
 
         self._wheel = WheelWidget(self._wheel_container)
-        self._wheel.set_design(self._design)
-        self._wheel.set_text_mode(self._text_size_mode, self._text_direction)
-        self._wheel.set_donut_hole(self._donut_hole)
-        self._wheel.set_pointer_angle(self._pointer_angle)
-        self._wheel.set_segments(self._segments)
-        self._wheel._spin_direction = self._spin_direction
+        self._apply_settings_to_wheel()
 
         # ============================================================
         #  スピン制御（SpinController に委譲）
@@ -103,6 +98,8 @@ class MainWindow(QMainWindow):
 
         self._spin_ctrl = SpinController(self._wheel, parent=self)
         self._spin_ctrl.spin_finished.connect(self._on_spin_finished)
+        if self._settings.spin_preset_name:
+            self._spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
 
         # ============================================================
         #  結果オーバーレイ（ResultOverlay に委譲）
@@ -116,12 +113,15 @@ class MainWindow(QMainWindow):
         # ============================================================
 
         display_items = load_items(self._config)
-        self._settings_panel = SettingsPanel(display_items, self._design)
+        self._settings_panel = SettingsPanel(
+            display_items, self._settings, self._design
+        )
         self._settings_panel_visible = False
         self._settings_panel.hide()
 
         self._settings_panel.spin_requested.connect(self._start_spin)
         self._settings_panel.preset_changed.connect(self._on_preset_changed)
+        self._settings_panel.setting_changed.connect(self._on_setting_changed)
 
         # ============================================================
         #  レイアウト組み立て
@@ -135,17 +135,29 @@ class MainWindow(QMainWindow):
         self.customContextMenuRequested.connect(self._show_context_menu)
 
     # ================================================================
+    #  設定配布ヘルパー
+    # ================================================================
+
+    def _apply_settings_to_wheel(self):
+        """AppSettings と DesignSettings を WheelWidget に一括配布する。"""
+        s = self._settings
+        self._wheel.set_design(self._design)
+        self._wheel.set_text_mode(s.text_size_mode, s.text_direction)
+        self._wheel.set_donut_hole(s.donut_hole)
+        self._wheel.set_pointer_angle(s.pointer_angle)
+        self._wheel.set_segments(self._segments)
+        self._wheel._spin_direction = s.spin_direction
+
+    # ================================================================
     #  初期表示・リサイズ — wheel と overlay の同期
     # ================================================================
 
     def showEvent(self, event):
-        """初回表示時に wheel をウィンドウ全体へフィットさせる。"""
         super().showEvent(event)
         QTimer.singleShot(0, self._sync_wheel_container)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Shift 押下中は正方形を維持
         mods = QApplication.keyboardModifiers()
         if mods & Qt.KeyboardModifier.ShiftModifier:
             size = max(event.size().width(), event.size().height())
@@ -161,18 +173,16 @@ class MainWindow(QMainWindow):
         self._sync_wheel_container()
 
     def _sync_wheel_container(self):
-        """wheel_container 内の wheel と結果 overlay の位置・サイズを同期する。"""
         c = self._wheel_container
         w, h = c.width(), c.height()
         self._wheel.setGeometry(0, 0, w, h)
         self._result_overlay.update_position()
 
     # ================================================================
-    #  Spin（左クリック / Space / ボタン で開始）
+    #  Spin
     # ================================================================
 
     def _start_spin(self):
-        """spin を開始する。"""
         if self._spin_ctrl.is_spinning:
             return
         self._result_overlay.hide()
@@ -180,13 +190,45 @@ class MainWindow(QMainWindow):
         self._spin_ctrl.start_spin()
 
     def _on_spin_finished(self, winner: str, seg_idx: int):
-        """spin 完了時のハンドラ。"""
         self._settings_panel.set_spinning(False)
         self._result_overlay.show_result(winner)
 
     def _on_preset_changed(self, name: str):
-        """プリセット切替ハンドラ。"""
         self._spin_ctrl.set_spin_preset(name)
+        self._settings.spin_preset_name = name
+
+    # ================================================================
+    #  設定変更ハンドラ（SettingsPanel → MainWindow → コンポーネント）
+    # ================================================================
+
+    def _on_setting_changed(self, key: str, value):
+        """SettingsPanel からの設定変更を受けて各コンポーネントに反映する。
+
+        設定更新の集約ポイント。将来設定を追加する場合は、
+        ここに elif ブランチを足すだけで経路が通る。
+        """
+        # AppSettings を更新
+        if hasattr(self._settings, key):
+            setattr(self._settings, key, value)
+
+        # 該当コンポーネントを更新
+        if key == "text_size_mode":
+            self._wheel.set_text_mode(value, self._settings.text_direction)
+        elif key == "text_direction":
+            self._wheel.set_text_mode(self._settings.text_size_mode, value)
+        elif key == "donut_hole":
+            self._wheel.set_donut_hole(value)
+        elif key == "pointer_angle":
+            self._wheel.set_pointer_angle(value)
+        elif key == "spin_direction":
+            self._wheel._spin_direction = value
+        # 将来設定の更新先はここに追加:
+        # elif key == "auto_shuffle":
+        #     self._spin_ctrl.set_auto_shuffle(value)
+        # elif key == "result_close_mode":
+        #     self._result_overlay.set_close_mode(value)
+        # elif key == "result_hold_sec":
+        #     self._result_overlay.set_hold_sec(value)
 
     # ================================================================
     #  パネル開閉（F1 でトグル、ウィンドウ幅を連動）
@@ -208,6 +250,7 @@ class MainWindow(QMainWindow):
 
     def _show_context_menu(self, pos):
         d = self._design
+        s = self._settings
         menu = QMenu(self)
         menu.setStyleSheet(f"""
             QMenu {{
@@ -239,7 +282,7 @@ class MainWindow(QMainWindow):
 
         # サイズプロファイル
         for idx, (label, w, h) in enumerate(SIZE_PROFILES):
-            marker = "\u25cf" if idx == self._profile_idx else "  "
+            marker = "\u25cf" if idx == s.profile_idx else "  "
             action = menu.addAction(f"{marker} サイズ {label}  ({w} x {h})")
             action.triggered.connect(
                 lambda checked, i=idx, ww=w, hh=h: self._set_profile(i, ww, hh)
@@ -261,7 +304,7 @@ class MainWindow(QMainWindow):
         # テキスト表示モード
         mode_names = ["省略", "収める", "縮小"]
         for m, name in enumerate(mode_names):
-            marker = "\u25cf" if m == self._text_size_mode else "  "
+            marker = "\u25cf" if m == s.text_size_mode else "  "
             action = menu.addAction(f"{marker} テキスト: {name}")
             action.triggered.connect(
                 lambda checked, mm=m: self._set_text_size_mode(mm)
@@ -270,7 +313,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
 
         # ドーナツ穴
-        donut_mark = "\u25cf" if self._donut_hole else "  "
+        donut_mark = "\u25cf" if s.donut_hole else "  "
         action = menu.addAction(f"{donut_mark} ドーナツ穴")
         action.triggered.connect(self._toggle_donut)
 
@@ -282,11 +325,11 @@ class MainWindow(QMainWindow):
         menu.exec(self.mapToGlobal(pos))
 
     # ================================================================
-    #  設定変更ハンドラ
+    #  設定変更アクション（コンテキストメニュー経由）
     # ================================================================
 
     def _set_profile(self, idx: int, w: int, h: int):
-        self._profile_idx = idx
+        self._settings.profile_idx = idx
         self._wheel_base_w = w
         self._wheel_base_h = h
         total_w = w
@@ -300,6 +343,7 @@ class MainWindow(QMainWindow):
             return
         self._design = DesignSettings.from_dict(preset.to_dict())
         self._design.preset_name = name
+        self._settings.design_preset_name = name
 
         self._wheel.set_design(self._design)
         self.centralWidget().setStyleSheet(f"background-color: {self._design.bg};")
@@ -307,12 +351,14 @@ class MainWindow(QMainWindow):
         self._result_overlay.apply_style(self._design)
 
     def _set_text_size_mode(self, mode: int):
-        self._text_size_mode = mode
-        self._wheel.set_text_mode(mode, self._text_direction)
+        self._settings.text_size_mode = mode
+        self._wheel.set_text_mode(mode, self._settings.text_direction)
+        self._settings_panel.update_setting("text_size_mode", mode)
 
     def _toggle_donut(self):
-        self._donut_hole = not self._donut_hole
-        self._wheel.set_donut_hole(self._donut_hole)
+        self._settings.donut_hole = not self._settings.donut_hole
+        self._wheel.set_donut_hole(self._settings.donut_hole)
+        self._settings_panel.update_setting("donut_hole", self._settings.donut_hole)
 
     # ================================================================
     #  キーボード
@@ -333,11 +379,9 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # overlay 表示中は spin しない（overlay 側で処理される）
             if self._result_overlay.isVisible():
                 super().mousePressEvent(event)
                 return
-            # wheel 領域の左クリックで spin 開始
             local_pos = self._wheel_container.mapFrom(self, event.pos())
             if self._wheel_container.rect().contains(local_pos):
                 if not self._spin_ctrl.is_spinning:

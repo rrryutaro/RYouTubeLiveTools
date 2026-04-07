@@ -3,29 +3,39 @@ PySide6 プロトタイプ — 操作・設定パネル
 
 右側パネルの責務:
   - spin 操作（開始ボタン、プリセット切替）
-  - 将来機能の受け皿セクション
-  - 現在の状態表示
+  - 表示設定（テキストモード、ドーナツ穴 等）
+  - 現在の項目リスト表示
+  - 将来機能の受け皿セクション（プレースホルダー）
 
-将来追加予定:
-  - 項目 / segment 管理
-  - 確率変更
-  - 分割設定
-  - 配置設定
-  - 常時ランダム
-  - デザイン設定
+設定変更の通知フロー:
+  SettingsPanel → setting_changed(key, value) → MainWindow → 各コンポーネント
+
+セクション構成（今後の追加先が明確）:
+  1. スピン操作 — 実装済み
+  2. 表示設定 — 実装済み
+  3. 項目リスト — 実装済み（読み取り専用）
+  4. 確率変更 — プレースホルダー
+  5. 分割 — プレースホルダー
+  6. 配置 — プレースホルダー
+  7. 常時ランダム — プレースホルダー
+  8. 結果表示 — プレースホルダー
 """
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QComboBox, QScrollArea, QWidget,
-    QGroupBox, QSizePolicy,
+    QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
 )
 
 from bridge import SIDEBAR_W, DesignSettings
+from app_settings import AppSettings
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 
+
+# ================================================================
+#  セクション UI 部品
+# ================================================================
 
 class _SectionHeader(QLabel):
     """セクション見出し用ラベル。"""
@@ -33,6 +43,9 @@ class _SectionHeader(QLabel):
     def __init__(self, text: str, design: DesignSettings, parent=None):
         super().__init__(text, parent)
         self.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._apply_style(design)
+
+    def _apply_style(self, design: DesignSettings):
         self.setStyleSheet(
             f"color: {design.text}; "
             f"padding: 4px 0 2px 0; "
@@ -41,23 +54,39 @@ class _SectionHeader(QLabel):
 
 
 class _PlaceholderSection(QFrame):
-    """未実装セクションのプレースホルダー。"""
+    """未実装セクションのプレースホルダー。
+
+    将来機能を本実装する際は、このクラスを専用セクションに差し替える。
+    差し替え時の手順:
+      1. 専用セクションクラスを作成（_PlaceholderSection と同じ位置に追加可能）
+      2. SettingsPanel._build_future_sections() 内で差し替え
+      3. setting_changed シグナル経由で MainWindow に通知
+    """
 
     def __init__(self, title: str, description: str,
                  design: DesignSettings, parent=None):
         super().__init__(parent)
+        self._header = _SectionHeader(title, design)
+        self._desc = QLabel(description)
+        self._desc.setFont(QFont("Meiryo", 8))
+        self._desc.setWordWrap(True)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 4)
         layout.setSpacing(2)
+        layout.addWidget(self._header)
+        layout.addWidget(self._desc)
 
-        layout.addWidget(_SectionHeader(title, design))
+        self._apply_style(design)
 
-        desc_lbl = QLabel(description)
-        desc_lbl.setFont(QFont("Meiryo", 8))
-        desc_lbl.setStyleSheet(f"color: {design.text_sub};")
-        desc_lbl.setWordWrap(True)
-        layout.addWidget(desc_lbl)
+    def _apply_style(self, design: DesignSettings):
+        self._header._apply_style(design)
+        self._desc.setStyleSheet(f"color: {design.text_sub};")
 
+
+# ================================================================
+#  メインパネル
+# ================================================================
 
 class SettingsPanel(QFrame):
     """操作・設定パネル。
@@ -65,14 +94,20 @@ class SettingsPanel(QFrame):
     Signals:
         spin_requested: spin 開始が要求された
         preset_changed(str): spin プリセットが変更された
+        setting_changed(str, object): 設定値が変更された (key, value)
+            key は AppSettings のフィールド名に対応する。
+            MainWindow はこのシグナルを受けて該当コンポーネントを更新する。
     """
 
     spin_requested = Signal()
     preset_changed = Signal(str)
+    setting_changed = Signal(str, object)
 
-    def __init__(self, items: list[str], design: DesignSettings, parent=None):
+    def __init__(self, items: list[str], settings: AppSettings,
+                 design: DesignSettings, parent=None):
         super().__init__(parent)
         self._design = design
+        self._settings = settings
         self.setFixedWidth(SIDEBAR_W)
         self.setStyleSheet(f"background-color: {design.panel};")
 
@@ -92,51 +127,31 @@ class SettingsPanel(QFrame):
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(8)
 
-        # === spin 操作セクション ===
+        # --- セクション構築 ---
         self._build_spin_section(design)
-
-        # === 項目リストセクション ===
+        self._build_display_section(settings, design)
         self._build_items_section(items, design)
-
-        # === 将来機能セクション（プレースホルダー） ===
-        self._layout.addWidget(_PlaceholderSection(
-            "確率変更", "各項目の当選確率を変更（未実装）", design,
-        ))
-        self._layout.addWidget(_PlaceholderSection(
-            "分割", "項目の分割数を変更（未実装）", design,
-        ))
-        self._layout.addWidget(_PlaceholderSection(
-            "配置", "segment の並び順を変更（未実装）", design,
-        ))
-        self._layout.addWidget(_PlaceholderSection(
-            "常時ランダム", "spin ごとに配置をランダム化（未実装）", design,
-        ))
+        self._build_future_sections(design)
 
         self._layout.addStretch()
 
         self._scroll.setWidget(self._content)
         outer.addWidget(self._scroll)
 
-    # ----------------------------------------------------------------
-    #  spin 操作セクション
-    # ----------------------------------------------------------------
+    # ================================================================
+    #  セクション 1: スピン操作（実装済み）
+    # ================================================================
 
     def _build_spin_section(self, design: DesignSettings):
-        self._layout.addWidget(_SectionHeader("スピン", design))
+        self._spin_header = _SectionHeader("スピン", design)
+        self._layout.addWidget(self._spin_header)
 
         # spin ボタン
         self._spin_btn = QPushButton("▶  スピン開始")
         self._spin_btn.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
         self._spin_btn.setMinimumHeight(36)
         self._spin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._spin_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {design.accent}; color: {design.text};"
-            f"  border: none; border-radius: 6px; padding: 6px;"
-            f"}}"
-            f"QPushButton:hover {{ background-color: {design.separator}; }}"
-            f"QPushButton:disabled {{ background-color: {design.separator}; color: {design.text_sub}; }}"
-        )
+        self._apply_spin_btn_style(design)
         self._spin_btn.clicked.connect(self.spin_requested.emit)
         self._layout.addWidget(self._spin_btn)
 
@@ -147,6 +162,7 @@ class SettingsPanel(QFrame):
         preset_lbl = QLabel("プリセット:")
         preset_lbl.setFont(QFont("Meiryo", 8))
         preset_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._preset_lbl = preset_lbl
         preset_row.addWidget(preset_lbl)
 
         self._preset_combo = QComboBox()
@@ -160,18 +176,62 @@ class SettingsPanel(QFrame):
 
         self._layout.addLayout(preset_row)
 
-    # ----------------------------------------------------------------
-    #  項目リストセクション
-    # ----------------------------------------------------------------
+    # ================================================================
+    #  セクション 2: 表示設定（実装済み）
+    # ================================================================
+
+    def _build_display_section(self, settings: AppSettings,
+                               design: DesignSettings):
+        self._display_header = _SectionHeader("表示", design)
+        self._layout.addWidget(self._display_header)
+
+        # テキスト表示モード
+        text_row = QHBoxLayout()
+        text_row.setSpacing(4)
+        text_lbl = QLabel("テキスト:")
+        text_lbl.setFont(QFont("Meiryo", 8))
+        text_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._text_lbl = text_lbl
+        text_row.addWidget(text_lbl)
+
+        self._text_mode_combo = QComboBox()
+        self._text_mode_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._text_mode_combo, design)
+        for name in ["省略", "収める", "縮小"]:
+            self._text_mode_combo.addItem(name)
+        self._text_mode_combo.setCurrentIndex(settings.text_size_mode)
+        self._text_mode_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("text_size_mode", idx)
+        )
+        text_row.addWidget(self._text_mode_combo, stretch=1)
+        self._layout.addLayout(text_row)
+
+        # ドーナツ穴
+        self._donut_cb = QCheckBox("ドーナツ穴")
+        self._donut_cb.setFont(QFont("Meiryo", 8))
+        self._donut_cb.setStyleSheet(f"color: {design.text};")
+        self._donut_cb.setChecked(settings.donut_hole)
+        self._donut_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("donut_hole", v)
+        )
+        self._layout.addWidget(self._donut_cb)
+
+    # ================================================================
+    #  セクション 3: 項目リスト（読み取り専用）
+    # ================================================================
 
     def _build_items_section(self, items: list[str], design: DesignSettings):
-        self._layout.addWidget(_SectionHeader("項目リスト", design))
+        self._items_header = _SectionHeader("項目リスト", design)
+        self._layout.addWidget(self._items_header)
+
+        self._item_labels: list[QLabel] = []
 
         if not items:
             empty = QLabel("  （項目なし）")
             empty.setFont(QFont("Meiryo", 9))
             empty.setStyleSheet(f"color: {design.text_sub};")
             self._layout.addWidget(empty)
+            self._item_labels.append(empty)
             return
 
         for item in items[:20]:
@@ -182,28 +242,62 @@ class SettingsPanel(QFrame):
                 f"padding: 5px; border-radius: 3px;"
             )
             self._layout.addWidget(card)
+            self._item_labels.append(card)
 
         if len(items) > 20:
             more = QLabel(f"  ... 他 {len(items) - 20} 件")
             more.setFont(QFont("Meiryo", 8))
             more.setStyleSheet(f"color: {design.text_sub};")
             self._layout.addWidget(more)
+            self._item_labels.append(more)
 
-    # ----------------------------------------------------------------
+    # ================================================================
+    #  セクション 4-8: 将来機能（プレースホルダー）
+    #
+    #  本実装時の手順:
+    #    1. _PlaceholderSection を専用クラスに差し替え
+    #    2. setting_changed.emit("key", value) で MainWindow に通知
+    #    3. AppSettings に対応フィールドを追加（既にスロットあり）
+    # ================================================================
+
+    def _build_future_sections(self, design: DesignSettings):
+        self._future_sections: list[_PlaceholderSection] = []
+
+        sections = [
+            ("確率変更", "各項目の当選確率を変更（未実装）"),
+            ("分割", "項目の分割数を変更（未実装）"),
+            ("配置", "segment の並び順を変更（未実装）"),
+            ("常時ランダム", "spin ごとに配置をランダム化（未実装）"),
+            ("結果表示", "overlay の見た目・自動クローズ等（未実装）"),
+        ]
+        for title, desc in sections:
+            section = _PlaceholderSection(title, desc, design)
+            self._layout.addWidget(section)
+            self._future_sections.append(section)
+
+    # ================================================================
     #  内部ヘルパー
-    # ----------------------------------------------------------------
+    # ================================================================
 
     def _apply_scroll_style(self, design: DesignSettings):
-        """スクロール領域にデザイン連動の配色を適用する。"""
         self._scroll.setStyleSheet(
             f"QScrollArea {{ border: none; background-color: {design.panel}; }}"
             f"QScrollBar:vertical {{ width: 6px; background: {design.panel}; }}"
             f"QScrollBar::handle:vertical {{ background: {design.separator}; border-radius: 3px; }}"
         )
 
+    def _apply_spin_btn_style(self, design: DesignSettings):
+        self._spin_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.accent}; color: {design.text};"
+            f"  border: none; border-radius: 6px; padding: 6px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.separator}; }}"
+            f"QPushButton:disabled {{ background-color: {design.separator}; color: {design.text_sub}; }}"
+        )
+
     @staticmethod
     def _apply_combo_style(combo: QComboBox, design: DesignSettings):
-        """ComboBox にデザイン連動の配色を適用する。"""
         combo.setStyleSheet(
             f"QComboBox {{"
             f"  background-color: {design.separator}; color: {design.text};"
@@ -219,9 +313,9 @@ class SettingsPanel(QFrame):
             f"}}"
         )
 
-    # ----------------------------------------------------------------
+    # ================================================================
     #  公開 API
-    # ----------------------------------------------------------------
+    # ================================================================
 
     def set_spinning(self, spinning: bool):
         """spin 状態に応じてボタンを有効/無効にする。"""
@@ -234,6 +328,17 @@ class SettingsPanel(QFrame):
         self._preset_combo.setCurrentText(name)
         self._preset_combo.blockSignals(False)
 
+    def update_setting(self, key: str, value):
+        """外部からの設定変更を UI に反映する（シグナルを出さない）。"""
+        if key == "text_size_mode":
+            self._text_mode_combo.blockSignals(True)
+            self._text_mode_combo.setCurrentIndex(value)
+            self._text_mode_combo.blockSignals(False)
+        elif key == "donut_hole":
+            self._donut_cb.blockSignals(True)
+            self._donut_cb.setChecked(value)
+            self._donut_cb.blockSignals(False)
+
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
         self._design = design
@@ -241,11 +346,28 @@ class SettingsPanel(QFrame):
         self._content.setStyleSheet(f"background-color: {design.panel};")
         self._apply_scroll_style(design)
         self._apply_combo_style(self._preset_combo, design)
-        self._spin_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {design.accent}; color: {design.text};"
-            f"  border: none; border-radius: 6px; padding: 6px;"
-            f"}}"
-            f"QPushButton:hover {{ background-color: {design.separator}; }}"
-            f"QPushButton:disabled {{ background-color: {design.separator}; color: {design.text_sub}; }}"
-        )
+        self._apply_combo_style(self._text_mode_combo, design)
+        self._apply_spin_btn_style(design)
+
+        # セクションヘッダー
+        for header in [self._spin_header, self._display_header, self._items_header]:
+            header._apply_style(design)
+
+        # ラベル
+        self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._donut_cb.setStyleSheet(f"color: {design.text};")
+
+        # 項目カード
+        for lbl in self._item_labels:
+            if lbl.text().startswith("  （") or lbl.text().startswith("  ..."):
+                lbl.setStyleSheet(f"color: {design.text_sub};")
+            else:
+                lbl.setStyleSheet(
+                    f"color: {design.text}; background-color: {design.separator}; "
+                    f"padding: 5px; border-radius: 3px;"
+                )
+
+        # プレースホルダーセクション
+        for section in self._future_sections:
+            section._apply_style(design)
