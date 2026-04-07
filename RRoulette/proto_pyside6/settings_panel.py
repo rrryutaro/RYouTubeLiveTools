@@ -29,7 +29,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 
-from bridge import SIDEBAR_W, SIZE_PROFILES, DesignSettings
+from bridge import (
+    SIDEBAR_W, SIZE_PROFILES, DesignSettings,
+    POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
+)
 from app_settings import AppSettings
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 
@@ -240,6 +243,83 @@ class SettingsPanel(QFrame):
         prof_row.addWidget(self._prof_combo, stretch=1)
         self._layout.addLayout(prof_row)
 
+        # テキスト方向
+        tdir_row = QHBoxLayout()
+        tdir_row.setSpacing(4)
+        tdir_lbl = QLabel("テキスト方向:")
+        tdir_lbl.setFont(QFont("Meiryo", 8))
+        tdir_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tdir_lbl = tdir_lbl
+        tdir_row.addWidget(tdir_lbl)
+
+        self._tdir_combo = QComboBox()
+        self._tdir_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._tdir_combo, design)
+        for name in ["横(回転)", "横(水平)", "縦上", "縦下", "縦直立"]:
+            self._tdir_combo.addItem(name)
+        self._tdir_combo.setCurrentIndex(settings.text_direction)
+        self._tdir_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("text_direction", idx)
+        )
+        tdir_row.addWidget(self._tdir_combo, stretch=1)
+        self._layout.addLayout(tdir_row)
+
+        # スピン回転方向
+        sdir_row = QHBoxLayout()
+        sdir_row.setSpacing(4)
+        sdir_lbl = QLabel("回転方向:")
+        sdir_lbl.setFont(QFont("Meiryo", 8))
+        sdir_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._sdir_lbl = sdir_lbl
+        sdir_row.addWidget(sdir_lbl)
+
+        self._sdir_combo = QComboBox()
+        self._sdir_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._sdir_combo, design)
+        for name in ["反時計回り", "時計回り"]:
+            self._sdir_combo.addItem(name)
+        self._sdir_combo.setCurrentIndex(settings.spin_direction)
+        self._sdir_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("spin_direction", idx)
+        )
+        sdir_row.addWidget(self._sdir_combo, stretch=1)
+        self._layout.addLayout(sdir_row)
+
+        # ポインター位置
+        ptr_row = QHBoxLayout()
+        ptr_row.setSpacing(4)
+        ptr_lbl = QLabel("ポインター:")
+        ptr_lbl.setFont(QFont("Meiryo", 8))
+        ptr_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._ptr_lbl = ptr_lbl
+        ptr_row.addWidget(ptr_lbl)
+
+        self._ptr_combo = QComboBox()
+        self._ptr_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._ptr_combo, design)
+        for name in POINTER_PRESET_NAMES:
+            self._ptr_combo.addItem(name)
+        # 現在の pointer_angle からプリセットインデックスを逆引き
+        ptr_preset_idx = self._angle_to_preset_idx(settings.pointer_angle)
+        self._ptr_combo.setCurrentIndex(ptr_preset_idx)
+        self._ptr_combo.currentIndexChanged.connect(self._on_pointer_preset_changed)
+        ptr_row.addWidget(self._ptr_combo, stretch=1)
+        self._layout.addLayout(ptr_row)
+
+    @staticmethod
+    def _angle_to_preset_idx(angle: float) -> int:
+        """pointer_angle からプリセットインデックスを逆引きする。"""
+        for i, a in enumerate(_POINTER_PRESET_ANGLES):
+            if abs(angle - a) < 1.0:
+                return i
+        return len(POINTER_PRESET_NAMES) - 1  # 任意
+
+    def _on_pointer_preset_changed(self, idx: int):
+        """ポインタープリセット変更時のハンドラ。"""
+        if idx < len(_POINTER_PRESET_ANGLES):
+            angle = _POINTER_PRESET_ANGLES[idx]
+            self.setting_changed.emit("pointer_angle", angle)
+
     # ================================================================
     #  セクション 3: 結果表示設定（実装済み）
     # ================================================================
@@ -438,6 +518,19 @@ class SettingsPanel(QFrame):
             self._prof_combo.blockSignals(True)
             self._prof_combo.setCurrentIndex(value)
             self._prof_combo.blockSignals(False)
+        elif key == "text_direction":
+            self._tdir_combo.blockSignals(True)
+            self._tdir_combo.setCurrentIndex(value)
+            self._tdir_combo.blockSignals(False)
+        elif key == "spin_direction":
+            self._sdir_combo.blockSignals(True)
+            self._sdir_combo.setCurrentIndex(value)
+            self._sdir_combo.blockSignals(False)
+        elif key == "pointer_angle":
+            idx = self._angle_to_preset_idx(value)
+            self._ptr_combo.blockSignals(True)
+            self._ptr_combo.setCurrentIndex(idx)
+            self._ptr_combo.blockSignals(False)
         elif key == "result_close_mode":
             self._result_mode_combo.blockSignals(True)
             self._result_mode_combo.setCurrentIndex(value)
@@ -457,6 +550,9 @@ class SettingsPanel(QFrame):
         self._apply_combo_style(self._preset_combo, design)
         self._apply_combo_style(self._text_mode_combo, design)
         self._apply_combo_style(self._prof_combo, design)
+        self._apply_combo_style(self._tdir_combo, design)
+        self._apply_combo_style(self._sdir_combo, design)
+        self._apply_combo_style(self._ptr_combo, design)
         self._apply_spin_btn_style(design)
 
         # セクションヘッダー
@@ -468,6 +564,9 @@ class SettingsPanel(QFrame):
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._prof_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tdir_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._sdir_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._ptr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._donut_cb.setStyleSheet(f"color: {design.text};")
         self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
