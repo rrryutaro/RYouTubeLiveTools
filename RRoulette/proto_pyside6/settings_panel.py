@@ -106,11 +106,14 @@ class SettingsPanel(QFrame):
         setting_changed(str, object): 設定値が変更された (key, value)
             key は AppSettings のフィールド名に対応する。
             MainWindow はこのシグナルを受けて該当コンポーネントを更新する。
+        item_entries_changed(list): 項目データが変更された
+            MainWindow はこのシグナルを受けて segments 再構築・保存を行う。
     """
 
     spin_requested = Signal()
     preset_changed = Signal(str)
     setting_changed = Signal(str, object)
+    item_entries_changed = Signal(list)
 
     def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
                  design: DesignSettings, parent=None):
@@ -491,8 +494,16 @@ class SettingsPanel(QFrame):
     #
     #  本実装時の手順:
     #    1. _PlaceholderSection を専用セクションクラスに差し替え
-    #    2. 項目データの変更は ItemEntry リストを更新
-    #    3. MainWindow 経由で segments 再構築 → WheelWidget 更新
+    #    2. 編集 UI で self._item_entries を変更
+    #    3. self.item_entries_changed.emit(self._item_entries) で通知
+    #    4. MainWindow が受信 → segments 再構築 → WheelWidget 更新 → 保存
+    #
+    #  保存経路:
+    #    SettingsPanel.item_entries_changed
+    #      → MainWindow._on_item_entries_changed()
+    #        → self._item_entries = entries
+    #        → segments 再構築 → WheelWidget.set_segments()
+    #        → save_item_entries(config, entries)
     # ================================================================
 
     def _build_item_edit_sections(self, design: DesignSettings):

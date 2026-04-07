@@ -24,6 +24,10 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
                                     ├→ load_item_entries()            → list[ItemEntry]
                                     ├→ load_items()                   → list[str]
                                     └→ build_segments_from_config()   → list[Segment]
+
+  【保存】
+    AppSettings → to_config_patch() → config dict merge → save_config()
+    ItemEntry   → save_item_entries(config, entries) → config dict update → save_config()
 """
 
 import sys
@@ -114,6 +118,32 @@ def load_config() -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+def save_config(config: dict) -> None:
+    """設定辞書をファイルに保存する。"""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def save_item_entries(config: dict, entries: list[ItemEntry],
+                      pattern_name: str | None = None) -> None:
+    """ItemEntry リストを config dict の item_patterns に書き戻す。
+
+    Args:
+        config: 現在の config dict（直接変更される）
+        entries: 保存する ItemEntry リスト
+        pattern_name: 対象パターン名（None = current_pattern）
+
+    保存フロー:
+        ItemEntry.to_dict() → config["item_patterns"][pattern] → save_config()
+    """
+    if pattern_name is None:
+        pattern_name = config.get("current_pattern", "デフォルト")
+    if "item_patterns" not in config:
+        config["item_patterns"] = {}
+    config["item_patterns"][pattern_name] = [e.to_dict() for e in entries]
+    save_config(config)
 
 
 def load_design(config: dict | None = None) -> DesignSettings:

@@ -33,6 +33,7 @@ from bridge import (
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
     load_config, load_design, load_items, load_item_entries,
     load_app_settings, build_segments_from_config,
+    save_config, save_item_entries,
 )
 from app_settings import AppSettings
 from wheel_widget import WheelWidget
@@ -136,6 +137,9 @@ class MainWindow(QMainWindow):
         self._settings_panel.spin_requested.connect(self._start_spin)
         self._settings_panel.preset_changed.connect(self._on_preset_changed)
         self._settings_panel.setting_changed.connect(self._on_setting_changed)
+        self._settings_panel.item_entries_changed.connect(
+            self._on_item_entries_changed
+        )
 
         # ============================================================
         #  レイアウト組み立て
@@ -164,6 +168,29 @@ class MainWindow(QMainWindow):
         self._wheel.set_pointer_angle(s.pointer_angle)
         self._wheel.set_segments(self._segments)
         self._wheel._spin_direction = s.spin_direction
+
+    # ================================================================
+    #  保存ヘルパー
+    #
+    #  保存経路:
+    #    【アプリ設定】AppSettings → to_config_patch() → config merge → save_config()
+    #    【項目データ】ItemEntry   → save_item_entries(config, entries) → save_config()
+    #    【デザイン】  DesignSettings → to_dict() → config["design"] → save_config()
+    # ================================================================
+
+    def _save_config(self):
+        """アプリ設定・デザイン設定を config に書き戻して保存する。
+
+        項目データの保存は _save_item_entries() を使う。
+        """
+        self._config.update(self._settings.to_config_patch())
+        if self._design:
+            self._config["design"] = self._design.to_dict()
+        save_config(self._config)
+
+    def _save_item_entries(self):
+        """項目データを config に書き戻して保存する。"""
+        save_item_entries(self._config, self._item_entries)
 
     # ================================================================
     #  初期表示・リサイズ — wheel と overlay の同期
@@ -259,6 +286,23 @@ class MainWindow(QMainWindow):
             self._spin_ctrl.set_sound_tick_enabled(value)
         elif key == "sound_result_enabled":
             self._spin_ctrl.set_sound_result_enabled(value)
+
+    # ================================================================
+    #  項目データ変更ハンドラ
+    # ================================================================
+
+    def _on_item_entries_changed(self, entries: list):
+        """SettingsPanel からの項目データ変更を受けて反映・保存する。
+
+        将来の項目編集 UI が item_entries_changed を emit した際の経路。
+        """
+        from item_entry import ItemEntry
+        self._item_entries = entries
+        # segments を再構築
+        self._segments, self._items = build_segments_from_config(self._config)
+        self._wheel.set_segments(self._segments)
+        # 項目データを保存
+        self._save_item_entries()
 
     # ================================================================
     #  パネル開閉（F1 でトグル、ウィンドウ幅を連動）
