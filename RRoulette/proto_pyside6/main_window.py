@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self._macro_auto_advancing: bool = False
         self._macro_waiting_spin: bool = False
         self._macro_waiting_roulette_id: str | None = None
+        self._macro_viewer = None  # MacroActionViewer 参照（表示中のみ）
 
         # 直前当選結果（manual / macro 共通）
         self._last_spin_result: LastSpinResult | None = None
@@ -424,7 +425,9 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         viewer.setWindowTitle(f"Macro Action Viewer (dev) — {source}: {len(actions)} actions")
+        self._macro_viewer = viewer
         viewer.exec()
+        self._macro_viewer = None
         self._update_title_active_id()
 
     def _is_any_spinning(self) -> bool:
@@ -505,6 +508,7 @@ class MainWindow(QMainWindow):
                 self._macro_waiting_roulette_id = rid
                 print(f"[dev] run: waiting for spin completion on '{rid}' ({executed} executed)")
                 self._update_title_active_id()
+                self._notify_macro_viewer()
                 return  # ResultOverlay.closed で _try_resume_macro_after_overlay が呼ばれる
 
             # spinning が始まっていたら安全側で停止
@@ -611,6 +615,12 @@ class MainWindow(QMainWindow):
         self._macro_auto_advancing = False
         self._macro_waiting_spin = False
         self._macro_waiting_roulette_id = None
+        self._notify_macro_viewer()
+
+    def _notify_macro_viewer(self):
+        """macro viewer が表示中であれば実行状態表示を更新する。"""
+        if self._macro_viewer is not None:
+            self._macro_viewer._update_execution_status()
 
     def _on_result_overlay_closed(self, roulette_id: str):
         """ResultOverlay が閉じられた時のハンドラ。
