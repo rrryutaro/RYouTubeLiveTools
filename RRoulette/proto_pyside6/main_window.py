@@ -419,6 +419,8 @@ class MainWindow(QMainWindow):
             on_session_apply=apply_to_session,
             on_step=self._dev_step_action,
             on_run=self._dev_run_until_pause,
+            session=self._macro_session,
+            get_auto_advancing=lambda: self._macro_auto_advancing,
             parent=self,
         )
         viewer.setWindowTitle(f"Macro Action Viewer (dev) — {source}: {len(actions)} actions")

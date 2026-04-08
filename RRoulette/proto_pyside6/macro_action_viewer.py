@@ -649,6 +649,8 @@ class MacroActionViewer(QDialog):
                  on_session_apply=None,
                  on_step=None,
                  on_run=None,
+                 session=None,
+                 get_auto_advancing=None,
                  parent=None):
         """
         Args:
@@ -659,6 +661,9 @@ class MacroActionViewer(QDialog):
                 None の場合は「Session反映」ボタンを無効化する。
             on_step: step 実行コールバック。呼び出し形式: on_step() -> None
             on_run: run 実行コールバック。呼び出し形式: on_run() -> None
+            session: MacroPlaybackSession 参照（実行状態表示用）。
+            get_auto_advancing: auto advance 状態取得コールバック。
+                呼び出し形式: get_auto_advancing() -> bool
             parent: 親ウィジェット。
         """
         super().__init__(parent)
@@ -671,9 +676,12 @@ class MacroActionViewer(QDialog):
         self._on_session_apply = on_session_apply
         self._on_step = on_step
         self._on_run = on_run
+        self._session = session
+        self._get_auto_advancing = get_auto_advancing
         self._init_ui()
         self._populate_list()
         self._update_validation_status()
+        self._update_execution_status()
 
     @property
     def actions(self) -> list[RouletteAction]:
@@ -691,6 +699,11 @@ class MacroActionViewer(QDialog):
         self._validation_label = QLabel()
         status_layout.addWidget(self._validation_label)
         layout.addLayout(status_layout)
+
+        # --- 実行状態ステータス ---
+        self._exec_status_label = QLabel()
+        self._exec_status_label.setStyleSheet("color: #555;")
+        layout.addWidget(self._exec_status_label)
 
         # --- メイン: リスト（左） + 詳細（右） ---
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -906,6 +919,7 @@ class MacroActionViewer(QDialog):
             return False
         self._on_session_apply(list(self._actions))
         self.setWindowTitle("Macro Action Viewer (dev) — session (反映済み)")
+        self._update_execution_status()
         return True
 
     def _on_step_clicked(self):
@@ -914,6 +928,7 @@ class MacroActionViewer(QDialog):
             return
         self._ensure_session_applied()
         self._on_step()
+        self._update_execution_status()
 
     def _on_run_clicked(self):
         """Runボタン: session 反映後に run を実行する。"""
@@ -921,6 +936,70 @@ class MacroActionViewer(QDialog):
             return
         self._ensure_session_applied()
         self._on_run()
+        self._update_execution_status()
+
+    # ================================================================
+    #  実行状態表示
+    # ================================================================
+
+    def _update_execution_status(self):
+        """session の実行状態をステータスラベルとリストハイライトに反映する。"""
+        if self._session is None:
+            self._exec_status_label.setText("Session: (未接続)")
+            self._exec_status_label.setStyleSheet("color: #999;")
+            return
+
+        idx = self._session.current_index
+        total = self._session.total_count
+        remaining = self._session.remaining_count()
+
+        # auto advancing 状態
+        is_running = False
+        if self._get_auto_advancing is not None:
+            is_running = self._get_auto_advancing()
+
+        if total == 0:
+            status = "Session: 空"
+            style = "color: #999;"
+        elif is_running:
+            status = f"Session: 実行中 [{idx}/{total}] (残り {remaining})"
+            style = "color: #0070c0; font-weight: bold;"
+        elif remaining == 0:
+            status = f"Session: 完了 [{idx}/{total}]"
+            style = "color: green; font-weight: bold;"
+        else:
+            status = f"Session: 待機 [{idx}/{total}] (残り {remaining})"
+            style = "color: #555;"
+
+        self._exec_status_label.setText(status)
+        self._exec_status_label.setStyleSheet(style)
+
+        # リスト上で実行位置をハイライト
+        self._highlight_execution_position(idx, total)
+
+    def _highlight_execution_position(self, exec_index: int, exec_total: int):
+        """リスト上で実行済み / 次の実行対象 / 未実行をハイライトする。"""
+        from PySide6.QtGui import QColor, QBrush
+        for i in range(self._list_widget.count()):
+            item = self._list_widget.item(i)
+            if item is None:
+                continue
+            if exec_total == 0:
+                item.setBackground(QBrush())
+                item.setForeground(QBrush())
+                continue
+            if i < exec_index:
+                # 実行済み: 薄いグレー
+                item.setForeground(QBrush(QColor(160, 160, 160)))
+                item.setBackground(QBrush())
+            elif i == exec_index:
+                # 次の実行対象: 背景ハイライト
+                item.setForeground(QBrush())
+                item.setBackground(QBrush(QColor(220, 235, 255)))
+            else:
+                # 未実行: デフォルト
+                item.setForeground(QBrush())
+                item.setBackground(QBrush())
 
     # ================================================================
     #  読込
