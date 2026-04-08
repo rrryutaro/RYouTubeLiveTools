@@ -927,23 +927,29 @@ class MacroActionViewer(QDialog):
         if self._on_step is None:
             return
         self._ensure_session_applied()
-        self._on_step()
-        self._update_execution_status()
+        result = self._on_step()
+        ok = result if isinstance(result, bool) else True
+        self._update_execution_status(error=not ok)
 
     def _on_run_clicked(self):
         """Runボタン: session 反映後に run を実行する。"""
         if self._on_run is None:
             return
         self._ensure_session_applied()
-        self._on_run()
-        self._update_execution_status()
+        result = self._on_run()
+        ok = result if isinstance(result, bool) else True
+        self._update_execution_status(error=not ok)
 
     # ================================================================
     #  実行状態表示
     # ================================================================
 
-    def _update_execution_status(self):
-        """session の実行状態をステータスラベルとリストハイライトに反映する。"""
+    def _update_execution_status(self, *, error: bool = False):
+        """session の実行状態をステータスラベルとリストハイライトに反映する。
+
+        Args:
+            error: 直前の step/run が失敗した場合 True。
+        """
         if self._session is None:
             self._exec_status_label.setText("Session: (未接続)")
             self._exec_status_label.setStyleSheet("color: #999;")
@@ -958,7 +964,10 @@ class MacroActionViewer(QDialog):
         if self._get_auto_advancing is not None:
             is_running = self._get_auto_advancing()
 
-        if total == 0:
+        if error and total > 0:
+            status = f"Session: エラー停止 [{idx}/{total}] (残り {remaining})"
+            style = "color: red; font-weight: bold;"
+        elif total == 0:
             status = "Session: 空"
             style = "color: #999;"
         elif is_running:
@@ -975,9 +984,10 @@ class MacroActionViewer(QDialog):
         self._exec_status_label.setStyleSheet(style)
 
         # リスト上で実行位置をハイライト
-        self._highlight_execution_position(idx, total)
+        self._highlight_execution_position(idx, total, error=error)
 
-    def _highlight_execution_position(self, exec_index: int, exec_total: int):
+    def _highlight_execution_position(self, exec_index: int, exec_total: int,
+                                      *, error: bool = False):
         """リスト上で実行済み / 次の実行対象 / 未実行をハイライトする。"""
         from PySide6.QtGui import QColor, QBrush
         for i in range(self._list_widget.count()):
@@ -993,9 +1003,14 @@ class MacroActionViewer(QDialog):
                 item.setForeground(QBrush(QColor(160, 160, 160)))
                 item.setBackground(QBrush())
             elif i == exec_index:
-                # 次の実行対象: 背景ハイライト
-                item.setForeground(QBrush())
-                item.setBackground(QBrush(QColor(220, 235, 255)))
+                if error:
+                    # エラー停止位置: 赤背景
+                    item.setForeground(QBrush())
+                    item.setBackground(QBrush(QColor(255, 220, 220)))
+                else:
+                    # 次の実行対象: 青背景ハイライト
+                    item.setForeground(QBrush())
+                    item.setBackground(QBrush(QColor(220, 235, 255)))
             else:
                 # 未実行: デフォルト
                 item.setForeground(QBrush())

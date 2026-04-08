@@ -359,11 +359,15 @@ class MainWindow(QMainWindow):
         except ActionIOError as e:
             print(f"[dev] load error: {e}")
 
-    def _dev_step_action(self):
-        """開発確認用: session から次の1件を取り出して apply_action する。"""
+    def _dev_step_action(self) -> bool:
+        """開発確認用: session から次の1件を取り出して apply_action する。
+
+        Returns:
+            成功なら True、失敗なら False。
+        """
         if not self._macro_session.has_next():
             print("[dev] no more actions to step")
-            return
+            return False
         action = self._macro_session.pop_next()
 
         # BranchOnWinner は apply_action に渡さず直接処理
@@ -372,7 +376,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 print("[dev] step branch FAILED — stopped")
             self._update_title_active_id()
-            return
+            return ok
 
         from roulette_action_codec import action_to_dict
         print(f"[dev] step [{self._macro_session.current_index}/{self._macro_session.total_count}] {action_to_dict(action)}")
@@ -381,6 +385,7 @@ class MainWindow(QMainWindow):
             self._macro_session.rewind_one()
             print(f"[dev] step FAILED — index rewound to {self._macro_session.current_index}")
         self._update_title_active_id()
+        return ok
 
     def _dev_clear_session(self):
         """開発確認用: macro session をクリアする。"""
@@ -438,7 +443,7 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
-    def _dev_run_until_pause(self):
+    def _dev_run_until_pause(self) -> bool:
         """開発確認用: session を安全に進められる範囲まで連続実行する。
 
         SpinRoulette 成功時は待機状態に入り、spin 完了後に自動再開する。
@@ -448,20 +453,24 @@ class MainWindow(QMainWindow):
           2. apply_action() が False を返した
           3. SpinRoulette を成功実行した直後 → 待機状態に入って return
           4. いずれかの roulette が spinning 中
+
+        Returns:
+            失敗停止なら False、それ以外（正常完了・待機・中断）は True。
         """
         if not self._macro_session.has_next():
             print("[dev] run: no actions in session")
             self._stop_auto_advance()
-            return
+            return True
         if self._is_any_spinning():
             print("[dev] run: blocked — spinning in progress")
-            return
+            return True
 
         # auto advance 開始
         self._macro_auto_advancing = True
 
         from roulette_action_codec import action_to_dict
         executed = 0
+        failed = False
 
         while self._macro_session.has_next():
             # auto advance が外部から停止された場合
@@ -476,6 +485,7 @@ class MainWindow(QMainWindow):
                 branch_ok = self._handle_branch_on_winner(action)
                 if not branch_ok:
                     self._stop_auto_advance()
+                    failed = True
                     break
                 executed += 1
                 print(f"[dev] run: [{self._macro_session.current_index}/{self._macro_session.total_count}] "
@@ -489,6 +499,7 @@ class MainWindow(QMainWindow):
                 print(f"[dev] run: FAILED at [{self._macro_session.current_index}/{self._macro_session.total_count}] "
                       f"{action_to_dict(action)} — stopped")
                 self._stop_auto_advance()
+                failed = True
                 break
 
             executed += 1
@@ -509,7 +520,7 @@ class MainWindow(QMainWindow):
                 print(f"[dev] run: waiting for spin completion on '{rid}' ({executed} executed)")
                 self._update_title_active_id()
                 self._notify_macro_viewer()
-                return  # ResultOverlay.closed で _try_resume_macro_after_overlay が呼ばれる
+                return True  # ResultOverlay.closed で _try_resume_macro_after_overlay が呼ばれる
 
             # spinning が始まっていたら安全側で停止
             if self._is_any_spinning():
@@ -521,6 +532,7 @@ class MainWindow(QMainWindow):
             self._stop_auto_advance()
 
         self._update_title_active_id()
+        return not failed
 
     def _handle_branch_on_winner(self, branch: BranchOnWinner) -> bool:
         """BranchOnWinner を評価し、適切な action 列を session に挿入する。
