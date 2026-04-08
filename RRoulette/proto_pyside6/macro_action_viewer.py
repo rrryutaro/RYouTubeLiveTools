@@ -309,7 +309,7 @@ class _EditError(Exception):
     """編集ダイアログ内の入力エラー。"""
 
 
-# child action で許可する flat action types（BranchOnWinner は対象外）
+# child action で許可する action types（BranchOnWinner を含む）
 _CHILD_ACTION_TEMPLATES: list[tuple[str, type]] = [
     ("SpinRoulette", SpinRoulette),
     ("SetActiveRoulette", SetActiveRoulette),
@@ -317,6 +317,7 @@ _CHILD_ACTION_TEMPLATES: list[tuple[str, type]] = [
     ("RemoveRoulette", RemoveRoulette),
     ("UpdateSettings", UpdateSettings),
     ("UpdateItemEntries", UpdateItemEntries),
+    ("BranchOnWinner", BranchOnWinner),
 ]
 
 
@@ -426,7 +427,14 @@ class _ChildActionPanel(QWidget):
         if row < 0 or row >= len(self._actions):
             return
         action = self._actions[row]
-        dlg = ActionEditDialog(action, parent=self)
+        if isinstance(action, BranchOnWinner):
+            dlg = BranchEditDialog(
+                action,
+                active_roulette_id=self._active_roulette_id,
+                parent=self,
+            )
+        else:
+            dlg = ActionEditDialog(action, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_action is not None:
             self._actions[row] = dlg.result_action
             self._refresh_list(select_row=row)
