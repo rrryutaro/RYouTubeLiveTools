@@ -930,8 +930,8 @@ class MacroActionViewer(QDialog):
             return
         self._ensure_session_applied()
         result = self._on_step()
-        ok = result if isinstance(result, bool) else True
-        self._update_execution_status(error=not ok)
+        ok, detail = self._parse_callback_result(result)
+        self._update_execution_status(error=not ok, error_detail=detail)
 
     def _on_run_clicked(self):
         """Runボタン: session 反映後に run を実行する。"""
@@ -939,18 +939,29 @@ class MacroActionViewer(QDialog):
             return
         self._ensure_session_applied()
         result = self._on_run()
-        ok = result if isinstance(result, bool) else True
-        self._update_execution_status(error=not ok)
+        ok, detail = self._parse_callback_result(result)
+        self._update_execution_status(error=not ok, error_detail=detail)
+
+    @staticmethod
+    def _parse_callback_result(result) -> tuple[bool, str]:
+        """step/run コールバックの戻り値を (ok, detail) に正規化する。"""
+        if isinstance(result, tuple) and len(result) == 2:
+            return (bool(result[0]), str(result[1]))
+        if isinstance(result, bool):
+            return (result, "")
+        return (True, "")
 
     # ================================================================
     #  実行状態表示
     # ================================================================
 
-    def _update_execution_status(self, *, error: bool = False):
+    def _update_execution_status(self, *, error: bool = False,
+                                 error_detail: str = ""):
         """session の実行状態をステータスラベルとリストハイライトに反映する。
 
         Args:
             error: 直前の step/run が失敗した場合 True。
+            error_detail: エラー時の詳細文字列（action 名・理由など）。
         """
         if self._session is None:
             self._exec_status_label.setText("Session: (未接続)")
@@ -967,7 +978,8 @@ class MacroActionViewer(QDialog):
             is_running = self._get_auto_advancing()
 
         if error and total > 0:
-            status = f"Session: エラー停止 [{idx}/{total}] (残り {remaining})"
+            detail_suffix = f" - {error_detail}" if error_detail else ""
+            status = f"Session: エラー停止 [{idx}/{total}]{detail_suffix}"
             style = "color: red; font-weight: bold;"
         elif total == 0:
             status = "Session: 空"
