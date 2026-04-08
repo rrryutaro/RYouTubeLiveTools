@@ -249,6 +249,12 @@ class ActionEditDialog(QDialog):
                 regex_ignore_case=action.regex_ignore_case,
                 numeric_operator=action.numeric_operator,
                 numeric_value=action.numeric_value,
+                compound_logic=action.compound_logic,
+                cond2_match_mode=action.cond2_match_mode,
+                cond2_winner_text=action.cond2_winner_text,
+                cond2_regex_ignore_case=action.cond2_regex_ignore_case,
+                cond2_numeric_operator=action.cond2_numeric_operator,
+                cond2_numeric_value=action.cond2_numeric_value,
                 then_actions=action.then_actions,
                 else_actions=action.else_actions,
             )
@@ -503,6 +509,50 @@ class BranchEditDialog(QDialog):
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         layout.addLayout(form)
 
+        # --- compound logic ---
+        compound_form = QFormLayout()
+        self._logic_combo = QComboBox()
+        self._logic_combo.addItem("なし (単一条件)", "")
+        self._logic_combo.addItem("AND", "and")
+        self._logic_combo.addItem("OR", "or")
+        logic_idx = self._logic_combo.findData(action.compound_logic or "")
+        if logic_idx >= 0:
+            self._logic_combo.setCurrentIndex(logic_idx)
+        compound_form.addRow("複合条件:", self._logic_combo)
+
+        # 第2条件
+        self._cond2_winner_edit = QLineEdit(action.cond2_winner_text)
+        compound_form.addRow("cond2 winner_text:", self._cond2_winner_edit)
+        self._cond2_mode_combo = QComboBox()
+        self._cond2_mode_combo.addItem("完全一致 (exact)", "exact")
+        self._cond2_mode_combo.addItem("部分一致 (contains)", "contains")
+        self._cond2_mode_combo.addItem("正規表現 (regex)", "regex")
+        self._cond2_mode_combo.addItem("数値比較 (numeric)", "numeric")
+        c2_mode = action.cond2_match_mode or "exact"
+        c2_idx = self._cond2_mode_combo.findData(c2_mode)
+        if c2_idx >= 0:
+            self._cond2_mode_combo.setCurrentIndex(c2_idx)
+        compound_form.addRow("cond2 match_mode:", self._cond2_mode_combo)
+        self._cond2_ignore_case_cb = QCheckBox("大文字小文字を区別しない")
+        self._cond2_ignore_case_cb.setChecked(action.cond2_regex_ignore_case)
+        compound_form.addRow("cond2 regex option:", self._cond2_ignore_case_cb)
+        self._cond2_numeric_op_combo = QComboBox()
+        for op in ("==", "!=", ">", ">=", "<", "<="):
+            self._cond2_numeric_op_combo.addItem(op, op)
+        c2_op_idx = self._cond2_numeric_op_combo.findData(action.cond2_numeric_operator or "==")
+        if c2_op_idx >= 0:
+            self._cond2_numeric_op_combo.setCurrentIndex(c2_op_idx)
+        compound_form.addRow("cond2 numeric op:", self._cond2_numeric_op_combo)
+        self._cond2_numeric_value_edit = QLineEdit(action.cond2_numeric_value)
+        self._cond2_numeric_value_edit.setPlaceholderText("比較値 (数値)")
+        compound_form.addRow("cond2 numeric value:", self._cond2_numeric_value_edit)
+        layout.addLayout(compound_form)
+
+        # compound UI の有効/無効連動
+        self._logic_combo.currentIndexChanged.connect(self._on_logic_changed)
+        self._cond2_mode_combo.currentIndexChanged.connect(self._on_cond2_mode_changed)
+        self._on_logic_changed()
+
         # then / else パネル（横並び）
         panels_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._then_panel = _ChildActionPanel(
@@ -542,6 +592,23 @@ class BranchEditDialog(QDialog):
         self._numeric_op_combo.setEnabled(is_numeric)
         self._numeric_value_edit.setEnabled(is_numeric)
 
+    def _on_logic_changed(self):
+        enabled = self._logic_combo.currentData() in ("and", "or")
+        self._cond2_winner_edit.setEnabled(enabled)
+        self._cond2_mode_combo.setEnabled(enabled)
+        self._cond2_ignore_case_cb.setEnabled(enabled)
+        self._cond2_numeric_op_combo.setEnabled(enabled)
+        self._cond2_numeric_value_edit.setEnabled(enabled)
+        if enabled:
+            self._on_cond2_mode_changed()
+
+    def _on_cond2_mode_changed(self):
+        c2_mode = self._cond2_mode_combo.currentData()
+        is_compound = self._logic_combo.currentData() in ("and", "or")
+        self._cond2_ignore_case_cb.setEnabled(is_compound and c2_mode == "regex")
+        self._cond2_numeric_op_combo.setEnabled(is_compound and c2_mode == "numeric")
+        self._cond2_numeric_value_edit.setEnabled(is_compound and c2_mode == "numeric")
+
     def _on_ok(self):
         self._result = BranchOnWinner(
             source_roulette_id=self._source_edit.text(),
@@ -550,6 +617,12 @@ class BranchEditDialog(QDialog):
             regex_ignore_case=self._ignore_case_cb.isChecked(),
             numeric_operator=self._numeric_op_combo.currentData() or "==",
             numeric_value=self._numeric_value_edit.text(),
+            compound_logic=self._logic_combo.currentData() or "",
+            cond2_match_mode=self._cond2_mode_combo.currentData() or "exact",
+            cond2_winner_text=self._cond2_winner_edit.text(),
+            cond2_regex_ignore_case=self._cond2_ignore_case_cb.isChecked(),
+            cond2_numeric_operator=self._cond2_numeric_op_combo.currentData() or "==",
+            cond2_numeric_value=self._cond2_numeric_value_edit.text(),
             then_actions=self._then_panel.get_actions(),
             else_actions=self._else_panel.get_actions(),
         )

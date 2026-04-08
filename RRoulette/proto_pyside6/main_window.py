@@ -541,44 +541,28 @@ class MainWindow(QMainWindow):
                   f"result='{result.roulette_id}' vs source='{branch.source_roulette_id}'")
             return False
 
-        # match_mode に応じた条件判定
-        mode = branch.match_mode or "exact"
-        if mode == "numeric":
-            try:
-                winner_num = float(result.winner_text)
-                cmp_num = float(branch.numeric_value)
-            except (ValueError, TypeError):
-                print(f"[dev] branch: numeric conversion failed — "
-                      f"winner='{result.winner_text}', value='{branch.numeric_value}'")
-                matched = False
-            else:
-                op = branch.numeric_operator
-                if op == "==":
-                    matched = winner_num == cmp_num
-                elif op == "!=":
-                    matched = winner_num != cmp_num
-                elif op == ">":
-                    matched = winner_num > cmp_num
-                elif op == ">=":
-                    matched = winner_num >= cmp_num
-                elif op == "<":
-                    matched = winner_num < cmp_num
-                elif op == "<=":
-                    matched = winner_num <= cmp_num
-                else:
-                    print(f"[dev] branch: unknown numeric operator: {op!r}")
-                    matched = False
-        elif mode == "regex":
-            try:
-                flags = re.IGNORECASE if branch.regex_ignore_case else 0
-                matched = bool(re.search(branch.winner_text, result.winner_text, flags))
-            except re.error:
-                print(f"[dev] branch: STOPPED — invalid regex: {branch.winner_text!r}")
+        # 第1条件を評価
+        cond1 = self._eval_single_condition(
+            result.winner_text, branch.match_mode, branch.winner_text,
+            branch.regex_ignore_case, branch.numeric_operator, branch.numeric_value)
+        if cond1 is None:
+            return False  # 安全側停止（invalid regex 等）
+
+        # compound_logic に応じて第2条件を評価
+        logic = branch.compound_logic
+        if logic in ("and", "or"):
+            cond2 = self._eval_single_condition(
+                result.winner_text, branch.cond2_match_mode, branch.cond2_winner_text,
+                branch.cond2_regex_ignore_case, branch.cond2_numeric_operator,
+                branch.cond2_numeric_value)
+            if cond2 is None:
                 return False
-        elif mode == "contains":
-            matched = branch.winner_text in result.winner_text
+            if logic == "and":
+                matched = cond1 and cond2
+            else:
+                matched = cond1 or cond2
         else:
-            matched = result.winner_text == branch.winner_text
+            matched = cond1
 
         if matched:
             chosen = branch.then_actions
@@ -594,6 +578,31 @@ class MainWindow(QMainWindow):
         if chosen:
             self._macro_session.insert_actions(chosen)
         return True
+
+    @staticmethod
+    def _eval_single_condition(winner_text: str, mode: str, cond_text: str,
+                               regex_ic: bool, num_op: str, num_val: str) -> bool | None:
+        """単一条件を評価する。True/False または None（安全側停止）を返す。"""
+        mode = mode or "exact"
+        if mode == "numeric":
+            try:
+                wn = float(winner_text)
+                cn = float(num_val)
+            except (ValueError, TypeError):
+                return False
+            ops = {"==": wn == cn, "!=": wn != cn, ">": wn > cn,
+                   ">=": wn >= cn, "<": wn < cn, "<=": wn <= cn}
+            return ops.get(num_op, False)
+        elif mode == "regex":
+            try:
+                flags = re.IGNORECASE if regex_ic else 0
+                return bool(re.search(cond_text, winner_text, flags))
+            except re.error:
+                return None
+        elif mode == "contains":
+            return cond_text in winner_text
+        else:
+            return winner_text == cond_text
 
     def _stop_auto_advance(self):
         """auto advance 状態を全てクリアする。"""

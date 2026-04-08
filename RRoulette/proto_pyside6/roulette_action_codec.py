@@ -148,6 +148,19 @@ def action_from_dict(data: Mapping[str, object]) -> RouletteAction:
 #  1行要約: action → 表示用文字列
 # ================================================================
 
+def _cond_label(mode: str, winner_text: str, regex_ic: bool,
+                num_op: str, num_val: str) -> str:
+    """単一条件の表示ラベルを返す。"""
+    if mode == "numeric":
+        return f"[numeric: {num_op} {num_val}]"
+    elif mode == "regex" and regex_ic:
+        return f"'{winner_text}' [regex/i]"
+    elif mode != "exact":
+        return f"'{winner_text}' [{mode}]"
+    else:
+        return f"'{winner_text}'"
+
+
 def action_summary(action: RouletteAction) -> str:
     """action の1行要約文字列を返す。GUI リスト表示用。
 
@@ -172,17 +185,19 @@ def action_summary(action: RouletteAction) -> str:
         return f"設定変更: {action.key} = {action.value}"
     elif isinstance(action, BranchOnWinner):
         src = action.source_roulette_id or "(未設定)"
-        mode = action.match_mode if action.match_mode != "exact" else ""
-        if mode == "numeric":
-            mode_label = f" [numeric: {action.numeric_operator} {action.numeric_value}]"
-        elif mode == "regex" and action.regex_ignore_case:
-            mode_label = " [regex/i]"
-        elif mode:
-            mode_label = f" [{mode}]"
+        c1 = _cond_label(action.match_mode, action.winner_text,
+                         action.regex_ignore_case,
+                         action.numeric_operator, action.numeric_value)
+        if action.compound_logic in ("and", "or"):
+            c2 = _cond_label(action.cond2_match_mode, action.cond2_winner_text,
+                             action.cond2_regex_ignore_case,
+                             action.cond2_numeric_operator, action.cond2_numeric_value)
+            logic = action.compound_logic.upper()
+            cond_part = f"{c1} {logic} {c2}"
         else:
-            mode_label = ""
+            cond_part = c1
         return (f"分岐: source={src} "
-                f"winner='{action.winner_text}'{mode_label} "
+                f"{cond_part} "
                 f"→ then:{len(action.then_actions)} / else:{len(action.else_actions)}")
     return f"(unknown: {type(action).__name__})"
 
@@ -190,6 +205,38 @@ def action_summary(action: RouletteAction) -> str:
 # ================================================================
 #  保存時バリデーション
 # ================================================================
+
+_VALID_MODES = ("exact", "contains", "regex", "numeric")
+_VALID_NUM_OPS = ("==", "!=", ">", ">=", "<", "<=")
+
+
+def _validate_condition(mode: str, winner_text: str,
+                        num_op: str, num_val: str,
+                        prefix: str) -> list[str]:
+    """単一条件のバリデーション。prefix はエラーメッセージの接頭辞。"""
+    errors: list[str] = []
+    tag = f"{prefix}: " if prefix != "cond1" else ""
+    if not winner_text and mode != "numeric":
+        errors.append(f"{tag}winner_text が未設定")
+    if mode not in _VALID_MODES:
+        errors.append(f"{tag}match_mode が不正: {mode!r}")
+    if mode == "regex" and winner_text:
+        try:
+            re.compile(winner_text)
+        except re.error as e:
+            errors.append(f"{tag}winner_text が無効な正規表現: {e}")
+    if mode == "numeric":
+        if num_op not in _VALID_NUM_OPS:
+            errors.append(f"{tag}numeric_operator が不正: {num_op!r}")
+        if not num_val:
+            errors.append(f"{tag}numeric_value が未設定")
+        else:
+            try:
+                float(num_val)
+            except ValueError:
+                errors.append(f"{tag}numeric_value が数値でない: {num_val!r}")
+    return errors
+
 
 def validate_action_for_save(action: RouletteAction) -> list[str]:
     """保存前の構造的バリデーションを行い、問題があればメッセージのリストを返す。
@@ -206,26 +253,18 @@ def validate_action_for_save(action: RouletteAction) -> list[str]:
     if isinstance(action, BranchOnWinner):
         if not action.source_roulette_id:
             errors.append("source_roulette_id が未設定")
-        if not action.winner_text and action.match_mode != "numeric":
-            errors.append("winner_text が未設定")
-        if action.match_mode not in ("exact", "contains", "regex", "numeric"):
-            errors.append(f"match_mode が不正: {action.match_mode!r}")
-        if action.match_mode == "regex" and action.winner_text:
-            try:
-                re.compile(action.winner_text)
-            except re.error as e:
-                errors.append(f"winner_text が無効な正規表現: {e}")
-        if action.match_mode == "numeric":
-            valid_ops = ("==", "!=", ">", ">=", "<", "<=")
-            if action.numeric_operator not in valid_ops:
-                errors.append(f"numeric_operator が不正: {action.numeric_operator!r}")
-            if not action.numeric_value:
-                errors.append("numeric_value が未設定")
-            elif action.numeric_value:
-                try:
-                    float(action.numeric_value)
-                except ValueError:
-                    errors.append(f"numeric_value が数値でない: {action.numeric_value!r}")
+        # 第1条件
+        errors.extend(_validate_condition(
+            action.match_mode, action.winner_text,
+            action.numeric_operator, action.numeric_value, "cond1"))
+        # compound_logic
+        if action.compound_logic and action.compound_logic not in ("and", "or"):
+            errors.append(f"compound_logic が不正: {action.compound_logic!r}")
+        # 第2条件（compound 時のみ）
+        if action.compound_logic in ("and", "or"):
+            errors.extend(_validate_condition(
+                action.cond2_match_mode, action.cond2_winner_text,
+                action.cond2_numeric_operator, action.cond2_numeric_value, "cond2"))
         for i, a in enumerate(action.then_actions):
             for e in validate_action_for_save(a):
                 errors.append(f"then[{i}]: {e}")

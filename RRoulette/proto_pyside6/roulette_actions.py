@@ -121,6 +121,12 @@ class BranchOnWinner:
         regex_ignore_case: regex 時に大文字小文字を区別しない（デフォルト False）
         numeric_operator: numeric 時の比較演算子（"==" / "!=" / ">" / ">=" / "<" / "<="）
         numeric_value: numeric 時の比較値（文字列で保持し評価時に float 変換）
+        compound_logic: 複合条件の結合方式。""（単一条件）/ "and" / "or"
+        cond2_match_mode: 第2条件の比較方式
+        cond2_winner_text: 第2条件の比較テキスト
+        cond2_regex_ignore_case: 第2条件の regex ignore case
+        cond2_numeric_operator: 第2条件の numeric 演算子
+        cond2_numeric_value: 第2条件の numeric 比較値
         then_actions: 一致時に実行する action 列
         else_actions: 不一致時に実行する action 列
     """
@@ -130,6 +136,12 @@ class BranchOnWinner:
     regex_ignore_case: bool = False
     numeric_operator: str = "=="
     numeric_value: str = ""
+    compound_logic: str = ""
+    cond2_match_mode: str = "exact"
+    cond2_winner_text: str = ""
+    cond2_regex_ignore_case: bool = False
+    cond2_numeric_operator: str = "=="
+    cond2_numeric_value: str = ""
     then_actions: tuple = ()
     else_actions: tuple = ()
 
