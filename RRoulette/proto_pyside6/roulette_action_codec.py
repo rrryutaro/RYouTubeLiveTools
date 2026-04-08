@@ -173,7 +173,9 @@ def action_summary(action: RouletteAction) -> str:
     elif isinstance(action, BranchOnWinner):
         src = action.source_roulette_id or "(未設定)"
         mode = action.match_mode if action.match_mode != "exact" else ""
-        if mode == "regex" and action.regex_ignore_case:
+        if mode == "numeric":
+            mode_label = f" [numeric: {action.numeric_operator} {action.numeric_value}]"
+        elif mode == "regex" and action.regex_ignore_case:
             mode_label = " [regex/i]"
         elif mode:
             mode_label = f" [{mode}]"
@@ -204,15 +206,26 @@ def validate_action_for_save(action: RouletteAction) -> list[str]:
     if isinstance(action, BranchOnWinner):
         if not action.source_roulette_id:
             errors.append("source_roulette_id が未設定")
-        if not action.winner_text:
+        if not action.winner_text and action.match_mode != "numeric":
             errors.append("winner_text が未設定")
-        if action.match_mode not in ("exact", "contains", "regex"):
+        if action.match_mode not in ("exact", "contains", "regex", "numeric"):
             errors.append(f"match_mode が不正: {action.match_mode!r}")
         if action.match_mode == "regex" and action.winner_text:
             try:
                 re.compile(action.winner_text)
             except re.error as e:
                 errors.append(f"winner_text が無効な正規表現: {e}")
+        if action.match_mode == "numeric":
+            valid_ops = ("==", "!=", ">", ">=", "<", "<=")
+            if action.numeric_operator not in valid_ops:
+                errors.append(f"numeric_operator が不正: {action.numeric_operator!r}")
+            if not action.numeric_value:
+                errors.append("numeric_value が未設定")
+            elif action.numeric_value:
+                try:
+                    float(action.numeric_value)
+                except ValueError:
+                    errors.append(f"numeric_value が数値でない: {action.numeric_value!r}")
         for i, a in enumerate(action.then_actions):
             for e in validate_action_for_save(a):
                 errors.append(f"then[{i}]: {e}")

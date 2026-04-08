@@ -117,8 +117,10 @@ class BranchOnWinner:
     Attributes:
         source_roulette_id: 評価元の roulette ID（どの roulette の結果を見るか）
         winner_text: 比較する当選テキスト
-        match_mode: 比較方式。"exact"（完全一致）/ "contains"（部分一致）/ "regex"（正規表現）
+        match_mode: 比較方式。"exact" / "contains" / "regex" / "numeric"
         regex_ignore_case: regex 時に大文字小文字を区別しない（デフォルト False）
+        numeric_operator: numeric 時の比較演算子（"==" / "!=" / ">" / ">=" / "<" / "<="）
+        numeric_value: numeric 時の比較値（文字列で保持し評価時に float 変換）
         then_actions: 一致時に実行する action 列
         else_actions: 不一致時に実行する action 列
     """
@@ -126,6 +128,8 @@ class BranchOnWinner:
     winner_text: str = ""
     match_mode: str = "exact"
     regex_ignore_case: bool = False
+    numeric_operator: str = "=="
+    numeric_value: str = ""
     then_actions: tuple = ()
     else_actions: tuple = ()
 

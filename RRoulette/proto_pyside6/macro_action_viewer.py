@@ -247,6 +247,8 @@ class ActionEditDialog(QDialog):
                 winner_text=self._get_text("winner_text"),
                 match_mode=action.match_mode,
                 regex_ignore_case=action.regex_ignore_case,
+                numeric_operator=action.numeric_operator,
+                numeric_value=action.numeric_value,
                 then_actions=action.then_actions,
                 else_actions=action.else_actions,
             )
@@ -475,6 +477,7 @@ class BranchEditDialog(QDialog):
         self._mode_combo.addItem("完全一致 (exact)", "exact")
         self._mode_combo.addItem("部分一致 (contains)", "contains")
         self._mode_combo.addItem("正規表現 (regex)", "regex")
+        self._mode_combo.addItem("数値比較 (numeric)", "numeric")
         current_mode = action.match_mode or "exact"
         idx = self._mode_combo.findData(current_mode)
         if idx >= 0:
@@ -483,8 +486,21 @@ class BranchEditDialog(QDialog):
         self._ignore_case_cb = QCheckBox("大文字小文字を区別しない")
         self._ignore_case_cb.setChecked(action.regex_ignore_case)
         self._ignore_case_cb.setEnabled(current_mode == "regex")
-        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         form.addRow("regex option:", self._ignore_case_cb)
+        # numeric 用 UI
+        self._numeric_op_combo = QComboBox()
+        for op in ("==", "!=", ">", ">=", "<", "<="):
+            self._numeric_op_combo.addItem(op, op)
+        op_idx = self._numeric_op_combo.findData(action.numeric_operator or "==")
+        if op_idx >= 0:
+            self._numeric_op_combo.setCurrentIndex(op_idx)
+        self._numeric_op_combo.setEnabled(current_mode == "numeric")
+        form.addRow("numeric operator:", self._numeric_op_combo)
+        self._numeric_value_edit = QLineEdit(action.numeric_value)
+        self._numeric_value_edit.setPlaceholderText("比較値 (数値)")
+        self._numeric_value_edit.setEnabled(current_mode == "numeric")
+        form.addRow("numeric value:", self._numeric_value_edit)
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         layout.addLayout(form)
 
         # then / else パネル（横並び）
@@ -517,10 +533,14 @@ class BranchEditDialog(QDialog):
         return self._result
 
     def _on_mode_changed(self):
-        is_regex = self._mode_combo.currentData() == "regex"
+        current = self._mode_combo.currentData()
+        is_regex = current == "regex"
+        is_numeric = current == "numeric"
         self._ignore_case_cb.setEnabled(is_regex)
         if not is_regex:
             self._ignore_case_cb.setChecked(False)
+        self._numeric_op_combo.setEnabled(is_numeric)
+        self._numeric_value_edit.setEnabled(is_numeric)
 
     def _on_ok(self):
         self._result = BranchOnWinner(
@@ -528,6 +548,8 @@ class BranchEditDialog(QDialog):
             winner_text=self._winner_edit.text(),
             match_mode=self._mode_combo.currentData() or "exact",
             regex_ignore_case=self._ignore_case_cb.isChecked(),
+            numeric_operator=self._numeric_op_combo.currentData() or "==",
+            numeric_value=self._numeric_value_edit.text(),
             then_actions=self._then_panel.get_actions(),
             else_actions=self._else_panel.get_actions(),
         )
