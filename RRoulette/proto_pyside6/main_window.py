@@ -429,7 +429,7 @@ class MainWindow(QMainWindow):
             get_auto_advancing=lambda: self._macro_auto_advancing,
             parent=self,
         )
-        viewer.setWindowTitle(f"Macro Action Viewer (dev) — {source}: {len(actions)} actions")
+        viewer.setWindowTitle(f"マクロエディタ — {source}: {len(actions)} actions")
         self._macro_viewer = viewer
         viewer.exec()
         self._macro_viewer = None
@@ -1274,6 +1274,38 @@ class MainWindow(QMainWindow):
         aot_mark = "\u25cf" if s.always_on_top else "  "
         action = menu.addAction(f"{aot_mark} 常に最前面")
         action.triggered.connect(self._toggle_always_on_top)
+
+        menu.addSeparator()
+
+        # マクロ
+        macro_menu = menu.addMenu("  マクロ")
+        macro_menu.setStyleSheet(menu.styleSheet())
+
+        has_session = self._macro_session.total_count > 0
+        session_info = (f" [{self._macro_session.current_index}/"
+                        f"{self._macro_session.total_count}]") if has_session else ""
+
+        action = macro_menu.addAction(f"  エディタを開く{session_info}")
+        action.triggered.connect(self._dev_show_action_viewer)
+
+        macro_menu.addSeparator()
+
+        action = macro_menu.addAction("  ステップ実行")
+        action.triggered.connect(self._dev_step_action)
+        action.setEnabled(self._macro_session.has_next())
+
+        action = macro_menu.addAction("  連続実行")
+        action.triggered.connect(self._dev_run_until_pause)
+        action.setEnabled(self._macro_session.has_next())
+
+        action = macro_menu.addAction("  セッションクリア")
+        action.triggered.connect(self._dev_clear_session)
+        action.setEnabled(has_session)
+
+        macro_menu.addSeparator()
+
+        macro_menu.addAction("  保存...").triggered.connect(self._dev_save_recording)
+        macro_menu.addAction("  読込...").triggered.connect(self._dev_load_to_session)
 
         menu.addSeparator()
 

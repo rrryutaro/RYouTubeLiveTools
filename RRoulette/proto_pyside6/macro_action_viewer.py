@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QTextEdit,
     QLabel, QPushButton, QSplitter, QWidget,
     QMenu, QLineEdit, QCheckBox, QMessageBox,
-    QFileDialog, QComboBox,
+    QFileDialog, QComboBox, QGroupBox,
 )
 
 from roulette_actions import (
@@ -481,12 +481,29 @@ class BranchEditDialog(QDialog):
         type_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(type_label)
 
-        # source / winner フォーム
-        form = QFormLayout()
+        # source_roulette_id（条件共通）
+        source_form = QFormLayout()
         self._source_edit = QLineEdit(action.source_roulette_id)
-        form.addRow("source_roulette_id:", self._source_edit)
+        source_form.addRow("source_roulette_id:", self._source_edit)
+        layout.addLayout(source_form)
+
+        # --- 複合条件 選択 ---
+        logic_form = QFormLayout()
+        self._logic_combo = QComboBox()
+        self._logic_combo.addItem("単一条件", "")
+        self._logic_combo.addItem("AND（両方一致）", "and")
+        self._logic_combo.addItem("OR（いずれか一致）", "or")
+        logic_idx = self._logic_combo.findData(action.compound_logic or "")
+        if logic_idx >= 0:
+            self._logic_combo.setCurrentIndex(logic_idx)
+        logic_form.addRow("条件モード:", self._logic_combo)
+        layout.addLayout(logic_form)
+
+        # --- 条件1 グループ ---
+        cond1_group = QGroupBox("条件1")
+        cond1_form = QFormLayout(cond1_group)
         self._winner_edit = QLineEdit(action.winner_text)
-        form.addRow("winner_text:", self._winner_edit)
+        cond1_form.addRow("winner_text:", self._winner_edit)
         self._mode_combo = QComboBox()
         self._mode_combo.addItem("完全一致 (exact)", "exact")
         self._mode_combo.addItem("部分一致 (contains)", "contains")
@@ -496,12 +513,11 @@ class BranchEditDialog(QDialog):
         idx = self._mode_combo.findData(current_mode)
         if idx >= 0:
             self._mode_combo.setCurrentIndex(idx)
-        form.addRow("match_mode:", self._mode_combo)
+        cond1_form.addRow("match_mode:", self._mode_combo)
         self._ignore_case_cb = QCheckBox("大文字小文字を区別しない")
         self._ignore_case_cb.setChecked(action.regex_ignore_case)
         self._ignore_case_cb.setEnabled(current_mode == "regex")
-        form.addRow("regex option:", self._ignore_case_cb)
-        # numeric 用 UI
+        cond1_form.addRow("regex option:", self._ignore_case_cb)
         self._numeric_op_combo = QComboBox()
         for op in ("==", "!=", ">", ">=", "<", "<="):
             self._numeric_op_combo.addItem(op, op)
@@ -509,28 +525,19 @@ class BranchEditDialog(QDialog):
         if op_idx >= 0:
             self._numeric_op_combo.setCurrentIndex(op_idx)
         self._numeric_op_combo.setEnabled(current_mode == "numeric")
-        form.addRow("numeric operator:", self._numeric_op_combo)
+        cond1_form.addRow("numeric operator:", self._numeric_op_combo)
         self._numeric_value_edit = QLineEdit(action.numeric_value)
         self._numeric_value_edit.setPlaceholderText("比較値 (数値)")
         self._numeric_value_edit.setEnabled(current_mode == "numeric")
-        form.addRow("numeric value:", self._numeric_value_edit)
+        cond1_form.addRow("numeric value:", self._numeric_value_edit)
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addLayout(form)
+        layout.addWidget(cond1_group)
 
-        # --- compound logic ---
-        compound_form = QFormLayout()
-        self._logic_combo = QComboBox()
-        self._logic_combo.addItem("なし (単一条件)", "")
-        self._logic_combo.addItem("AND", "and")
-        self._logic_combo.addItem("OR", "or")
-        logic_idx = self._logic_combo.findData(action.compound_logic or "")
-        if logic_idx >= 0:
-            self._logic_combo.setCurrentIndex(logic_idx)
-        compound_form.addRow("複合条件:", self._logic_combo)
-
-        # 第2条件
+        # --- 条件2 グループ（複合条件時のみ表示） ---
+        self._cond2_group = QGroupBox("条件2")
+        cond2_form = QFormLayout(self._cond2_group)
         self._cond2_winner_edit = QLineEdit(action.cond2_winner_text)
-        compound_form.addRow("cond2 winner_text:", self._cond2_winner_edit)
+        cond2_form.addRow("winner_text:", self._cond2_winner_edit)
         self._cond2_mode_combo = QComboBox()
         self._cond2_mode_combo.addItem("完全一致 (exact)", "exact")
         self._cond2_mode_combo.addItem("部分一致 (contains)", "contains")
@@ -540,23 +547,23 @@ class BranchEditDialog(QDialog):
         c2_idx = self._cond2_mode_combo.findData(c2_mode)
         if c2_idx >= 0:
             self._cond2_mode_combo.setCurrentIndex(c2_idx)
-        compound_form.addRow("cond2 match_mode:", self._cond2_mode_combo)
+        cond2_form.addRow("match_mode:", self._cond2_mode_combo)
         self._cond2_ignore_case_cb = QCheckBox("大文字小文字を区別しない")
         self._cond2_ignore_case_cb.setChecked(action.cond2_regex_ignore_case)
-        compound_form.addRow("cond2 regex option:", self._cond2_ignore_case_cb)
+        cond2_form.addRow("regex option:", self._cond2_ignore_case_cb)
         self._cond2_numeric_op_combo = QComboBox()
         for op in ("==", "!=", ">", ">=", "<", "<="):
             self._cond2_numeric_op_combo.addItem(op, op)
         c2_op_idx = self._cond2_numeric_op_combo.findData(action.cond2_numeric_operator or "==")
         if c2_op_idx >= 0:
             self._cond2_numeric_op_combo.setCurrentIndex(c2_op_idx)
-        compound_form.addRow("cond2 numeric op:", self._cond2_numeric_op_combo)
+        cond2_form.addRow("numeric operator:", self._cond2_numeric_op_combo)
         self._cond2_numeric_value_edit = QLineEdit(action.cond2_numeric_value)
         self._cond2_numeric_value_edit.setPlaceholderText("比較値 (数値)")
-        compound_form.addRow("cond2 numeric value:", self._cond2_numeric_value_edit)
-        layout.addLayout(compound_form)
+        cond2_form.addRow("numeric value:", self._cond2_numeric_value_edit)
+        layout.addWidget(self._cond2_group)
 
-        # compound UI の有効/無効連動
+        # compound UI の表示/非表示連動
         self._logic_combo.currentIndexChanged.connect(self._on_logic_changed)
         self._cond2_mode_combo.currentIndexChanged.connect(self._on_cond2_mode_changed)
         self._on_logic_changed()
@@ -601,21 +608,16 @@ class BranchEditDialog(QDialog):
         self._numeric_value_edit.setEnabled(is_numeric)
 
     def _on_logic_changed(self):
-        enabled = self._logic_combo.currentData() in ("and", "or")
-        self._cond2_winner_edit.setEnabled(enabled)
-        self._cond2_mode_combo.setEnabled(enabled)
-        self._cond2_ignore_case_cb.setEnabled(enabled)
-        self._cond2_numeric_op_combo.setEnabled(enabled)
-        self._cond2_numeric_value_edit.setEnabled(enabled)
-        if enabled:
+        is_compound = self._logic_combo.currentData() in ("and", "or")
+        self._cond2_group.setVisible(is_compound)
+        if is_compound:
             self._on_cond2_mode_changed()
 
     def _on_cond2_mode_changed(self):
         c2_mode = self._cond2_mode_combo.currentData()
-        is_compound = self._logic_combo.currentData() in ("and", "or")
-        self._cond2_ignore_case_cb.setEnabled(is_compound and c2_mode == "regex")
-        self._cond2_numeric_op_combo.setEnabled(is_compound and c2_mode == "numeric")
-        self._cond2_numeric_value_edit.setEnabled(is_compound and c2_mode == "numeric")
+        self._cond2_ignore_case_cb.setEnabled(c2_mode == "regex")
+        self._cond2_numeric_op_combo.setEnabled(c2_mode == "numeric")
+        self._cond2_numeric_value_edit.setEnabled(c2_mode == "numeric")
 
     def _on_ok(self):
         self._result = BranchOnWinner(
@@ -667,7 +669,7 @@ class MacroActionViewer(QDialog):
             parent: 親ウィジェット。
         """
         super().__init__(parent)
-        self.setWindowTitle("Macro Action Viewer (dev)")
+        self.setWindowTitle("マクロエディタ")
         self.setMinimumSize(600, 400)
         self.resize(720, 480)
 
@@ -901,7 +903,7 @@ class MacroActionViewer(QDialog):
             return
 
         self._on_session_apply(list(self._actions))
-        self.setWindowTitle("Macro Action Viewer (dev) — session (反映済み)")
+        self.setWindowTitle("マクロエディタ — session (反映済み)")
         QMessageBox.information(
             self, "Session反映完了",
             f"{len(self._actions)} 件の action を session へ反映しました。",
@@ -918,7 +920,7 @@ class MacroActionViewer(QDialog):
         if not self._actions:
             return False
         self._on_session_apply(list(self._actions))
-        self.setWindowTitle("Macro Action Viewer (dev) — session (反映済み)")
+        self.setWindowTitle("マクロエディタ — session (反映済み)")
         self._update_execution_status()
         return True
 
@@ -1041,7 +1043,7 @@ class MacroActionViewer(QDialog):
         self._actions = actions
         import os
         filename = os.path.basename(path)
-        self.setWindowTitle(f"Macro Action Viewer (dev) — file: {filename}")
+        self.setWindowTitle(f"マクロエディタ — file: {filename}")
         self._refresh_after_change(select_row=0)
         QMessageBox.information(
             self, "読込完了",
