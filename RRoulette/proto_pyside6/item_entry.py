@@ -39,24 +39,31 @@ class ItemEntry:
     prob_value: float | None = None
 
     @classmethod
-    def from_config_entry(cls, entry) -> "ItemEntry | None":
+    def from_config_entry(cls, entry, *, keep_disabled: bool = False
+                          ) -> "ItemEntry | None":
         """config の項目エントリ（str or dict）から ItemEntry を構築する。
 
-        無効な項目（enabled=False / 空テキスト）は None を返す。
+        Args:
+            entry: config 内の項目（str or dict）
+            keep_disabled: True なら enabled=False の項目も返す（編集 UI 用）
+
+        無効な項目（空テキスト）は常に None を返す。
+        enabled=False は keep_disabled=False（デフォルト）のときのみ None を返す。
         """
         if isinstance(entry, str):
             if entry.strip():
                 return cls(text=entry)
             return None
         if isinstance(entry, dict):
-            if not entry.get("enabled", True):
+            enabled = entry.get("enabled", True)
+            if not enabled and not keep_disabled:
                 return None
             text = entry.get("text", "")
             if not text.strip():
                 return None
             return cls(
                 text=text,
-                enabled=True,
+                enabled=enabled,
                 split_count=entry.get("split_count", 1),
                 prob_mode=entry.get("prob_mode"),
                 prob_value=entry.get("prob_value"),

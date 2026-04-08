@@ -28,7 +28,8 @@ from PySide6.QtWidgets import QWidget
 
 # 既存ロジックは bridge 経由で import
 from bridge import (
-    MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG, DONUT_DRAW_RADIUS,
+    MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG,
+    DONUT_DRAW_RADIUS, DONUT_HIT_RADIUS,
     Segment, DesignSettings,
     build_all_sector_layouts, LayoutResult,
 )
@@ -143,6 +144,27 @@ class WheelWidget(QWidget):
         if idx < 0 or idx >= len(self._segments):
             return None
         return self._segments[idx].item_text
+
+    def wheel_hit(self, local_x: float, local_y: float) -> bool:
+        """ローカル座標がホイール円内かどうか。"""
+        return math.hypot(local_x - self._cx, local_y - self._cy) <= self._r
+
+    def hit_zone(self, local_x: float, local_y: float) -> str:
+        """ローカル座標のヒットゾーンを判定する。
+
+        Returns:
+            "pointer"    — ポインター上
+            "wheel_face" — 有効なホイール面（ドーナツ穴 ON 時はリング部分のみ）
+            "outside"    — ホイール外またはドーナツ穴内
+        """
+        if self.pointer_hit(local_x, local_y):
+            return "pointer"
+        dist = math.hypot(local_x - self._cx, local_y - self._cy)
+        if dist > self._r:
+            return "outside"
+        if self._donut_hole and dist < DONUT_HIT_RADIUS:
+            return "outside"
+        return "wheel_face"
 
     def pointer_hit(self, local_x: float, local_y: float) -> bool:
         """ローカル座標がポインター上かどうか（ヒット半径 26px）。"""

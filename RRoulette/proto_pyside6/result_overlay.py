@@ -60,6 +60,10 @@ class ResultOverlay(QLabel):
         self._close_mode: int = CLOSE_CLICK
         self._hold_sec: float = 5.0
 
+        # --- macro playback 用一時フラグ ---
+        self._force_auto_close: bool = False
+        self._force_hold_sec: float | None = None
+
         # --- 自動クローズタイマー ---
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
@@ -81,11 +85,15 @@ class ResultOverlay(QLabel):
     def dismiss(self):
         """overlay を確実に閉じる。タイマーも停止する。
 
-        spin 開始時に MainWindow から呼ばれ、残留を防止する。
+        spin 開始時に RoulettePanel から呼ばれ、残留を防止する。
+        パネル面クリックで閉じた場合も closed を emit する。
         """
         self._stop_auto_timer()
+        self._force_auto_close = False
+        self._force_hold_sec = None
         if self.isVisible():
             self.hide()
+            self.closed.emit()
 
     def set_close_mode(self, mode: int):
         """閉じ方モードを設定する。"""
@@ -94,6 +102,21 @@ class ResultOverlay(QLabel):
     def set_hold_sec(self, sec: float):
         """自動クローズまでの秒数を設定する。"""
         self._hold_sec = max(0.5, sec)
+
+    def set_force_auto_close(self, enabled: bool,
+                             hold_sec: float | None = None):
+        """次の show_result 1回分だけ自動クローズを強制する。
+
+        macro playback 中に close_mode が CLOSE_CLICK でも
+        hold_sec 後に自動で閉じるようにするための一時フラグ。
+        ユーザー設定の close_mode は変更しない。
+
+        Args:
+            enabled: 強制自動クローズを有効にするか
+            hold_sec: macro playback 用の hold 秒。None なら通常の hold_sec を使う。
+        """
+        self._force_auto_close = enabled
+        self._force_hold_sec = hold_sec
 
     def update_position(self):
         """親コンテナの中央にオーバーレイを配置する。"""
@@ -123,10 +146,13 @@ class ResultOverlay(QLabel):
     # ================================================================
 
     def _start_auto_timer_if_needed(self):
-        """close_mode に応じて自動クローズタイマーを開始する。"""
-        if self._close_mode in (CLOSE_AUTO, CLOSE_BOTH):
-            ms = int(self._hold_sec * 1000)
-            self._auto_timer.start(ms)
+        """close_mode または force_auto_close に応じて自動クローズタイマーを開始する。"""
+        if self._close_mode in (CLOSE_AUTO, CLOSE_BOTH) or self._force_auto_close:
+            if self._force_auto_close and self._force_hold_sec is not None:
+                sec = max(0.5, self._force_hold_sec)
+            else:
+                sec = self._hold_sec
+            self._auto_timer.start(int(sec * 1000))
 
     def _stop_auto_timer(self):
         """タイマーが動いていれば停止する。"""
@@ -135,6 +161,8 @@ class ResultOverlay(QLabel):
 
     def _on_auto_close(self):
         """タイマー満了時のハンドラ。"""
+        self._force_auto_close = False
+        self._force_hold_sec = None
         if self.isVisible():
             self.hide()
             self.closed.emit()
@@ -148,5 +176,7 @@ class ResultOverlay(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._close_mode in (CLOSE_CLICK, CLOSE_BOTH):
                 self._stop_auto_timer()
+                self._force_auto_close = False
+                self._force_hold_sec = None
                 self.hide()
                 self.closed.emit()

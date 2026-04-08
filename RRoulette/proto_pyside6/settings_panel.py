@@ -18,19 +18,19 @@ PySide6 プロトタイプ — 操作・設定パネル
     3. 結果表示 — 実装済み
 
   【項目データセクション】ItemEntry 側
-    4. 項目リスト — 実装済み（読み取り専用）
+    4. 項目リスト — 実装済み（編集可能）
     5. 確率変更 — プレースホルダー（項目データの編集）
     6. 分割 — プレースホルダー（項目データの編集）
     7. 配置 — プレースホルダー（項目データの編集）
     8. 常時ランダム — プレースホルダー（spin 前の配置制御）
 """
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtGui import QFont, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
-    QDoubleSpinBox,
+    QDoubleSpinBox, QLineEdit, QStackedWidget,
 )
 
 from bridge import (
@@ -60,6 +60,172 @@ class _SectionHeader(QLabel):
             f"padding: 4px 0 2px 0; "
             f"border-bottom: 1px solid {design.separator};"
         )
+
+
+class _PanelGrip(QWidget):
+    """パネル右下に配置するリサイズグリップ。
+
+    ドラッグで対象パネルのサイズを拡大・縮小する。
+    パネル幅は常に setFixedWidth で管理し、ウィンドウも連動リサイズする。
+
+    mode:
+      "panel" — 設定/項目パネル用。ドラッグでパネル幅を変え、ウィンドウ幅も連動。
+      "wheel" — ルーレット側用。ドラッグでウィンドウサイズを変える（パネル幅は保持）。
+    """
+
+    _GRIP_SIZE = 16
+
+    def __init__(self, target: QWidget, design, mode: str = "panel",
+                 min_w: int = 200, min_h: int = 200, parent=None):
+        super().__init__(parent or target)
+        self._target = target
+        self._design = design
+        self._mode = mode
+        self._min_w = min_w
+        self._min_h = min_h
+        self._dragging = False
+        self._drag_start = QPoint()
+        self._start_target_w = 0
+        self._start_target_h = 0
+        self._start_win_w = 0
+        self._start_win_h = 0
+        self.setFixedSize(self._GRIP_SIZE, self._GRIP_SIZE)
+        self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+        self.raise_()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(self._design.text_sub)
+        color.setAlpha(160)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        s = self._GRIP_SIZE
+        # 右下三角形パターン: 行が下がるほどドットが多い（右下方向を示唆）
+        for r in range(3):
+            for c in range(r + 1):
+                x = s - (r + 1 - c) * 5
+                y = s - (3 - r) * 5
+                p.drawEllipse(x, y, 3, 3)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._dragging = True
+        self._drag_start = event.globalPosition().toPoint()
+        self._start_target_w = self._target.width()
+        self._start_target_h = self._target.height()
+        win = self._target.window()
+        if win:
+            self._start_win_w = win.width()
+            self._start_win_h = win.height()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+        delta = event.globalPosition().toPoint() - self._drag_start
+        win = self._target.window()
+        if not win:
+            return
+
+        if self._mode == "panel":
+            # パネルのみリサイズ（位置固定、右下方向に拡縮）
+            new_w = max(self._min_w, self._start_target_w + delta.x())
+            new_h = max(self._min_h, self._start_target_h + delta.y())
+            parent = self._target.parentWidget()
+            if parent:
+                max_w = parent.width() - self._target.x()
+                max_h = parent.height() - self._target.y()
+                new_w = min(new_w, max_w)
+                new_h = min(new_h, max_h)
+            self._target.resize(new_w, new_h)
+        else:
+            # wheel 側: ウィンドウをリサイズ（パネル幅は保持）
+            new_win_w = max(win.minimumWidth(), self._start_win_w + delta.x())
+            new_win_h = max(win.minimumHeight(), self._start_win_h + delta.y())
+            win.resize(new_win_w, new_win_h)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            event.accept()
+
+    def update_design(self, design):
+        self._design = design
+        self.update()
+
+    def reposition(self):
+        """親ウィジェット右下に位置を合わせる。"""
+        parent = self.parentWidget()
+        if parent:
+            self.move(
+                parent.width() - self._GRIP_SIZE,
+                parent.height() - self._GRIP_SIZE,
+            )
+            self.raise_()
+
+
+class _PanelDragBar(QWidget):
+    """パネル上部のドラッグバー。ドラッグでパネルを親ウィジェット内で移動する。"""
+
+    _BAR_HEIGHT = 20
+
+    def __init__(self, target: QWidget, design: DesignSettings, parent=None):
+        super().__init__(parent or target)
+        self._target = target
+        self._design = design
+        self._dragging = False
+        self._drag_start = QPoint()
+        self._start_pos = QPoint()
+        self.setFixedHeight(self._BAR_HEIGHT)
+        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(self._design.separator))
+        # 中央にグリップパターンを描画
+        color = QColor(self._design.text_sub)
+        color.setAlpha(140)
+        p.setPen(color)
+        cx = self.width() // 2
+        cy = self._BAR_HEIGHT // 2
+        for i in range(-3, 4):
+            p.drawPoint(cx + i * 4, cy - 2)
+            p.drawPoint(cx + i * 4, cy + 2)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_start = event.globalPosition().toPoint()
+            self._start_pos = self._target.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+        delta = event.globalPosition().toPoint() - self._drag_start
+        new_pos = self._start_pos + delta
+        parent = self._target.parentWidget()
+        if parent:
+            min_visible = 60
+            new_x = max(-self._target.width() + min_visible,
+                        min(new_pos.x(), parent.width() - min_visible))
+            new_y = max(0, min(new_pos.y(), parent.height() - self._BAR_HEIGHT))
+            self._target.move(new_x, new_y)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            event.accept()
+
+    def update_design(self, design: DesignSettings):
+        self._design = design
+        self.update()
 
 
 class _PlaceholderSection(QFrame):
@@ -114,6 +280,7 @@ class SettingsPanel(QFrame):
     preset_changed = Signal(str)
     setting_changed = Signal(str, object)
     item_entries_changed = Signal(list)
+    geometry_changed = Signal()
 
     def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
                  design: DesignSettings, parent=None):
@@ -130,41 +297,65 @@ class SettingsPanel(QFrame):
         self._design = design
         self._settings = settings
         self._item_entries = item_entries
-        self.setFixedWidth(SIDEBAR_W)
         self.setStyleSheet(f"background-color: {design.panel};")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # スクロール領域
+        # ── 1つのスクロール領域にアプリ設定 + 項目リストを縦並び ──
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._apply_scroll_style(design)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._apply_scroll_style(self._scroll, design)
 
         self._content = QWidget()
-        self._content.setStyleSheet(f"background-color: {design.panel};")
+        self._content.setStyleSheet(
+            f"background-color: {design.panel};"
+        )
         self._layout = QVBoxLayout(self._content)
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(8)
 
-        # ── アプリ設定セクション（AppSettings 側） ──
+        # ── アプリ設定セクション ──
         self._build_spin_section(design)
         self._build_display_section(settings, design)
         self._build_result_section(settings, design)
         self._build_sound_section(settings, design)
 
-        # ── 項目データセクション（ItemEntry 側） ──
+        # ── 項目データセクション ──
         self._build_items_section(item_entries, design)
-
-        # ── 将来の項目編集セクション（ItemEntry 側の拡張） ──
         self._build_item_edit_sections(design)
 
         self._layout.addStretch()
 
         self._scroll.setWidget(self._content)
         outer.addWidget(self._scroll)
+
+        # ── 最小幅: contentsMargins + スクロールバー幅 + つまみ逃がし ──
+        scrollbar_w = self._scroll.verticalScrollBar().sizeHint().width()
+        content_margins = self._layout.contentsMargins()
+        margins_total = content_margins.left() + content_margins.right()
+        # SIDEBAR_W をベースに、スクロールバーとマージンを加味
+        self._panel_min_w = max(SIDEBAR_W, 200 + margins_total + scrollbar_w + 20)
+
+        # ── 右下リサイズグリップ（パネル幅変更用） ──
+        self._resize_grip = _PanelGrip(
+            self, design, mode="panel", min_w=self._panel_min_w, parent=self
+        )
+
+        # パネル最小幅
+        self.setMinimumWidth(self._panel_min_w)
+
+        # ── パネル前後関係 ──
+        self.pinned_front = False  # True: 通常パネルより常に上に表示
+
+        # ── パネルドラッグ状態 ──
+        self._dragging_panel = False
+        self._panel_drag_start = QPoint()
+        self._panel_start_pos = QPoint()
 
     # ================================================================
     #  セクション 1: スピン操作（実装済み）
@@ -402,6 +593,51 @@ class SettingsPanel(QFrame):
         sec_row.addWidget(self._result_sec_spin, stretch=1)
         self._layout.addLayout(sec_row)
 
+        # 再生時保持秒数（チェックボックスで通常保持の継承/個別設定を切替）
+        macro_cb_row = QHBoxLayout()
+        macro_cb_row.setSpacing(4)
+        self._macro_hold_cb = QCheckBox("マクロ再生時の保持を個別設定")
+        self._macro_hold_cb.setFont(QFont("Meiryo", 8))
+        self._macro_hold_cb.setStyleSheet(f"color: {design.text_sub};")
+        macro_cb_row.addWidget(self._macro_hold_cb)
+        self._layout.addLayout(macro_cb_row)
+
+        macro_sec_row = QHBoxLayout()
+        macro_sec_row.setSpacing(4)
+        self._macro_sec_lbl = QLabel("  マクロ時:")
+        self._macro_sec_lbl.setFont(QFont("Meiryo", 8))
+        self._macro_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
+        macro_sec_row.addWidget(self._macro_sec_lbl)
+
+        self._macro_sec_spin = QDoubleSpinBox()
+        self._macro_sec_spin.setFont(QFont("Meiryo", 8))
+        self._macro_sec_spin.setRange(0.5, 30.0)
+        self._macro_sec_spin.setSingleStep(0.5)
+        self._macro_sec_spin.setDecimals(1)
+        self._macro_sec_spin.setSuffix(" 秒")
+        self._macro_sec_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+
+        is_custom = settings.macro_hold_sec is not None
+        self._macro_hold_cb.setChecked(is_custom)
+        if is_custom:
+            self._macro_sec_spin.setValue(settings.macro_hold_sec)
+        else:
+            self._macro_sec_spin.setValue(settings.result_hold_sec)
+        self._macro_sec_spin.setEnabled(is_custom)
+        self._macro_sec_lbl.setEnabled(is_custom)
+
+        self._macro_hold_cb.toggled.connect(self._on_macro_hold_toggled)
+        self._macro_sec_spin.valueChanged.connect(self._on_macro_hold_value_changed)
+
+        macro_sec_row.addWidget(self._macro_sec_spin, stretch=1)
+        self._layout.addLayout(macro_sec_row)
+
         # 保持秒数の有効/無効を閉じ方モードに連動
         self._update_hold_sec_enabled()
 
@@ -415,6 +651,25 @@ class SettingsPanel(QFrame):
         mode = self._result_mode_combo.currentIndex()
         enabled = mode in (1, 2)  # 自動 or 両方
         self._result_sec_spin.setEnabled(enabled)
+
+    def _on_macro_hold_toggled(self, checked: bool):
+        """再生時保持の個別設定チェックボックス切替。"""
+        self._macro_sec_spin.setEnabled(checked)
+        self._macro_sec_lbl.setEnabled(checked)
+        if checked:
+            self.setting_changed.emit("macro_hold_sec",
+                                      self._macro_sec_spin.value())
+        else:
+            # 未設定に戻す: 表示を通常保持の現在値に追従させる
+            self._macro_sec_spin.blockSignals(True)
+            self._macro_sec_spin.setValue(self._result_sec_spin.value())
+            self._macro_sec_spin.blockSignals(False)
+            self.setting_changed.emit("macro_hold_sec", None)
+
+    def _on_macro_hold_value_changed(self, value: float):
+        """再生時保持のスピンボックス値変更。"""
+        if self._macro_hold_cb.isChecked():
+            self.setting_changed.emit("macro_hold_sec", value)
 
     # ================================================================
     #  セクション 3b: サウンド設定（AppSettings 側）
@@ -446,45 +701,449 @@ class SettingsPanel(QFrame):
         self._layout.addWidget(self._sound_result_cb)
 
     # ================================================================
-    #  セクション 4: 項目リスト（読み取り専用・ItemEntry 側）
+    #  セクション 4: 項目リスト（編集可能・ItemEntry 側）
     # ================================================================
 
     def _build_items_section(self, entries: list[ItemEntry],
                              design: DesignSettings):
         """項目データセクションを構築する。
 
-        ItemEntry リストから項目カードを生成。将来の項目編集 UI は
-        このセクション周辺に追加する想定。
+        各行: [有効CB] [テキスト入力] [▲] [▼] [×]
+        末尾に「＋追加」ボタン。
         """
         self._items_header = _SectionHeader("項目リスト", design)
         self._layout.addWidget(self._items_header)
 
-        self._item_labels: list[QLabel] = []
+        # 行ウィジェットを格納するコンテナ
+        self._item_rows_container = QWidget()
+        self._item_rows_layout = QVBoxLayout(self._item_rows_container)
+        self._item_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._item_rows_layout.setSpacing(2)
+        self._layout.addWidget(self._item_rows_container)
 
-        if not entries:
-            empty = QLabel("  （項目なし）")
-            empty.setFont(QFont("Meiryo", 9))
-            empty.setStyleSheet(f"color: {design.text_sub};")
-            self._layout.addWidget(empty)
-            self._item_labels.append(empty)
+        self._item_rows: list[QWidget] = []
+
+        for entry in entries:
+            self._add_item_row(entry, design)
+
+        # 追加ボタン
+        self._add_item_btn = QPushButton("＋ 追加")
+        self._add_item_btn.setFont(QFont("Meiryo", 8))
+        self._add_item_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._apply_add_btn_style(self._add_item_btn, design)
+        self._add_item_btn.clicked.connect(self._on_add_item)
+        self._layout.addWidget(self._add_item_btn)
+
+    # ── 確率変更ヘルパー ──
+
+    # 確率モードの UI 表示名と内部値の対応
+    _PROB_MODE_LABELS = ["変更なし", "重み係数", "固定確率"]
+    _PROB_MODE_VALUES = [None, "weight", "fixed"]
+
+    @staticmethod
+    def _build_weight_candidates(n: int) -> list[float]:
+        """重み係数の選択肢を生成する。
+
+        Args:
+            n: 現在の有効項目数
+
+        Returns:
+            [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, ..., n] の候補リスト
+        """
+        candidates = [0.25, 0.5, 0.75, 1.0]
+        v = 1.5
+        while v <= n:
+            candidates.append(v)
+            v += 0.5
+        return candidates
+
+    def _get_enabled_count(self) -> int:
+        """現在の有効項目数 N を返す。"""
+        return sum(1 for r in self._item_rows if r._cb.isChecked())
+
+    def _add_item_row(self, entry: ItemEntry, design: DesignSettings,
+                      index: int = -1) -> QWidget:
+        """1項目分の編集行を作成し、コンテナに追加する。
+
+        行構成（2段）:
+          上段: [CB] [テキスト] [▲] [▼] [×]
+          下段: [確率モード] [値ウィジェット（weight combo / fixed spin）]
+        """
+        row = QWidget()
+        outer_layout = QVBoxLayout(row)
+        outer_layout.setContentsMargins(0, 1, 0, 1)
+        outer_layout.setSpacing(1)
+
+        # ── 上段: テキスト + 操作ボタン ──
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(2)
+
+        # 有効/無効チェックボックス
+        cb = QCheckBox()
+        cb.setChecked(entry.enabled)
+        cb.setStyleSheet(f"color: {design.text};")
+        cb.toggled.connect(lambda _: self._on_item_toggled())
+        top_row.addWidget(cb)
+
+        # テキスト入力
+        edit = QLineEdit(entry.text)
+        edit.setFont(QFont("Meiryo", 8))
+        edit.setStyleSheet(
+            f"QLineEdit {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        edit.editingFinished.connect(self._on_item_text_edited)
+        top_row.addWidget(edit, stretch=1)
+
+        # ボタン共通スタイル
+        btn_font = QFont("Meiryo", 8)
+        btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 20px; max-width: 20px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+
+        # 上へ
+        up_btn = QPushButton("▲")
+        up_btn.setFont(btn_font)
+        up_btn.setStyleSheet(btn_style)
+        up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        up_btn.clicked.connect(lambda: self._on_move_item(row, -1))
+        top_row.addWidget(up_btn)
+
+        # 下へ
+        down_btn = QPushButton("▼")
+        down_btn.setFont(btn_font)
+        down_btn.setStyleSheet(btn_style)
+        down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        down_btn.clicked.connect(lambda: self._on_move_item(row, 1))
+        top_row.addWidget(down_btn)
+
+        # 削除
+        del_btn = QPushButton("×")
+        del_btn.setFont(btn_font)
+        del_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 20px; max-width: 20px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.clicked.connect(lambda: self._on_delete_item(row))
+        top_row.addWidget(del_btn)
+
+        outer_layout.addLayout(top_row)
+
+        # ── 下段: 確率変更 UI ──
+        prob_row = QHBoxLayout()
+        prob_row.setContentsMargins(20, 0, 0, 0)  # 左インデント
+        prob_row.setSpacing(4)
+
+        combo_style = (
+            f"QComboBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-size: 8pt;"
+            f"}}"
+            f"QComboBox::drop-down {{ border: none; width: 14px; }}"
+            f"QComboBox QAbstractItemView {{"
+            f"  background-color: {design.panel}; color: {design.text};"
+            f"  selection-background-color: {design.separator};"
+            f"  selection-color: {design.text};"
+            f"  border: 1px solid {design.separator};"
+            f"}}"
+        )
+
+        # 確率モード選択
+        mode_combo = QComboBox()
+        mode_combo.setFont(QFont("Meiryo", 7))
+        mode_combo.setStyleSheet(combo_style)
+        for label in self._PROB_MODE_LABELS:
+            mode_combo.addItem(label)
+        prob_row.addWidget(mode_combo)
+
+        # 値ウィジェット（QStackedWidget で切替）
+        value_stack = QStackedWidget()
+
+        # page 0: 変更なし — 空ラベル
+        empty_label = QLabel("")
+        value_stack.addWidget(empty_label)
+
+        # page 1: 重み係数 — QComboBox
+        n = self._get_enabled_count() if self._item_rows else max(1, len(self._item_entries))
+        weight_combo = QComboBox()
+        weight_combo.setFont(QFont("Meiryo", 7))
+        weight_combo.setStyleSheet(combo_style)
+        self._populate_weight_combo(weight_combo, n)
+        weight_combo.currentIndexChanged.connect(
+            lambda _: self._on_prob_value_changed()
+        )
+        value_stack.addWidget(weight_combo)
+
+        # page 2: 固定確率 — QDoubleSpinBox
+        fixed_spin = QDoubleSpinBox()
+        fixed_spin.setFont(QFont("Meiryo", 7))
+        fixed_spin.setRange(0.1, 99.9)
+        fixed_spin.setSingleStep(0.5)
+        fixed_spin.setDecimals(1)
+        fixed_spin.setSuffix(" %")
+        fixed_spin.setValue(10.0)
+        fixed_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-size: 8pt;"
+            f"}}"
+        )
+        fixed_spin.editingFinished.connect(self._on_prob_value_changed)
+        value_stack.addWidget(fixed_spin)
+
+        prob_row.addWidget(value_stack, stretch=1)
+        outer_layout.addLayout(prob_row)
+
+        # モード切替で表示切替
+        mode_combo.currentIndexChanged.connect(
+            lambda idx: self._on_prob_mode_changed(row, idx)
+        )
+
+        # 行にウィジェット参照を保持
+        row._cb = cb
+        row._edit = edit
+        row._mode_combo = mode_combo
+        row._value_stack = value_stack
+        row._weight_combo = weight_combo
+        row._fixed_spin = fixed_spin
+
+        # 既存データから確率モード/値を復元
+        self._restore_prob_ui(row, entry)
+
+        if index < 0:
+            self._item_rows_layout.addWidget(row)
+            self._item_rows.append(row)
+        else:
+            self._item_rows_layout.insertWidget(index, row)
+            self._item_rows.insert(index, row)
+
+        return row
+
+    @staticmethod
+    def _populate_weight_combo(combo: QComboBox, n: int):
+        """重み係数 QComboBox の選択肢を N に基づいて再構築する。"""
+        combo.blockSignals(True)
+        current_text = combo.currentText()
+        combo.clear()
+        candidates = SettingsPanel._build_weight_candidates(n)
+        for v in candidates:
+            combo.addItem(f"×{v:g}", v)
+        # 以前の選択を復元（可能なら）
+        for i in range(combo.count()):
+            if combo.itemText(i) == current_text:
+                combo.setCurrentIndex(i)
+                break
+        combo.blockSignals(False)
+
+    def _restore_prob_ui(self, row: QWidget, entry: ItemEntry):
+        """ItemEntry の prob_mode/prob_value から UI を復元する。"""
+        if entry.prob_mode == "weight":
+            row._mode_combo.setCurrentIndex(1)  # 重み係数
+            row._value_stack.setCurrentIndex(1)
+            # 値を weight_combo から探す
+            val = entry.prob_value if entry.prob_value is not None else 1.0
+            for i in range(row._weight_combo.count()):
+                if abs(row._weight_combo.itemData(i) - val) < 0.001:
+                    row._weight_combo.setCurrentIndex(i)
+                    break
+        elif entry.prob_mode == "fixed":
+            row._mode_combo.setCurrentIndex(2)  # 固定確率
+            row._value_stack.setCurrentIndex(2)
+            val = entry.prob_value if entry.prob_value is not None else 10.0
+            val = max(0.1, min(99.9, val))
+            row._fixed_spin.setValue(val)
+        else:
+            row._mode_combo.setCurrentIndex(0)  # 変更なし
+            row._value_stack.setCurrentIndex(0)
+
+    def _on_prob_mode_changed(self, row: QWidget, idx: int):
+        """確率モード切替時: 表示切替 + 通知。"""
+        row._value_stack.setCurrentIndex(idx)
+        self._emit_entries_changed()
+
+    def _refresh_all_weight_combos(self):
+        """全行の重み係数候補を現在の N に基づいて再構築する。
+
+        N が変わると上限が変わるため、全行を更新する。
+        保持していた値が新 N では上限超過の場合、最大値にクランプする。
+        """
+        n = self._get_enabled_count()
+        n = max(n, 1)
+        for row in self._item_rows:
+            combo = row._weight_combo
+            # 現在の値を保持
+            old_idx = combo.currentIndex()
+            old_val = combo.itemData(old_idx) if old_idx >= 0 else 1.0
+            self._populate_weight_combo(combo, n)
+            # 旧値を復元（上限超過はクランプ）
+            best_idx = 0
+            for i in range(combo.count()):
+                if combo.itemData(i) is not None and combo.itemData(i) <= old_val:
+                    best_idx = i
+            combo.setCurrentIndex(best_idx)
+
+    def _on_prob_value_changed(self):
+        """確率値変更時: 通知。"""
+        self._emit_entries_changed()
+
+    def _collect_entries(self) -> list[ItemEntry]:
+        """現在の UI 行から ItemEntry リストを収集する。"""
+        entries = []
+        for row in self._item_rows:
+            text = row._edit.text().strip()
+            if not text:
+                continue
+            mode_idx = row._mode_combo.currentIndex()
+            prob_mode = self._PROB_MODE_VALUES[mode_idx]
+            prob_value = None
+            if prob_mode == "weight":
+                idx = row._weight_combo.currentIndex()
+                if idx >= 0:
+                    prob_value = row._weight_combo.itemData(idx)
+            elif prob_mode == "fixed":
+                prob_value = row._fixed_spin.value()
+            entries.append(ItemEntry(
+                text=text,
+                enabled=row._cb.isChecked(),
+                prob_mode=prob_mode,
+                prob_value=prob_value,
+            ))
+        return entries
+
+    def _emit_entries_changed(self):
+        """項目変更を通知する。"""
+        self._item_entries = self._collect_entries()
+        self.item_entries_changed.emit(list(self._item_entries))
+
+    def _on_add_item(self):
+        """追加ボタン押下: 新しい空行を追加する。"""
+        entry = ItemEntry(text="新しい項目", enabled=True)
+        self._add_item_row(entry, self._design)
+        self._refresh_all_weight_combos()
+        self._emit_entries_changed()
+
+    def _on_delete_item(self, row: QWidget):
+        """削除ボタン押下: 指定行を削除する。"""
+        if row in self._item_rows:
+            self._item_rows.remove(row)
+            self._item_rows_layout.removeWidget(row)
+            row.deleteLater()
+            self._refresh_all_weight_combos()
+            self._emit_entries_changed()
+
+    def _on_move_item(self, row: QWidget, direction: int):
+        """上下ボタン押下: 指定行を移動する。"""
+        if row not in self._item_rows:
             return
+        idx = self._item_rows.index(row)
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(self._item_rows):
+            return
+        # リストの入れ替え
+        self._item_rows[idx], self._item_rows[new_idx] = (
+            self._item_rows[new_idx], self._item_rows[idx]
+        )
+        # レイアウトから一旦除去して再挿入
+        self._item_rows_layout.removeWidget(row)
+        self._item_rows_layout.insertWidget(new_idx, row)
+        self._emit_entries_changed()
 
-        for entry in entries[:20]:
-            card = QLabel(f"  {entry.text}")
-            card.setFont(QFont("Meiryo", 9))
-            card.setStyleSheet(
-                f"color: {design.text}; background-color: {design.separator}; "
-                f"padding: 5px; border-radius: 3px;"
-            )
-            self._layout.addWidget(card)
-            self._item_labels.append(card)
+    def _on_item_toggled(self):
+        """有効/無効チェックボックス変更時。N 変化に伴い重み候補を再構築。"""
+        self._refresh_all_weight_combos()
+        self._emit_entries_changed()
 
-        if len(entries) > 20:
-            more = QLabel(f"  ... 他 {len(entries) - 20} 件")
-            more.setFont(QFont("Meiryo", 8))
-            more.setStyleSheet(f"color: {design.text_sub};")
-            self._layout.addWidget(more)
-            self._item_labels.append(more)
+    def _on_item_text_edited(self):
+        """テキスト編集完了（editingFinished）時。"""
+        self._emit_entries_changed()
+
+    @staticmethod
+    def _apply_add_btn_style(btn: QPushButton, design):
+        btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+
+    def _update_item_rows_design(self, design: DesignSettings):
+        """項目編集行のデザインを更新する。"""
+        edit_style = (
+            f"QLineEdit {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 20px; max-width: 20px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        del_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 20px; max-width: 20px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        combo_style = (
+            f"QComboBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-size: 8pt;"
+            f"}}"
+            f"QComboBox::drop-down {{ border: none; width: 14px; }}"
+            f"QComboBox QAbstractItemView {{"
+            f"  background-color: {design.panel}; color: {design.text};"
+            f"  selection-background-color: {design.separator};"
+            f"  selection-color: {design.text};"
+            f"  border: 1px solid {design.separator};"
+            f"}}"
+        )
+        spin_style = (
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-size: 8pt;"
+            f"}}"
+        )
+        for row in self._item_rows:
+            row._cb.setStyleSheet(f"color: {design.text};")
+            row._edit.setStyleSheet(edit_style)
+            # 上段のボタン（上段レイアウトの index 2,3,4）
+            top_layout = row.layout().itemAt(0).layout()
+            for i in range(2, 5):
+                btn = top_layout.itemAt(i).widget()
+                if i == 4:  # 削除ボタン
+                    btn.setStyleSheet(del_btn_style)
+                else:
+                    btn.setStyleSheet(btn_style)
+            # 確率 UI
+            row._mode_combo.setStyleSheet(combo_style)
+            row._weight_combo.setStyleSheet(combo_style)
+            row._fixed_spin.setStyleSheet(spin_style)
 
     # ================================================================
     #  セクション 5-8: 項目編集系（ItemEntry 側の将来拡張）
@@ -507,11 +1166,13 @@ class SettingsPanel(QFrame):
     # ================================================================
 
     def _build_item_edit_sections(self, design: DesignSettings):
-        """項目データに関する将来の編集セクション（プレースホルダー）。"""
+        """項目データに関する将来の編集セクション（プレースホルダー）。
+
+        確率変更は各項目行に統合済み（i079）。
+        """
         self._item_edit_sections: list[_PlaceholderSection] = []
 
         sections = [
-            ("確率変更", "各項目の当選確率を変更（未実装）"),
             ("分割", "項目の分割数を変更（未実装）"),
             ("配置", "segment の並び順を変更（未実装）"),
             ("常時ランダム", "spin ごとに配置をランダム化（未実装）"),
@@ -525,12 +1186,16 @@ class SettingsPanel(QFrame):
     #  内部ヘルパー
     # ================================================================
 
-    def _apply_scroll_style(self, design: DesignSettings):
-        self._scroll.setStyleSheet(
+    @staticmethod
+    def _apply_scroll_style(scroll: QScrollArea, design: DesignSettings):
+        scroll.setStyleSheet(
             f"QScrollArea {{ border: none; background-color: {design.panel}; }}"
             f"QScrollBar:vertical {{ width: 6px; background: {design.panel}; }}"
             f"QScrollBar::handle:vertical {{ background: {design.separator}; border-radius: 3px; }}"
+            f"QScrollBar:horizontal {{ height: 6px; background: {design.panel}; }}"
+            f"QScrollBar::handle:horizontal {{ background: {design.separator}; border-radius: 3px; }}"
         )
+
 
     def _apply_spin_btn_style(self, design: DesignSettings):
         self._spin_btn.setStyleSheet(
@@ -562,6 +1227,75 @@ class SettingsPanel(QFrame):
     # ================================================================
     #  公開 API
     # ================================================================
+
+    def mousePressEvent(self, event):
+        """空きクライアント領域ドラッグでパネル移動。クリックで最前面へ。"""
+        self.raise_()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging_panel = True
+            self._panel_drag_start = event.globalPosition().toPoint()
+            self._panel_start_pos = self.pos()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, '_dragging_panel', False):
+            delta = event.globalPosition().toPoint() - self._panel_drag_start
+            new_pos = self._panel_start_pos + delta
+            parent = self.parentWidget()
+            if parent:
+                new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
+                new_y = max(0, min(new_pos.y(), parent.height() - self.height()))
+                self.move(new_x, new_y)
+            event.accept()
+            return
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging_panel = False
+        event.accept()
+
+    def moveEvent(self, event):
+        """パネル移動時に通知する。"""
+        super().moveEvent(event)
+        self.geometry_changed.emit()
+
+    def resizeEvent(self, event):
+        """リサイズグリップを右下に追従させる。"""
+        super().resizeEvent(event)
+        self._resize_grip.reposition()
+        self._clamp_to_parent()
+        self.geometry_changed.emit()
+
+    def _clamp_to_parent(self):
+        """パネルをメインウィンドウ内にクランプする。"""
+        parent = self.parentWidget()
+        if not parent:
+            return
+        x = max(0, min(self.x(), parent.width() - self.width()))
+        y = max(0, min(self.y(), parent.height() - self.height()))
+        if x != self.x() or y != self.y():
+            self.move(x, y)
+
+    def set_active_entries(self, entries: list[ItemEntry]):
+        """アクティブなルーレットの項目データを差し替える。
+
+        将来のマルチルーレット切替時に、編集対象の item_entries を
+        外部から一括で入れ替えるための入口。
+        既存の項目行 UI を全て再構築する。
+        """
+        # 既存行を全て削除
+        for row in list(self._item_rows):
+            self._item_rows_layout.removeWidget(row)
+            row.deleteLater()
+        self._item_rows.clear()
+
+        # 新しいエントリで行を再構築
+        self._item_entries = entries
+        for entry in entries:
+            self._add_item_row(entry, self._design)
+
+        self._refresh_all_weight_combos()
 
     def set_spinning(self, spinning: bool):
         """spin 状態に応じてボタンを有効/無効にする。"""
@@ -610,6 +1344,22 @@ class SettingsPanel(QFrame):
             self._result_sec_spin.blockSignals(True)
             self._result_sec_spin.setValue(value)
             self._result_sec_spin.blockSignals(False)
+            # 未設定時は再生時保持表示を通常保持に追従させる
+            if not self._macro_hold_cb.isChecked():
+                self._macro_sec_spin.blockSignals(True)
+                self._macro_sec_spin.setValue(value)
+                self._macro_sec_spin.blockSignals(False)
+        elif key == "macro_hold_sec":
+            is_custom = value is not None
+            self._macro_hold_cb.blockSignals(True)
+            self._macro_hold_cb.setChecked(is_custom)
+            self._macro_hold_cb.blockSignals(False)
+            self._macro_sec_spin.blockSignals(True)
+            if is_custom:
+                self._macro_sec_spin.setValue(value)
+            self._macro_sec_spin.setEnabled(is_custom)
+            self._macro_sec_lbl.setEnabled(is_custom)
+            self._macro_sec_spin.blockSignals(False)
         elif key == "sound_tick_enabled":
             self._sound_tick_cb.blockSignals(True)
             self._sound_tick_cb.setChecked(value)
@@ -624,7 +1374,8 @@ class SettingsPanel(QFrame):
         self._design = design
         self.setStyleSheet(f"background-color: {design.panel};")
         self._content.setStyleSheet(f"background-color: {design.panel};")
-        self._apply_scroll_style(design)
+        self._apply_scroll_style(self._scroll, design)
+        self._resize_grip.update_design(design)
         self._apply_combo_style(self._preset_combo, design)
         self._apply_combo_style(self._text_mode_combo, design)
         self._apply_combo_style(self._prof_combo, design)
@@ -660,15 +1411,9 @@ class SettingsPanel(QFrame):
             f"}}"
         )
 
-        # 項目カード
-        for lbl in self._item_labels:
-            if lbl.text().startswith("  （") or lbl.text().startswith("  ..."):
-                lbl.setStyleSheet(f"color: {design.text_sub};")
-            else:
-                lbl.setStyleSheet(
-                    f"color: {design.text}; background-color: {design.separator}; "
-                    f"padding: 5px; border-radius: 3px;"
-                )
+        # 項目編集行
+        self._update_item_rows_design(design)
+        self._apply_add_btn_style(self._add_item_btn, design)
 
         # 項目編集プレースホルダーセクション
         for section in self._item_edit_sections:

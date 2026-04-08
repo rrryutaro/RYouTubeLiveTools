@@ -213,6 +213,22 @@ def load_item_entries(config: dict | None = None) -> list[ItemEntry]:
     return entries
 
 
+def load_all_item_entries(config: dict | None = None) -> list[ItemEntry]:
+    """設定辞書から全項目エントリ（disabled 含む）を返す。
+
+    編集 UI 用。enabled=False の項目も含めて返す。
+    """
+    if config is None:
+        config = load_config()
+    raw_items = _get_current_pattern_items(config)
+    entries = []
+    for raw in raw_items:
+        item = ItemEntry.from_config_entry(raw, keep_disabled=True)
+        if item is not None:
+            entries.append(item)
+    return entries
+
+
 def load_weights_from_config(config: dict | None = None) -> list[float]:
     """設定辞書から項目の重み（split_count ベース）を取得する。"""
     if config is None:
@@ -227,6 +243,53 @@ def load_weights_from_config(config: dict | None = None) -> list[float]:
             else:
                 weights.append(1.0)
     return weights
+
+
+def build_segments_from_entries(
+    entries: list[ItemEntry], config: dict | None = None
+) -> tuple[list[Segment], list[str]]:
+    """ItemEntry リストからセグメントを構築する。
+
+    編集 UI から渡された entries を直接使用する。
+    enabled=True の項目のみ対象。config は arrangement_direction の参照用。
+    """
+    if config is None:
+        config = {}
+    # entries → raw dict リスト（enabled のみ）に変換して既存ロジックを流用
+    raw_entries = [e.to_dict() for e in entries if e.enabled]
+    if not raw_entries:
+        return [], []
+
+    # _calc_probs → _apply_split → _standard_order → segments
+    probs = _calc_probs(raw_entries)
+    entries_with_probs = [
+        (raw_entries[j], j, probs[j]) for j in range(len(raw_entries))
+    ]
+    raw_segs = _apply_split(entries_with_probs)
+    ordered = _standard_order(raw_segs)
+
+    if ordered:
+        first_item_idx = min(idx for _, idx, _ in ordered)
+        pivot = next(
+            (i for i, (_, idx, _) in enumerate(ordered) if idx == first_item_idx),
+            0,
+        )
+        if pivot > 0:
+            ordered = ordered[pivot:] + ordered[:pivot]
+
+    arrangement_direction = config.get("arrangement_direction", 0)
+    if arrangement_direction == 0:
+        ordered = list(reversed(ordered))
+
+    segments = []
+    angle = 0.0
+    for text, idx, arc in ordered:
+        seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle)
+        segments.append(seg)
+        angle += arc
+
+    items = [seg.item_text for seg in segments]
+    return segments, items
 
 
 def build_segments_from_config(config: dict | None = None) -> tuple[list[Segment], list[str]]:
