@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QTextEdit,
     QLabel, QPushButton, QSplitter, QWidget,
     QMenu, QLineEdit, QCheckBox, QMessageBox,
-    QFileDialog,
+    QFileDialog, QComboBox,
 )
 
 from roulette_actions import (
@@ -245,6 +245,7 @@ class ActionEditDialog(QDialog):
             return BranchOnWinner(
                 source_roulette_id=self._get_text("source_roulette_id"),
                 winner_text=self._get_text("winner_text"),
+                match_mode=action.match_mode,
                 then_actions=action.then_actions,
                 else_actions=action.else_actions,
             )
@@ -469,6 +470,14 @@ class BranchEditDialog(QDialog):
         form.addRow("source_roulette_id:", self._source_edit)
         self._winner_edit = QLineEdit(action.winner_text)
         form.addRow("winner_text:", self._winner_edit)
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("完全一致 (exact)", "exact")
+        self._mode_combo.addItem("部分一致 (contains)", "contains")
+        current_mode = action.match_mode or "exact"
+        idx = self._mode_combo.findData(current_mode)
+        if idx >= 0:
+            self._mode_combo.setCurrentIndex(idx)
+        form.addRow("match_mode:", self._mode_combo)
         layout.addLayout(form)
 
         # then / else パネル（横並び）
@@ -504,6 +513,7 @@ class BranchEditDialog(QDialog):
         self._result = BranchOnWinner(
             source_roulette_id=self._source_edit.text(),
             winner_text=self._winner_edit.text(),
+            match_mode=self._mode_combo.currentData() or "exact",
             then_actions=self._then_panel.get_actions(),
             else_actions=self._else_panel.get_actions(),
         )

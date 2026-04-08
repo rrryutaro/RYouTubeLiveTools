@@ -171,8 +171,10 @@ def action_summary(action: RouletteAction) -> str:
         return f"設定変更: {action.key} = {action.value}"
     elif isinstance(action, BranchOnWinner):
         src = action.source_roulette_id or "(未設定)"
+        mode = action.match_mode if action.match_mode != "exact" else ""
+        mode_label = f" [{mode}]" if mode else ""
         return (f"分岐: source={src} "
-                f"winner='{action.winner_text}' "
+                f"winner='{action.winner_text}'{mode_label} "
                 f"→ then:{len(action.then_actions)} / else:{len(action.else_actions)}")
     return f"(unknown: {type(action).__name__})"
 
@@ -198,6 +200,8 @@ def validate_action_for_save(action: RouletteAction) -> list[str]:
             errors.append("source_roulette_id が未設定")
         if not action.winner_text:
             errors.append("winner_text が未設定")
+        if action.match_mode not in ("exact", "contains"):
+            errors.append(f"match_mode が不正: {action.match_mode!r}")
         for i, a in enumerate(action.then_actions):
             for e in validate_action_for_save(a):
                 errors.append(f"then[{i}]: {e}")

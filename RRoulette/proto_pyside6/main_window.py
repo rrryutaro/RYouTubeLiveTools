@@ -539,7 +539,14 @@ class MainWindow(QMainWindow):
                   f"result='{result.roulette_id}' vs source='{branch.source_roulette_id}'")
             return False
 
-        if result.winner_text == branch.winner_text:
+        # match_mode に応じた条件判定
+        mode = branch.match_mode or "exact"
+        if mode == "contains":
+            matched = branch.winner_text in result.winner_text
+        else:
+            matched = result.winner_text == branch.winner_text
+
+        if matched:
             chosen = branch.then_actions
             label = "then"
         else:
@@ -548,7 +555,7 @@ class MainWindow(QMainWindow):
 
         print(f"[dev] branch: source='{branch.source_roulette_id}' "
               f"winner='{result.winner_text}' vs condition='{branch.winner_text}' "
-              f"→ {label} ({len(chosen)} actions)")
+              f"mode={mode} → {label} ({len(chosen)} actions)")
 
         if chosen:
             self._macro_session.insert_actions(chosen)

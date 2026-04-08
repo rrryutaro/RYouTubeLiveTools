@@ -109,19 +109,21 @@ class BranchOnWinner:
     """直前 spin の当選結果で分岐する。
 
     source_roulette_id で指定した roulette の直前結果に対して、
-    winner_text の完全一致で判定する。
+    match_mode に従い winner_text と比較する。
     一致時は then_actions、不一致時は else_actions へ進む。
 
     評価元 roulette_id が未設定または不一致の場合は安全側停止する。
 
     Attributes:
         source_roulette_id: 評価元の roulette ID（どの roulette の結果を見るか）
-        winner_text: 完全一致で比較する当選テキスト
+        winner_text: 比較する当選テキスト
+        match_mode: 比較方式。"exact"（完全一致）または "contains"（部分一致）
         then_actions: 一致時に実行する action 列
         else_actions: 不一致時に実行する action 列
     """
     source_roulette_id: str = ""
     winner_text: str = ""
+    match_mode: str = "exact"
     then_actions: tuple = ()
     else_actions: tuple = ()
 
