@@ -246,6 +246,7 @@ class ActionEditDialog(QDialog):
                 source_roulette_id=self._get_text("source_roulette_id"),
                 winner_text=self._get_text("winner_text"),
                 match_mode=action.match_mode,
+                regex_ignore_case=action.regex_ignore_case,
                 then_actions=action.then_actions,
                 else_actions=action.else_actions,
             )
@@ -473,11 +474,17 @@ class BranchEditDialog(QDialog):
         self._mode_combo = QComboBox()
         self._mode_combo.addItem("完全一致 (exact)", "exact")
         self._mode_combo.addItem("部分一致 (contains)", "contains")
+        self._mode_combo.addItem("正規表現 (regex)", "regex")
         current_mode = action.match_mode or "exact"
         idx = self._mode_combo.findData(current_mode)
         if idx >= 0:
             self._mode_combo.setCurrentIndex(idx)
         form.addRow("match_mode:", self._mode_combo)
+        self._ignore_case_cb = QCheckBox("大文字小文字を区別しない")
+        self._ignore_case_cb.setChecked(action.regex_ignore_case)
+        self._ignore_case_cb.setEnabled(current_mode == "regex")
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        form.addRow("regex option:", self._ignore_case_cb)
         layout.addLayout(form)
 
         # then / else パネル（横並び）
@@ -509,11 +516,18 @@ class BranchEditDialog(QDialog):
     def result_action(self) -> BranchOnWinner | None:
         return self._result
 
+    def _on_mode_changed(self):
+        is_regex = self._mode_combo.currentData() == "regex"
+        self._ignore_case_cb.setEnabled(is_regex)
+        if not is_regex:
+            self._ignore_case_cb.setChecked(False)
+
     def _on_ok(self):
         self._result = BranchOnWinner(
             source_roulette_id=self._source_edit.text(),
             winner_text=self._winner_edit.text(),
             match_mode=self._mode_combo.currentData() or "exact",
+            regex_ignore_case=self._ignore_case_cb.isChecked(),
             then_actions=self._then_panel.get_actions(),
             else_actions=self._else_panel.get_actions(),
         )

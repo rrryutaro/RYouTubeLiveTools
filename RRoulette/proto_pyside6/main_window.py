@@ -21,6 +21,8 @@ PySide6 プロトタイプ — メインウィンドウ
   メインウィンドウは透過最大化してパネルをディスプレイ内に自由配置する。
 """
 
+import re
+
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect
 from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import (
@@ -541,7 +543,14 @@ class MainWindow(QMainWindow):
 
         # match_mode に応じた条件判定
         mode = branch.match_mode or "exact"
-        if mode == "contains":
+        if mode == "regex":
+            try:
+                flags = re.IGNORECASE if branch.regex_ignore_case else 0
+                matched = bool(re.search(branch.winner_text, result.winner_text, flags))
+            except re.error:
+                print(f"[dev] branch: STOPPED — invalid regex: {branch.winner_text!r}")
+                return False
+        elif mode == "contains":
             matched = branch.winner_text in result.winner_text
         else:
             matched = result.winner_text == branch.winner_text
