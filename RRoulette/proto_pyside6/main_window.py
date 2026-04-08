@@ -441,6 +441,23 @@ class MainWindow(QMainWindow):
         self._macro_viewer = None
         self._update_title_active_id()
 
+    def _show_recording_preview(self):
+        """記録中のアクション一覧をプレビュー表示する。"""
+        from macro_action_viewer import MacroActionViewer
+
+        actions = self._recorder.snapshot()
+        if not actions:
+            return
+
+        viewer = MacroActionViewer(
+            actions,
+            active_roulette_id=self._manager.active_id,
+            parent=self,
+        )
+        rec_status = "記録中" if self._recorder.is_recording else "記録済み"
+        viewer.setWindowTitle(f"マクロエディタ — {rec_status}: {len(actions)} actions")
+        viewer.exec()
+
     def _is_any_spinning(self) -> bool:
         """いずれかの roulette が spinning 中かを返す。"""
         for rid in self._manager.ids():
@@ -1317,9 +1334,16 @@ class MainWindow(QMainWindow):
             rec_label = f"\u25cf 記録停止 ({rec_count} 件記録中)"
             action = macro_menu.addAction(rec_label)
             action.triggered.connect(self._toggle_recording)
+
+            action = macro_menu.addAction(f"  記録プレビュー ({rec_count} 件)")
+            action.triggered.connect(self._show_recording_preview)
+            action.setEnabled(rec_count > 0)
         else:
             action = macro_menu.addAction("  記録開始")
             action.triggered.connect(self._toggle_recording)
+            if rec_count > 0:
+                action = macro_menu.addAction(f"  記録プレビュー ({rec_count} 件)")
+                action.triggered.connect(self._show_recording_preview)
 
         macro_menu.addSeparator()
 
