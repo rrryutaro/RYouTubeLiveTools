@@ -32,7 +32,8 @@ class ReplayDialog(QDialog):
     rename_requested = Signal(int, str)   # 名称変更リクエスト (replay index, new_name)
     keep_requested = Signal(int, bool)    # 保持フラグ変更リクエスト (replay index, keep)
     export_requested = Signal(int, str)   # 書き出しリクエスト (replay index, file_path)
-    import_requested = Signal(str)        # 読み込みリクエスト (file_path)
+    export_multi_requested = Signal(list, str)  # 複数書き出しリクエスト (indices, file_path)
+    import_requested = Signal(list)        # 読み込みリクエスト (file_paths)
 
     def __init__(self, design: DesignSettings, parent=None):
         super().__init__(parent)
@@ -69,6 +70,7 @@ class ReplayDialog(QDialog):
         # 一覧
         self._list = QListWidget()
         self._list.setFont(QFont("Meiryo", 9))
+        self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._list.setStyleSheet(
             f"QListWidget {{"
             f"  background-color: {d.bg}; color: {d.text};"
@@ -81,6 +83,7 @@ class ReplayDialog(QDialog):
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
         self._list.currentRowChanged.connect(lambda _: self._update_buttons())
+        self._list.itemSelectionChanged.connect(self._update_buttons)
         layout.addWidget(self._list, stretch=1)
 
         # 空状態ラベル
@@ -212,13 +215,21 @@ class ReplayDialog(QDialog):
 
     def _update_buttons(self):
         """ボタンの有効/無効を更新する。"""
-        has_selection = self._list.currentRow() >= 0
-        self._play_btn.setEnabled(has_selection and not self._playing)
-        self._delete_btn.setEnabled(has_selection and not self._playing)
-        self._rename_btn.setEnabled(has_selection and not self._playing)
-        self._keep_btn.setEnabled(has_selection)
+        selected = self._list.selectedItems()
+        has_selection = len(selected) >= 1
+        single_selection = len(selected) == 1
+        self._play_btn.setEnabled(single_selection and not self._playing)
+        self._delete_btn.setEnabled(single_selection and not self._playing)
+        self._rename_btn.setEnabled(single_selection and not self._playing)
+        self._keep_btn.setEnabled(single_selection)
         self._export_btn.setEnabled(has_selection and not self._playing)
         self._import_btn.setEnabled(not self._playing)
+
+        # 書き出しボタンのラベルを選択数に応じて更新
+        if len(selected) > 1:
+            self._export_btn.setText(f"書き出し({len(selected)}件)...")
+        else:
+            self._export_btn.setText("書き出し...")
 
         # keep ボタンのラベルを現在の keep 状態に応じて切り替え
         if has_selection:
@@ -294,36 +305,50 @@ class ReplayDialog(QDialog):
         self.rename_requested.emit(idx, new_name)
 
     def _on_export(self):
-        """書き出しボタン押下。"""
-        item = self._list.currentItem()
-        if item is None:
+        """書き出しボタン押下（単体/複数を自動切替）。"""
+        selected = self._list.selectedItems()
+        if not selected:
             return
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        rec_name = self._get_record_name(idx)
-        # ファイル名に使えない文字を除去
-        safe_name = "".join(
-            c if c not in r'\/:*?"<>|' else "_" for c in rec_name
-        ) if rec_name else "replay"
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "リプレイ書き出し",
-            safe_name + ".json",
-            "JSON Files (*.json)",
-        )
-        if not path:
-            return
-        self.export_requested.emit(idx, path)
+        indices = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+
+        if len(indices) == 1:
+            # 単体 export（既存フロー）
+            idx = indices[0]
+            rec_name = self._get_record_name(idx)
+            safe_name = "".join(
+                c if c not in r'\/:*?"<>|' else "_" for c in rec_name
+            ) if rec_name else "replay"
+
+            path, _ = QFileDialog.getSaveFileName(
+                self, "リプレイ書き出し",
+                safe_name + ".json",
+                "JSON Files (*.json)",
+            )
+            if not path:
+                return
+            self.export_requested.emit(idx, path)
+        else:
+            # 複数 export
+            path, _ = QFileDialog.getSaveFileName(
+                self, f"リプレイ書き出し（{len(indices)}件）",
+                f"replays_{len(indices)}.json",
+                "JSON Files (*.json)",
+            )
+            if not path:
+                return
+            self.export_multi_requested.emit(indices, path)
 
     def _on_import(self):
-        """読み込みボタン押下。"""
-        path, _ = QFileDialog.getOpenFileName(
+        """読み込みボタン押下（複数ファイル選択対応）。"""
+        paths, _ = QFileDialog.getOpenFileNames(
             self, "リプレイ読み込み",
             "",
             "JSON Files (*.json);;All Files (*)",
         )
-        if not path:
+        if not paths:
             return
-        self.import_requested.emit(path)
+        self.import_requested.emit(paths)
 
     def _on_context_menu(self, pos):
         """一覧の右クリックコンテキストメニュー。"""

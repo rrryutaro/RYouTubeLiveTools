@@ -249,29 +249,71 @@ class ReplayManager(QObject):
         except Exception:
             return False
 
-    def import_record(self, path: str) -> bool:
-        """JSON ファイルから replay を import し、records の先頭に追加する。
-
-        1件レコード形式を想定。最低限 frames が存在することを検証する。
+    def export_records(self, indices: list[int], path: str) -> bool:
+        """複数の replay を {"replays": [...]} 形式の JSON ファイルへ export する。
 
         Returns:
             成功したら True
+        """
+        records = []
+        for idx in indices:
+            rec = self.get(idx)
+            if rec is not None:
+                records.append(rec)
+        if not records:
+            return False
+        try:
+            data = {"replays": records}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def import_record(self, path: str) -> int:
+        """JSON ファイルから replay を import し、records の先頭に追加する。
+
+        自動判別:
+          - {"replays": [...]} 形式: 配列内の有効な各レコードを追加
+          - {"frames": [...], ...} 形式: 1件レコードとして追加
+
+        各レコードは最低限 frames (非空リスト) が必要。
+        不正な要素はスキップする。
+
+        Returns:
+            取り込んだ件数（0 = 失敗）
         """
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
-            return False
+            return 0
 
         if not isinstance(data, dict):
-            return False
+            return 0
+
+        # {"replays": [...]} 形式の判定
+        if isinstance(data.get("replays"), list):
+            imported = 0
+            for rec in data["replays"]:
+                if (isinstance(rec, dict)
+                        and isinstance(rec.get("frames"), list)
+                        and rec["frames"]):
+                    self._records.insert(imported, rec)
+                    imported += 1
+            if imported > 0:
+                self._enforce_limit()
+                self.save()
+            return imported
+
+        # 単体レコード形式
         if not isinstance(data.get("frames"), list) or not data["frames"]:
-            return False
+            return 0
 
         self._records.insert(0, data)
         self._enforce_limit()
         self.save()
-        return True
+        return 1
 
     # ================================================================
     #  再生

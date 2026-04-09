@@ -2163,6 +2163,9 @@ class MainWindow(QMainWindow):
         self._replay_dialog.export_requested.connect(
             self._on_replay_dialog_export
         )
+        self._replay_dialog.export_multi_requested.connect(
+            self._on_replay_dialog_export_multi
+        )
         self._replay_dialog.import_requested.connect(
             self._on_replay_dialog_import
         )
@@ -2211,14 +2214,51 @@ class MainWindow(QMainWindow):
                     "リプレイの書き出しに失敗しました。",
                 )
 
-    def _on_replay_dialog_import(self, path: str):
-        """管理ダイアログからの読み込みリクエスト。"""
+    def _on_replay_dialog_export_multi(self, indices: list, path: str):
+        """管理ダイアログからの複数書き出しリクエスト。"""
         from PySide6.QtWidgets import QMessageBox
-        ok = self._replay_mgr.import_record(path)
+        ok = self._replay_mgr.export_records(indices, path)
         if self._replay_dialog is not None:
             if ok:
+                QMessageBox.information(
+                    self._replay_dialog, "書き出し完了",
+                    f"{len(indices)}件のリプレイを書き出しました。",
+                )
+            else:
+                QMessageBox.warning(
+                    self._replay_dialog, "書き出し失敗",
+                    "リプレイの書き出しに失敗しました。",
+                )
+
+    def _on_replay_dialog_import(self, paths: list):
+        """管理ダイアログからの読み込みリクエスト（複数ファイル対応）。"""
+        from PySide6.QtWidgets import QMessageBox
+        total_imported = 0
+        failed_files = []
+        for path in paths:
+            count = self._replay_mgr.import_record(path)
+            if count > 0:
+                total_imported += count
+            else:
+                import os
+                failed_files.append(os.path.basename(path))
+
+        if self._replay_dialog is not None:
+            if total_imported > 0:
                 self._settings_panel.set_replay_count(self._replay_mgr.count())
                 self._replay_dialog.refresh_list(self._replay_mgr.records)
+            if total_imported > 0 and not failed_files:
+                if total_imported > 1 or len(paths) > 1:
+                    QMessageBox.information(
+                        self._replay_dialog, "読み込み完了",
+                        f"{total_imported}件のリプレイを読み込みました。",
+                    )
+            elif total_imported > 0 and failed_files:
+                QMessageBox.information(
+                    self._replay_dialog, "読み込み完了",
+                    f"{total_imported}件を読み込みました。\n"
+                    f"失敗: {', '.join(failed_files)}",
+                )
             else:
                 QMessageBox.warning(
                     self._replay_dialog, "読み込み失敗",
