@@ -34,6 +34,7 @@ import os
 from bridge import (
     SIZE_PROFILES, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
+    DesignPresetManager,
     load_config, load_design,
     load_all_item_entries, load_app_settings,
     build_segments_from_config, build_segments_from_entries,
@@ -43,6 +44,8 @@ from bridge import (
 )
 from config_utils import BASE_DIR
 from app_settings import AppSettings
+from win_history import WinHistory
+from replay_manager_pyside6 import ReplayManager
 from roulette_panel import RoulettePanel
 from roulette_context import RouletteContext
 from roulette_manager import RouletteManager
@@ -83,6 +86,14 @@ class MainWindow(QMainWindow):
         self._config = load_config()
         self._settings = load_app_settings(self._config)
         self._design = load_design(self._config)
+
+        # --- デザインプリセットマネージャー ---
+        self._preset_mgr = DesignPresetManager.from_dict(
+            self._config.get("design_presets", {})
+        )
+        self._design_editor = None  # DesignEditorDialog (遅延生成)
+        self._graph_dialog = None   # GraphDialog (遅延生成)
+        self._replay_dialog = None  # ReplayDialog (遅延生成)
 
         # --- ルーレットマネージャー・パネル一覧 ---
         self._manager = RouletteManager(parent=self)
@@ -142,6 +153,17 @@ class MainWindow(QMainWindow):
 
         self._sound = SoundManager()
         self._log_autosave_path = os.path.join(BASE_DIR, "roulette_autosave_log.json")
+        self._win_history = WinHistory(
+            os.path.join(BASE_DIR, "roulette_win_history.json")
+        )
+        self._win_history.load()
+        self._replay_mgr = ReplayManager(
+            os.path.join(BASE_DIR, "roulette_replay.json"),
+            max_count=self._settings.replay_max_count,
+            parent=self,
+        )
+        self._replay_mgr.load()
+        self._replay_mgr.playback_finished.connect(self._on_replay_finished)
         self._sound.set_tick_volume(self._settings.tick_volume / 100.0)
         self._sound.set_win_volume(self._settings.win_volume / 100.0)
         self._sound.set_tick_pattern(self._settings.tick_pattern)
@@ -191,6 +213,17 @@ class MainWindow(QMainWindow):
         self._settings_panel.pattern_export_requested.connect(self._on_pattern_export)
         self._settings_panel.pattern_import_requested.connect(self._on_pattern_import)
         self._settings_panel.log_export_requested.connect(self._on_log_export)
+        self._settings_panel.design_editor_requested.connect(
+            self._open_design_editor
+        )
+        self._settings_panel.graph_requested.connect(self._open_graph)
+        self._settings_panel.replay_play_requested.connect(
+            lambda: self._start_replay(0)
+        )
+        self._settings_panel.replay_stop_requested.connect(self._cancel_replay)
+        self._settings_panel.replay_manager_requested.connect(
+            self._open_replay_manager
+        )
 
         # --- フローティング初期状態適用（復元前に設定） ---
         if self._settings.settings_panel_float:
@@ -209,6 +242,10 @@ class MainWindow(QMainWindow):
         self._settings_panel.geometry_changed.connect(
             lambda: self._bring_panel_to_front(self._settings_panel)
         )
+
+        # --- 初期勝利数表示 ---
+        self._update_win_counts()
+        self._settings_panel.set_replay_count(self._replay_mgr.count())
 
         # --- ドラッグ・リサイズ状態 ---
         self._dragging_window = False
@@ -313,6 +350,8 @@ class MainWindow(QMainWindow):
             return False
         panel = ctx.panel
         if panel.spin_ctrl.is_spinning:
+            return False
+        if self._replay_mgr.is_playing:
             return False
         # auto_shuffle: スピン前に項目順をランダム化してセグメント再構築
         if self._settings.auto_shuffle:
@@ -787,6 +826,10 @@ class MainWindow(QMainWindow):
         panel.wheel.set_log_box_border(self._settings.log_box_border)
         panel.wheel.set_log_on_top(self._settings.log_on_top)
         panel.spin_ctrl.set_spin_duration(self._settings.spin_duration)
+        panel.spin_ctrl.set_replay_manager(self._replay_mgr)
+        panel.spin_ctrl.set_spin_mode(self._settings.spin_mode)
+        panel.spin_ctrl.set_double_duration(self._settings.double_duration)
+        panel.spin_ctrl.set_triple_duration(self._settings.triple_duration)
         panel.wheel.set_transparent(self._settings.transparent)
 
         # manager 登録
@@ -935,6 +978,7 @@ class MainWindow(QMainWindow):
         self._config.update(self._settings.to_config_patch())
         if self._design:
             self._config["design"] = self._design.to_dict()
+        self._config["design_presets"] = self._preset_mgr.to_dict()
         save_config(self._config)
 
     def _save_item_entries(self):
@@ -1345,6 +1389,13 @@ class MainWindow(QMainWindow):
             if ctx:
                 ctx.panel.wheel.add_log_entry(winner)
                 ctx.panel.wheel.save_log(self._log_autosave_path)
+            # 勝利数集計用履歴に記録
+            pattern = get_current_pattern_name(self._config)
+            self._win_history.record(winner, pattern)
+            self._win_history.save()
+            self._update_win_counts()
+            self._settings_panel.set_replay_count(self._replay_mgr.count())
+            self._refresh_replay_dialog()
         # auto advance の再開は ResultOverlay.closed で行う（spin_finished 直後ではなく
         # 結果表示の hold 完了後に再開するため）
 
@@ -1485,6 +1536,13 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_active_entries(entries)
         self._save_item_entries()
 
+    def _update_win_counts(self):
+        """勝利数集計を SettingsPanel とグラフに反映する。"""
+        pattern = get_current_pattern_name(self._config)
+        counts = self._win_history.count_by_item(pattern)
+        self._settings_panel.update_win_counts(counts)
+        self._refresh_graph()
+
     def _on_log_clear(self):
         """ログ履歴クリア。confirm_reset=ON なら確認ダイアログを表示。"""
         if self._settings.confirm_reset:
@@ -1498,6 +1556,10 @@ class MainWindow(QMainWindow):
                 return
         self._active_panel.wheel.clear_log()
         self._active_panel.wheel.save_log(self._log_autosave_path)
+        self._win_history.clear()
+        self._win_history.save()
+        self._update_win_counts()
+        self._settings_panel.set_replay_count(self._replay_mgr.count())
 
     def _on_log_export(self):
         """ログ履歴をテキストファイルにエクスポートする。"""
@@ -1600,6 +1662,17 @@ class MainWindow(QMainWindow):
             rp.wheel.set_log_on_top(value)
         elif key == "spin_duration":
             rp.spin_ctrl.set_spin_duration(value)
+        elif key == "spin_mode":
+            rp.spin_ctrl.set_spin_mode(value)
+        elif key == "double_duration":
+            rp.spin_ctrl.set_double_duration(value)
+        elif key == "triple_duration":
+            rp.spin_ctrl.set_triple_duration(value)
+        elif key == "replay_max_count":
+            self._replay_mgr.set_max_count(value)
+            self._settings_panel.set_replay_count(self._replay_mgr.count())
+        elif key == "replay_show_indicator":
+            pass  # 値は AppSettings に保存済み。再生開始時に参照
         elif key == "transparent":
             self._apply_transparent(value)
         elif key == "arrangement_direction":
@@ -1670,6 +1743,7 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        self._update_win_counts()
 
     def _on_pattern_added(self, name: str):
         """パターン追加: 空パターンを作成し、切り替える。"""
@@ -1768,6 +1842,12 @@ class MainWindow(QMainWindow):
             action.triggered.connect(
                 lambda checked, n=name: self._apply_design_preset(n)
             )
+
+        editor_action = menu.addAction("  デザインエディタ...")
+        editor_action.triggered.connect(self._open_design_editor)
+
+        graph_action = menu.addAction("  勝利履歴グラフ...")
+        graph_action.triggered.connect(self._open_graph)
 
         menu.addSeparator()
 
@@ -1894,6 +1974,265 @@ class MainWindow(QMainWindow):
         self.centralWidget().setStyleSheet(f"background-color: {self._design.bg};")
         self._settings_panel.update_design(self._design)
         self._save_config()
+
+    def _open_design_editor(self):
+        """デザインエディタダイアログを開く（非モーダル）。"""
+        from design_editor_dialog import DesignEditorDialog
+        if self._design_editor is not None:
+            self._design_editor.raise_()
+            self._design_editor.activateWindow()
+            return
+        self._design_editor = DesignEditorDialog(
+            self._design, self._preset_mgr, parent=self
+        )
+        self._design_editor.design_changed.connect(
+            self._on_design_editor_changed
+        )
+        self._design_editor.finished.connect(self._on_design_editor_closed)
+        self._design_editor.show()
+
+    def _on_design_editor_changed(self, design: DesignSettings):
+        """デザインエディタからの変更を即時反映する。"""
+        self._design = DesignSettings.from_dict(design.to_dict())
+        self._settings.design_preset_name = design.preset_name
+        self._active_panel.update_design(self._design)
+        self.centralWidget().setStyleSheet(
+            f"background-color: {self._design.bg};"
+        )
+        self._settings_panel.update_design(self._design)
+        self._save_config()
+
+    def _on_design_editor_closed(self):
+        """デザインエディタが閉じられた。"""
+        self._design_editor = None
+
+    def _open_graph(self):
+        """勝利履歴グラフダイアログを開く（非モーダル）。"""
+        from graph_dialog import GraphDialog
+        if self._graph_dialog is not None:
+            self._graph_dialog.raise_()
+            self._graph_dialog.activateWindow()
+            self._refresh_graph()
+            return
+        self._graph_dialog = GraphDialog(self._design, parent=self)
+        self._graph_dialog.finished.connect(self._on_graph_closed)
+        self._refresh_graph()
+        self._graph_dialog.show()
+
+    def _on_graph_closed(self):
+        """グラフダイアログが閉じられた。"""
+        self._graph_dialog = None
+
+    def _refresh_graph(self):
+        """グラフダイアログが開いていればデータを更新する。"""
+        if self._graph_dialog is None:
+            return
+        pattern = get_current_pattern_name(self._config)
+        counts = self._win_history.count_by_item(pattern)
+        total = self._win_history.total_count(pattern)
+        # 現在の有効項目リスト順で項目データを構成
+        items = []
+        for entry in self._active_context.item_entries:
+            if entry.enabled:
+                name = entry.text
+                items.append((name, len(items), counts.get(name, 0)))
+        # カウントが0より大きい項目のみ（有効項目に含まれない過去の結果も追加）
+        shown_names = {name for name, _, _ in items}
+        for name, count in counts.items():
+            if name not in shown_names:
+                items.append((name, len(items), count))
+        self._graph_dialog.update_graph(items, total, pattern)
+
+    # ================================================================
+    #  Replay 再生
+    # ================================================================
+
+    def _start_replay(self, idx: int = 0):
+        """指定インデックスの replay を再生する。
+
+        Args:
+            idx: replay records のインデックス（0=最新）
+        """
+        if self._replay_mgr.is_playing or self._replay_mgr.is_recording:
+            return
+        if self._active_panel.spin_ctrl.is_spinning:
+            return
+        if self._replay_mgr.count() == 0:
+            return
+
+        # 再生前の状態を退避
+        panel = self._active_panel
+        self._replay_saved_segments = list(panel.wheel._segments)
+        self._replay_saved_angle = panel.wheel._angle
+        self._replay_saved_pointer = panel.wheel._pointer_angle
+        self._replay_saved_direction = panel.wheel._spin_direction
+
+        # UI ロック
+        self._settings_panel.set_spinning(True)
+        self._settings_panel.set_replay_playing(True)
+
+        # リプレイ中表示
+        if self._settings.replay_show_indicator:
+            panel.wheel.set_replay_indicator(True)
+
+        # 再生開始
+        ok = self._replay_mgr.start_playback(
+            idx, panel.wheel, self._sound
+        )
+        if not ok:
+            self._settings_panel.set_spinning(False)
+            self._settings_panel.set_replay_playing(False)
+            panel.wheel.set_replay_indicator(False)
+            return
+
+    def _on_replay_finished(self, winner: str, winner_idx: int):
+        """replay 再生完了時の処理。"""
+        panel = self._active_panel
+
+        # 結果表示（win_history / log には記録しない）
+        if winner:
+            panel.result_overlay.show_result(winner)
+
+        # 結果表示クローズ後に状態復元
+        def _restore_after_overlay():
+            self._replay_restore_state()
+
+        # ResultOverlay の closed シグナルに一度だけ接続
+        def _on_overlay_closed():
+            try:
+                panel.result_overlay.closed.disconnect(_on_overlay_closed)
+            except RuntimeError:
+                pass
+            _restore_after_overlay()
+
+        if winner:
+            panel.result_overlay.closed.connect(_on_overlay_closed)
+        else:
+            self._replay_restore_state()
+
+    def _replay_restore_state(self):
+        """replay 再生後に通常状態へ復元する。"""
+        panel = self._active_panel
+
+        # インジケーター消去
+        panel.wheel.set_replay_indicator(False)
+
+        # セグメント・角度・ポインターを復元
+        if hasattr(self, '_replay_saved_segments'):
+            panel.wheel.set_segments(self._replay_saved_segments)
+            panel.wheel.set_angle(self._replay_saved_angle)
+            panel.wheel.set_pointer_angle(self._replay_saved_pointer)
+            panel.wheel._spin_direction = self._replay_saved_direction
+
+        # UI ロック解除
+        self._settings_panel.set_spinning(False)
+        self._settings_panel.set_replay_playing(False)
+        if self._replay_dialog is not None:
+            self._replay_dialog.set_playing(False)
+
+    def _cancel_replay(self):
+        """進行中の replay を中断する。"""
+        if self._replay_mgr.is_playing:
+            self._replay_mgr.stop_playback()
+            self._replay_restore_state()
+
+    # ================================================================
+    #  Replay 管理ダイアログ
+    # ================================================================
+
+    def _open_replay_manager(self):
+        """リプレイ管理ダイアログを開く（非モーダル）。"""
+        from replay_dialog import ReplayDialog
+        if self._replay_dialog is not None:
+            self._replay_dialog.raise_()
+            self._replay_dialog.activateWindow()
+            self._replay_dialog.refresh_list(self._replay_mgr.records)
+            return
+        self._replay_dialog = ReplayDialog(self._design, parent=self)
+        self._replay_dialog.play_requested.connect(self._on_replay_dialog_play)
+        self._replay_dialog.delete_requested.connect(
+            self._on_replay_dialog_delete
+        )
+        self._replay_dialog.rename_requested.connect(
+            self._on_replay_dialog_rename
+        )
+        self._replay_dialog.keep_requested.connect(
+            self._on_replay_dialog_keep
+        )
+        self._replay_dialog.export_requested.connect(
+            self._on_replay_dialog_export
+        )
+        self._replay_dialog.import_requested.connect(
+            self._on_replay_dialog_import
+        )
+        self._replay_dialog.finished.connect(self._on_replay_dialog_closed)
+        self._replay_dialog.refresh_list(self._replay_mgr.records)
+        self._replay_dialog.show()
+
+    def _on_replay_dialog_play(self, idx: int):
+        """管理ダイアログからの再生リクエスト。"""
+        self._start_replay(idx)
+        if self._replay_dialog is not None:
+            self._replay_dialog.set_playing(self._replay_mgr.is_playing)
+
+    def _on_replay_dialog_delete(self, idx: int):
+        """管理ダイアログからの削除リクエスト。"""
+        self._replay_mgr.delete(idx)
+        self._settings_panel.set_replay_count(self._replay_mgr.count())
+        if self._replay_dialog is not None:
+            self._replay_dialog.refresh_list(self._replay_mgr.records)
+
+    def _on_replay_dialog_rename(self, idx: int, new_name: str):
+        """管理ダイアログからの名称変更リクエスト。"""
+        self._replay_mgr.rename(idx, new_name)
+        if self._replay_dialog is not None:
+            self._replay_dialog.refresh_list(self._replay_mgr.records)
+
+    def _on_replay_dialog_keep(self, idx: int, keep: bool):
+        """管理ダイアログからの保持フラグ変更リクエスト。"""
+        self._replay_mgr.set_keep(idx, keep)
+        if self._replay_dialog is not None:
+            self._replay_dialog.refresh_list(self._replay_mgr.records)
+
+    def _on_replay_dialog_export(self, idx: int, path: str):
+        """管理ダイアログからの書き出しリクエスト。"""
+        from PySide6.QtWidgets import QMessageBox
+        ok = self._replay_mgr.export_record(idx, path)
+        if self._replay_dialog is not None:
+            if ok:
+                QMessageBox.information(
+                    self._replay_dialog, "書き出し完了",
+                    "リプレイを書き出しました。",
+                )
+            else:
+                QMessageBox.warning(
+                    self._replay_dialog, "書き出し失敗",
+                    "リプレイの書き出しに失敗しました。",
+                )
+
+    def _on_replay_dialog_import(self, path: str):
+        """管理ダイアログからの読み込みリクエスト。"""
+        from PySide6.QtWidgets import QMessageBox
+        ok = self._replay_mgr.import_record(path)
+        if self._replay_dialog is not None:
+            if ok:
+                self._settings_panel.set_replay_count(self._replay_mgr.count())
+                self._replay_dialog.refresh_list(self._replay_mgr.records)
+            else:
+                QMessageBox.warning(
+                    self._replay_dialog, "読み込み失敗",
+                    "リプレイの読み込みに失敗しました。\n"
+                    "ファイル形式を確認してください。",
+                )
+
+    def _on_replay_dialog_closed(self):
+        """リプレイ管理ダイアログが閉じられた。"""
+        self._replay_dialog = None
+
+    def _refresh_replay_dialog(self):
+        """リプレイ管理ダイアログが開いていれば一覧を更新する。"""
+        if self._replay_dialog is not None:
+            self._replay_dialog.refresh_list(self._replay_mgr.records)
 
     def _set_text_size_mode(self, mode: int):
         self._settings.text_size_mode = mode

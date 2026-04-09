@@ -293,6 +293,11 @@ class SettingsPanel(QFrame):
     pattern_import_requested = Signal()  # パターンインポート
     custom_tick_file_changed = Signal(str)  # カスタムtick音ファイル変更
     custom_win_file_changed = Signal(str)   # カスタムresult音ファイル変更
+    design_editor_requested = Signal()       # デザインエディタ起動
+    graph_requested = Signal()               # 勝利履歴グラフ起動
+    replay_play_requested = Signal()         # 最新リプレイ再生
+    replay_stop_requested = Signal()         # リプレイ中断
+    replay_manager_requested = Signal()      # リプレイ管理ウィンドウ起動
     geometry_changed = Signal()
 
     def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
@@ -340,9 +345,11 @@ class SettingsPanel(QFrame):
         # ── アプリ設定セクション ──
         self._build_spin_section(settings, design)
         self._build_display_section(settings, design)
+        self._build_design_section(settings, design)
         self._build_result_section(settings, design)
         self._build_sound_section(settings, design)
         self._build_log_section(settings, design)
+        self._build_replay_section(settings, design)
 
         # ── パターン管理セクション ──
         self._pattern_names = list(pattern_names or ["デフォルト"])
@@ -460,7 +467,114 @@ class SettingsPanel(QFrame):
 
         spin_layout.addLayout(dur_row)
 
+        # スピンモード選択
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(4)
+
+        mode_lbl = QLabel("モード:")
+        mode_lbl.setFont(QFont("Meiryo", 8))
+        mode_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._mode_lbl = mode_lbl
+        mode_row.addWidget(mode_lbl)
+
+        self._mode_combo = QComboBox()
+        self._mode_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._mode_combo, design)
+        self._mode_combo.addItems(["シングル", "ダブル", "トリプル"])
+        self._mode_combo.setCurrentIndex(settings.spin_mode)
+        self._mode_combo.currentIndexChanged.connect(self._on_spin_mode_changed)
+        mode_row.addWidget(self._mode_combo, stretch=1)
+
+        spin_layout.addLayout(mode_row)
+
+        # ダブルスピン時間
+        dbl_row = QHBoxLayout()
+        dbl_row.setSpacing(4)
+
+        dbl_lbl = QLabel("ダブル時間:")
+        dbl_lbl.setFont(QFont("Meiryo", 8))
+        dbl_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._dbl_lbl = dbl_lbl
+        dbl_row.addWidget(dbl_lbl)
+
+        self._dbl_spin = QDoubleSpinBox()
+        self._dbl_spin.setFont(QFont("Meiryo", 8))
+        self._dbl_spin.setRange(1.0, 30.0)
+        self._dbl_spin.setSingleStep(1.0)
+        self._dbl_spin.setDecimals(1)
+        self._dbl_spin.setSuffix(" 秒")
+        self._dbl_spin.setValue(settings.double_duration)
+        self._dbl_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._dbl_spin.valueChanged.connect(
+            lambda v: self.setting_changed.emit("double_duration", v)
+        )
+        dbl_row.addWidget(self._dbl_spin, stretch=1)
+
+        self._dbl_row_widget = QWidget()
+        dbl_row_container = QHBoxLayout(self._dbl_row_widget)
+        dbl_row_container.setContentsMargins(0, 0, 0, 0)
+        dbl_row_container.setSpacing(4)
+        dbl_row_container.addWidget(self._dbl_lbl)
+        dbl_row_container.addWidget(self._dbl_spin, stretch=1)
+        spin_layout.addWidget(self._dbl_row_widget)
+
+        # トリプルスピン時間
+        self._tpl_row_widget = QWidget()
+        tpl_row_container = QHBoxLayout(self._tpl_row_widget)
+        tpl_row_container.setContentsMargins(0, 0, 0, 0)
+        tpl_row_container.setSpacing(4)
+
+        tpl_lbl = QLabel("トリプル時間:")
+        tpl_lbl.setFont(QFont("Meiryo", 8))
+        tpl_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tpl_lbl = tpl_lbl
+        tpl_row_container.addWidget(tpl_lbl)
+
+        self._tpl_spin = QDoubleSpinBox()
+        self._tpl_spin.setFont(QFont("Meiryo", 8))
+        self._tpl_spin.setRange(1.0, 30.0)
+        self._tpl_spin.setSingleStep(1.0)
+        self._tpl_spin.setDecimals(1)
+        self._tpl_spin.setSuffix(" 秒")
+        self._tpl_spin.setValue(settings.triple_duration)
+        self._tpl_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._tpl_spin.valueChanged.connect(
+            lambda v: self.setting_changed.emit("triple_duration", v)
+        )
+        tpl_row_container.addWidget(self._tpl_spin, stretch=1)
+        spin_layout.addWidget(self._tpl_row_widget)
+
+        # 初期表示: モードに応じて duration 行の表示/非表示
+        self._update_duration_rows_visibility(settings.spin_mode)
+
         self._layout.addWidget(self._spin_section)
+
+    def _on_spin_mode_changed(self, index: int):
+        """スピンモード変更時のハンドラ。"""
+        self._update_duration_rows_visibility(index)
+        self.setting_changed.emit("spin_mode", index)
+
+    def _update_duration_rows_visibility(self, mode: int):
+        """スピンモードに応じて duration 行の表示を切り替える。"""
+        # シングル: 通常スピン時間のみ表示
+        # ダブル: ダブル時間のみ表示（通常時間は非表示）
+        # トリプル: トリプル時間のみ表示（通常時間は非表示）
+        self._dur_lbl.setVisible(mode == 0)
+        self._dur_spin.setVisible(mode == 0)
+        self._dbl_row_widget.setVisible(mode == 1)
+        self._tpl_row_widget.setVisible(mode == 2)
 
     # ================================================================
     #  セクション 2: 表示設定（実装済み）
@@ -650,6 +764,30 @@ class SettingsPanel(QFrame):
         if idx < len(_POINTER_PRESET_ANGLES):
             angle = _POINTER_PRESET_ANGLES[idx]
             self.setting_changed.emit("pointer_angle", angle)
+
+    # ================================================================
+    #  セクション: デザイン設定
+    # ================================================================
+
+    def _build_design_section(self, settings: AppSettings,
+                              design: DesignSettings):
+        self._design_header = _SectionHeader("デザイン", design)
+        self._layout.addWidget(self._design_header)
+
+        self._design_editor_btn = QPushButton("デザインエディタを開く")
+        self._design_editor_btn.setFont(QFont("Meiryo", 9))
+        self._design_editor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._design_editor_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 6px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._design_editor_btn.clicked.connect(
+            self.design_editor_requested.emit
+        )
+        self._layout.addWidget(self._design_editor_btn)
 
     # ================================================================
     #  セクション 3: 結果表示設定（実装済み）
@@ -1093,7 +1231,134 @@ class SettingsPanel(QFrame):
         self._log_clear_btn.clicked.connect(self.log_clear_requested.emit)
         log_btn_row.addWidget(self._log_clear_btn)
 
+        self._graph_btn = QPushButton("グラフ")
+        self._graph_btn.setFont(QFont("Meiryo", 8))
+        self._graph_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._graph_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._graph_btn.clicked.connect(self.graph_requested.emit)
+        log_btn_row.addWidget(self._graph_btn)
+
         self._layout.addLayout(log_btn_row)
+
+    # ================================================================
+    #  セクション: リプレイ
+    # ================================================================
+
+    def _build_replay_section(self, settings: AppSettings,
+                              design: DesignSettings):
+        self._replay_header = _SectionHeader("リプレイ", design)
+        self._layout.addWidget(self._replay_header)
+
+        # リプレイ件数表示 + 再生/中断ボタン
+        replay_row = QHBoxLayout()
+        replay_row.setSpacing(4)
+
+        self._replay_count_lbl = QLabel("記録: 0件")
+        self._replay_count_lbl.setFont(QFont("Meiryo", 8))
+        self._replay_count_lbl.setStyleSheet(f"color: {design.text_sub};")
+        replay_row.addWidget(self._replay_count_lbl)
+
+        replay_row.addStretch(1)
+
+        self._replay_play_btn = QPushButton("最新を再生")
+        self._replay_play_btn.setFont(QFont("Meiryo", 8))
+        self._replay_play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._replay_play_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._replay_play_btn.clicked.connect(self.replay_play_requested.emit)
+        replay_row.addWidget(self._replay_play_btn)
+
+        self._replay_stop_btn = QPushButton("中断")
+        self._replay_stop_btn.setFont(QFont("Meiryo", 8))
+        self._replay_stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._replay_stop_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._replay_stop_btn.setEnabled(False)
+        self._replay_stop_btn.clicked.connect(self.replay_stop_requested.emit)
+        replay_row.addWidget(self._replay_stop_btn)
+
+        self._replay_mgr_btn = QPushButton("管理...")
+        self._replay_mgr_btn.setFont(QFont("Meiryo", 8))
+        self._replay_mgr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._replay_mgr_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._replay_mgr_btn.clicked.connect(
+            self.replay_manager_requested.emit
+        )
+        replay_row.addWidget(self._replay_mgr_btn)
+
+        self._layout.addLayout(replay_row)
+
+        # 設定行: 保存上限
+        max_row = QHBoxLayout()
+        max_row.setSpacing(4)
+
+        max_lbl = QLabel("保存上限:")
+        max_lbl.setFont(QFont("Meiryo", 8))
+        max_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._replay_max_lbl = max_lbl
+        max_row.addWidget(max_lbl)
+
+        self._replay_max_spin = QSpinBox()
+        self._replay_max_spin.setFont(QFont("Meiryo", 8))
+        self._replay_max_spin.setRange(1, 20)
+        self._replay_max_spin.setValue(settings.replay_max_count)
+        self._replay_max_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._replay_max_spin.valueChanged.connect(
+            lambda v: self.setting_changed.emit("replay_max_count", v)
+        )
+        max_row.addWidget(self._replay_max_spin)
+
+        max_row.addStretch(1)
+
+        self._layout.addLayout(max_row)
+
+        # 設定行: 再生中表示
+        self._replay_indicator_cb = QCheckBox("再生中表示")
+        self._replay_indicator_cb.setFont(QFont("Meiryo", 8))
+        self._replay_indicator_cb.setStyleSheet(f"color: {design.text};")
+        self._replay_indicator_cb.setChecked(settings.replay_show_indicator)
+        self._replay_indicator_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("replay_show_indicator", v)
+        )
+        self._layout.addWidget(self._replay_indicator_cb)
+
+    def set_replay_count(self, count: int):
+        """リプレイ件数表示を更新する。"""
+        self._replay_count_lbl.setText(f"記録: {count}件")
+        self._replay_play_btn.setEnabled(count > 0)
+
+    def set_replay_playing(self, playing: bool):
+        """リプレイ再生中の UI 状態を設定する。"""
+        self._replay_play_btn.setEnabled(not playing)
+        self._replay_stop_btn.setEnabled(playing)
 
     # ================================================================
     #  セクション 3c: パターン管理
@@ -1255,6 +1520,35 @@ class SettingsPanel(QFrame):
         self._items_header = _SectionHeader("項目リスト", design)
         self._layout.addWidget(self._items_header)
 
+        # ── 検索・フィルター行 ──
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(4)
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setFont(QFont("Meiryo", 8))
+        self._search_edit.setPlaceholderText("検索...")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setStyleSheet(
+            f"QLineEdit {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._search_edit.textChanged.connect(self._apply_item_filter)
+        filter_bar.addWidget(self._search_edit, stretch=1)
+
+        self._filter_combo = QComboBox()
+        self._filter_combo.setFont(QFont("Meiryo", 8))
+        self._filter_combo.addItems(["全件", "ONのみ", "OFFのみ"])
+        self._apply_combo_style(self._filter_combo, design)
+        self._filter_combo.currentIndexChanged.connect(
+            lambda _: self._apply_item_filter()
+        )
+        filter_bar.addWidget(self._filter_combo)
+
+        self._layout.addLayout(filter_bar)
+
         # 行ウィジェットを格納するコンテナ
         self._item_rows_container = QWidget()
         self._item_rows_layout = QVBoxLayout(self._item_rows_container)
@@ -1339,6 +1633,17 @@ class SettingsPanel(QFrame):
         )
         edit.editingFinished.connect(self._on_item_text_edited)
         top_row.addWidget(edit, stretch=1)
+
+        # 勝利数ラベル
+        win_lbl = QLabel("0")
+        win_lbl.setFont(QFont("Meiryo", 7))
+        win_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        win_lbl.setFixedWidth(28)
+        win_lbl.setStyleSheet(
+            f"color: {design.gold}; background-color: transparent;"
+        )
+        win_lbl.setToolTip("当選回数")
+        top_row.addWidget(win_lbl)
 
         # ボタン共通スタイル
         btn_font = QFont("Meiryo", 8)
@@ -1481,6 +1786,7 @@ class SettingsPanel(QFrame):
         # 行にウィジェット参照を保持
         row._cb = cb
         row._edit = edit
+        row._win_lbl = win_lbl
         row._mode_combo = mode_combo
         row._value_stack = value_stack
         row._weight_combo = weight_combo
@@ -1603,6 +1909,7 @@ class SettingsPanel(QFrame):
         self._add_item_row(entry, self._design)
         self._refresh_all_weight_combos()
         self._emit_entries_changed()
+        self._apply_item_filter()
 
     def _on_delete_item(self, row: QWidget):
         """削除ボタン押下: 指定行を削除する。confirm_reset=ON なら確認ダイアログ。"""
@@ -1647,6 +1954,29 @@ class SettingsPanel(QFrame):
         """有効/無効チェックボックス変更時。N 変化に伴い重み候補を再構築。"""
         self._refresh_all_weight_combos()
         self._emit_entries_changed()
+        self._apply_item_filter()
+
+    def _apply_item_filter(self, _text=None):
+        """検索・フィルター条件に基づいて項目行の表示/非表示を切り替える。"""
+        search = self._search_edit.text().strip().lower()
+        filter_mode = self._filter_combo.currentIndex()  # 0=全件, 1=ONのみ, 2=OFFのみ
+
+        for row in self._item_rows:
+            text = row._edit.text().lower()
+            enabled = row._cb.isChecked()
+
+            # 検索条件: 部分一致（大文字小文字無視）
+            match_search = (not search) or (search in text)
+
+            # フィルター条件
+            if filter_mode == 1:
+                match_filter = enabled
+            elif filter_mode == 2:
+                match_filter = not enabled
+            else:
+                match_filter = True
+
+            row.setVisible(match_search and match_filter)
 
     def _on_item_text_edited(self):
         """テキスト編集完了（editingFinished）時。"""
@@ -1711,11 +2041,14 @@ class SettingsPanel(QFrame):
         for row in self._item_rows:
             row._cb.setStyleSheet(f"color: {design.text};")
             row._edit.setStyleSheet(edit_style)
-            # 上段のボタン（上段レイアウトの index 2,3,4）
+            row._win_lbl.setStyleSheet(
+                f"color: {design.gold}; background-color: transparent;"
+            )
+            # 上段のボタン（上段レイアウトの index 3,4,5 — win_lbl が index 2）
             top_layout = row.layout().itemAt(0).layout()
-            for i in range(2, 5):
+            for i in range(3, 6):
                 btn = top_layout.itemAt(i).widget()
-                if i == 4:  # 削除ボタン
+                if i == 5:  # 削除ボタン
                     btn.setStyleSheet(del_btn_style)
                 else:
                     btn.setStyleSheet(btn_style)
@@ -1939,6 +2272,21 @@ class SettingsPanel(QFrame):
 
         self._refresh_all_weight_combos()
 
+        # 検索・フィルターをリセット
+        self._search_edit.clear()
+        self._filter_combo.setCurrentIndex(0)
+
+    def update_win_counts(self, counts: dict[str, int]):
+        """各項目行の勝利数ラベルを更新する。
+
+        Args:
+            counts: {項目テキスト: 当選回数} の辞書
+        """
+        for row in self._item_rows:
+            text = row._edit.text().strip()
+            n = counts.get(text, 0)
+            row._win_lbl.setText(str(n) if n > 0 else "0")
+
     def set_spinning(self, spinning: bool):
         """spin 状態に応じてボタンを有効/無効にする。"""
         self._spin_btn.setEnabled(not spinning)
@@ -2018,6 +2366,19 @@ class SettingsPanel(QFrame):
             self._dur_spin.blockSignals(True)
             self._dur_spin.setValue(value)
             self._dur_spin.blockSignals(False)
+        elif key == "spin_mode":
+            self._mode_combo.blockSignals(True)
+            self._mode_combo.setCurrentIndex(value)
+            self._mode_combo.blockSignals(False)
+            self._update_duration_rows_visibility(value)
+        elif key == "double_duration":
+            self._dbl_spin.blockSignals(True)
+            self._dbl_spin.setValue(value)
+            self._dbl_spin.blockSignals(False)
+        elif key == "triple_duration":
+            self._tpl_spin.blockSignals(True)
+            self._tpl_spin.setValue(value)
+            self._tpl_spin.blockSignals(False)
         elif key == "auto_shuffle":
             self._shuffle_cb.blockSignals(True)
             self._shuffle_cb.setChecked(value)
@@ -2064,6 +2425,14 @@ class SettingsPanel(QFrame):
             self._confirm_reset_cb.blockSignals(True)
             self._confirm_reset_cb.setChecked(value)
             self._confirm_reset_cb.blockSignals(False)
+        elif key == "replay_max_count":
+            self._replay_max_spin.blockSignals(True)
+            self._replay_max_spin.setValue(value)
+            self._replay_max_spin.blockSignals(False)
+        elif key == "replay_show_indicator":
+            self._replay_indicator_cb.blockSignals(True)
+            self._replay_indicator_cb.setChecked(value)
+            self._replay_indicator_cb.blockSignals(False)
         elif key == "grip_visible":
             self._grip_visible_cb.blockSignals(True)
             self._grip_visible_cb.setChecked(value)
@@ -2120,20 +2489,39 @@ class SettingsPanel(QFrame):
 
         # セクションヘッダー
         for header in [self._spin_header, self._display_header,
+                       self._design_header,
                        self._result_header, self._sound_header,
-                       self._log_header,
+                       self._log_header, self._replay_header,
                        self._pattern_header, self._items_header]:
             header._apply_style(design)
 
+        # デザインエディタボタン
+        self._design_editor_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 6px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+
         # スピン時間
         self._dur_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dur_spin.setStyleSheet(
+        spinbox_style = (
             f"QDoubleSpinBox {{"
             f"  background-color: {design.separator}; color: {design.text};"
             f"  border: 1px solid {design.separator}; border-radius: 3px;"
             f"  padding: 2px 4px;"
             f"}}"
         )
+        self._dur_spin.setStyleSheet(spinbox_style)
+
+        # スピンモード / ダブル・トリプル時間
+        self._mode_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._mode_combo, design)
+        self._dbl_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._dbl_spin.setStyleSheet(spinbox_style)
+        self._tpl_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tpl_spin.setStyleSheet(spinbox_style)
 
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
@@ -2196,6 +2584,13 @@ class SettingsPanel(QFrame):
             f"}}"
             f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
         )
+        self._graph_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
         self._shuffle_cb.setStyleSheet(f"color: {design.text};")
         self._arr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._arr_combo, design)
@@ -2217,6 +2612,16 @@ class SettingsPanel(QFrame):
             f"  padding: 2px 4px;"
             f"}}"
         )
+
+        # 検索・フィルター
+        self._search_edit.setStyleSheet(
+            f"QLineEdit {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._apply_combo_style(self._filter_combo, design)
 
         # 項目編集行
         self._update_item_rows_design(design)

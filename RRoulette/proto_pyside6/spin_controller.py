@@ -61,6 +61,20 @@ class SpinController(QObject):
         self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
         self._spin_duration: float = self._spin_preset.duration
 
+        # --- リプレイ記録 ---
+        self._replay_mgr = None  # ReplayManager (optional)
+
+        # --- マルチスピン ---
+        self._spin_mode: int = 0               # 0=single, 1=double, 2=triple
+        self._double_duration: float = 9.0
+        self._triple_duration: float = 9.0
+        self._multi_phase: int = 0             # 現在のスピン回数 (0-indexed)
+        self._multi_total: int = 1             # このシーケンスの合計回数
+        self._multi_delay_timer: QTimer = QTimer(self)
+        self._multi_delay_timer.setSingleShot(True)
+        self._multi_delay_timer.setInterval(800)  # 次スピンまでの待機 ms
+        self._multi_delay_timer.timeout.connect(self._start_next_phase)
+
         # --- タイマー ---
         self._spin_timer: QTimer = QTimer(self)
         self._spin_timer.setInterval(16)  # ~60fps
@@ -72,7 +86,7 @@ class SpinController(QObject):
 
     @property
     def is_spinning(self) -> bool:
-        return self._spinning
+        return self._spinning or self._multi_delay_timer.isActive()
 
     @property
     def preset_name(self) -> str:
@@ -87,6 +101,22 @@ class SpinController(QObject):
         """通常スピン時間を設定する（秒）。"""
         self._spin_duration = max(1.0, duration)
 
+    def set_spin_mode(self, mode: int):
+        """スピンモードを設定する（0=single, 1=double, 2=triple）。"""
+        self._spin_mode = max(0, min(2, mode))
+
+    def set_double_duration(self, duration: float):
+        """ダブルスピン時の1回あたり時間を設定する（秒）。"""
+        self._double_duration = max(1.0, duration)
+
+    def set_triple_duration(self, duration: float):
+        """トリプルスピン時の1回あたり時間を設定する（秒）。"""
+        self._triple_duration = max(1.0, duration)
+
+    def set_replay_manager(self, mgr):
+        """リプレイ記録用マネージャーを設定する。"""
+        self._replay_mgr = mgr
+
     def set_sound_tick_enabled(self, enabled: bool):
         self._sound_tick_enabled = enabled
 
@@ -96,6 +126,7 @@ class SpinController(QObject):
     def start_spin(self, duration: float | None = None):
         """spin を開始する（プリセットベース多段階減速）。
 
+        マルチスピンモード時は自動的に複数回スピンを連続実行する。
         着地位置は事前計算で確定済み。
         """
         if self._spinning:
@@ -104,12 +135,28 @@ class SpinController(QObject):
         if len(segs) < 2:
             return
 
+        # マルチスピンの初期化（外部からの start_spin 呼び出し時のみ）
+        if self._multi_phase == 0:
+            if self._spin_mode == 0:
+                self._multi_total = 1
+            elif self._spin_mode == 1:
+                self._multi_total = 2
+            else:
+                self._multi_total = 3
+            # リプレイ記録開始（シーケンス最初のフェーズのみ）
+            if self._replay_mgr is not None:
+                self._replay_mgr.start_recording(
+                    self._wheel._segments,
+                    self._wheel._pointer_angle,
+                    self._wheel._spin_direction,
+                )
+
         self._spinning = True
         self.spin_started.emit()
 
         preset = self._spin_preset
         if duration is None:
-            duration = self._spin_duration
+            duration = self._duration_for_current_phase()
 
         target_frames = max(1, duration * 1000 / 16)
 
@@ -191,12 +238,19 @@ class SpinController(QObject):
         new_angle = (self._wheel._angle + self._spin_sign * self._velocity) % 360
         self._wheel.set_angle(new_angle)
 
+        # リプレイ: フレーム記録
+        if self._replay_mgr is not None:
+            self._replay_mgr.record_frame(new_angle)
+
         # tick 音: セグメント境界を越えたら鳴らす
         if self._sound_tick_enabled and self._sound:
             cur_seg = self._wheel.seg_at_pointer()
             if cur_seg != self._prev_seg_idx:
                 self._sound.play_tick()
                 self._prev_seg_idx = cur_seg
+                # リプレイ: tick 音記録
+                if self._replay_mgr is not None:
+                    self._replay_mgr.record_sound("tick")
 
         decel = self._spin_preset.decel_for_velocity(
             self._velocity, self._cruise_decel
@@ -206,14 +260,42 @@ class SpinController(QObject):
         if self._velocity < V_STOP:
             self._spin_finish()
 
+    def _duration_for_current_phase(self) -> float:
+        """現在のフェーズに応じたスピン時間を返す。"""
+        if self._multi_total == 1:
+            return self._spin_duration
+        elif self._multi_total == 2:
+            return self._double_duration
+        else:
+            return self._triple_duration
+
+    def _start_next_phase(self):
+        """マルチスピンの次フェーズを開始する。"""
+        self.start_spin()
+
     def _spin_finish(self):
         """spin 停止・結果確定。"""
         self._spin_timer.stop()
         self._spinning = False
 
-        # 決定音
+        self._multi_phase += 1
+
+        # マルチスピンの途中フェーズ: 決定音を鳴らして次フェーズへ
+        if self._multi_phase < self._multi_total:
+            if self._sound_result_enabled and self._sound:
+                self._sound.play_win()
+                if self._replay_mgr is not None:
+                    self._replay_mgr.record_sound("win")
+            self._multi_delay_timer.start()
+            return
+
+        # 最終フェーズ: 結果確定
+        self._multi_phase = 0
+
         if self._sound_result_enabled and self._sound:
             self._sound.play_win()
+            if self._replay_mgr is not None:
+                self._replay_mgr.record_sound("win")
 
         seg_idx = self._wheel.seg_at_pointer()
         segs = self._wheel._segments
@@ -221,4 +303,11 @@ class SpinController(QObject):
             winner = segs[seg_idx].item_text
         else:
             winner = ""
+
+        # リプレイ: 記録完了
+        if self._replay_mgr is not None:
+            self._replay_mgr.finish_recording(
+                winner, seg_idx, self._wheel._angle
+            )
+
         self.spin_finished.emit(winner, seg_idx)

@@ -67,6 +67,9 @@ class WheelWidget(QWidget):
         self._log_box_border: bool = False # 枠線表示
         self._log_on_top: bool = False     # 前面表示
 
+        # --- リプレイ中表示 ---
+        self._replay_indicator: bool = False  # 再生中フラグ
+
         # --- 透過モード ---
         self._transparent: bool = False
         self._spin_direction: int = 1  # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
@@ -145,6 +148,11 @@ class WheelWidget(QWidget):
         self._log_entries.insert(0, (ts, text))
         if len(self._log_entries) > self._log_max:
             self._log_entries = self._log_entries[:self._log_max]
+        self.update()
+
+    def set_replay_indicator(self, visible: bool):
+        """リプレイ中表示のON/OFFを設定する。"""
+        self._replay_indicator = visible
         self.update()
 
     def set_log_visible(self, visible: bool):
@@ -410,6 +418,16 @@ class WheelWidget(QWidget):
         # --- ログオーバーレイ（前面モード: ポインターの上） ---
         if self._log_visible and self._log_entries and self._log_on_top:
             self._draw_log_overlay(painter, d)
+
+        # --- リプレイ中表示 ---
+        if self._replay_indicator:
+            painter.setPen(QColor("#ff9900"))
+            painter.setFont(QFont(d.fonts.ui_family, 10, QFont.Weight.Bold))
+            painter.drawText(
+                int(cx - r + 10), int(cy - r + 10), 200, 20,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                "REPLAY",
+            )
 
         painter.end()
 

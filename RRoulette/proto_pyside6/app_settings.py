@@ -50,6 +50,9 @@ class AppSettings:
     spin_direction: int = 1        # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
     spin_preset_name: str = ""     # スピンプリセット名（空 = デフォルト）
     spin_duration: float = 9.0     # 通常スピン時間（秒）
+    spin_mode: int = 0             # 0=シングル, 1=ダブル, 2=トリプル
+    double_duration: float = 9.0   # ダブルスピン時の1回あたり時間（秒）
+    triple_duration: float = 9.0   # トリプルスピン時の1回あたり時間（秒）
 
     # ============================================================
     #  design — デザイン設定
@@ -94,6 +97,10 @@ class AppSettings:
     # リセット確認:
     confirm_reset: bool = True       # リセット操作前に確認ダイアログを表示
 
+    # リプレイ:
+    replay_max_count: int = 5        # リプレイ保存上限
+    replay_show_indicator: bool = True  # リプレイ中インジケーター表示
+
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
     #    対応: MainWindow
@@ -137,6 +144,9 @@ class AppSettings:
             spin_direction=config.get("spin_direction", 1),
             spin_preset_name=config.get("spin_preset_name", DEFAULT_PRESET_NAME),
             spin_duration=config.get("spin_duration", 9.0),
+            spin_mode=config.get("spin_mode", 0),
+            double_duration=config.get("double_duration", 9.0),
+            triple_duration=config.get("triple_duration", 9.0),
             design_preset_name=config.get("design", {}).get("preset_name", "")
                 if isinstance(config.get("design"), dict) else "",
             arrangement_direction=config.get("arrangement_direction", 0),
@@ -177,6 +187,8 @@ class AppSettings:
             log_box_border=config.get("log_box_border", False),
             log_on_top=config.get("log_on_top", False),
             confirm_reset=config.get("confirm_reset", True),
+            replay_max_count=config.get("replay_max_count", 5),
+            replay_show_indicator=config.get("replay_show_indicator", True),
         )
 
     def to_config_patch(self) -> dict:
@@ -193,6 +205,9 @@ class AppSettings:
             "spin_direction": self.spin_direction,
             "spin_preset_name": self.spin_preset_name,
             "spin_duration": self.spin_duration,
+            "spin_mode": self.spin_mode,
+            "double_duration": self.double_duration,
+            "triple_duration": self.triple_duration,
             "arrangement_direction": self.arrangement_direction,
             "auto_shuffle": self.auto_shuffle,
             "sound_tick_enabled": self.sound_tick_enabled,
@@ -230,4 +245,6 @@ class AppSettings:
             "log_box_border": self.log_box_border,
             "log_on_top": self.log_on_top,
             "confirm_reset": self.confirm_reset,
+            "replay_max_count": self.replay_max_count,
+            "replay_show_indicator": self.replay_show_indicator,
         }
