@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QScrollArea, QWidget, QColorDialog, QTabWidget,
     QLineEdit, QInputDialog, QMessageBox, QFontComboBox,
-    QGridLayout,
+    QGridLayout, QSpinBox, QFileDialog,
 )
 
 from design_settings import (
@@ -92,6 +92,7 @@ class DesignEditorDialog(QDialog):
 
         self._design = DesignSettings.from_dict(design.to_dict())
         self._preset_mgr = preset_manager
+        self._item_count = 0  # 項目数（set_item_count で設定）
 
         self._building = False
         self._build_ui()
@@ -158,6 +159,18 @@ class DesignEditorDialog(QDialog):
         reset_btn.setToolTip("組み込みプリセットを初期値に戻す")
         reset_btn.clicked.connect(self._reset_preset)
         preset_bar.addWidget(reset_btn)
+
+        export_btn = QPushButton("書き出し...")
+        export_btn.setFont(QFont("Meiryo", 8))
+        export_btn.setToolTip("現在のデザイン設定をJSONファイルへ書き出す")
+        export_btn.clicked.connect(self._export_preset)
+        preset_bar.addWidget(export_btn)
+
+        import_btn = QPushButton("読み込み...")
+        import_btn.setFont(QFont("Meiryo", 8))
+        import_btn.setToolTip("JSONファイルからデザイン設定を読み込む")
+        import_btn.clicked.connect(self._import_preset)
+        preset_bar.addWidget(import_btn)
 
         layout.addLayout(preset_bar)
 
@@ -227,16 +240,60 @@ class DesignEditorDialog(QDialog):
         add_color("セグメント線", "wheel", "segment_outline_color",
                   wd.segment_outline_color)
 
+        # ホイール線幅
+        self._wheel_width_spins = {}
+        for wlabel, wkey, wval in [
+            ("外周線幅", "outline_width", wd.outline_width),
+            ("セグメント線幅", "segment_outline_width", wd.segment_outline_width),
+            ("穴枠線幅", "hole_outline_width", wd.hole_outline_width),
+        ]:
+            lbl = QLabel(wlabel)
+            lbl.setFont(QFont("Meiryo", 8))
+            grid.addWidget(lbl, row, 0)
+            spin = QSpinBox()
+            spin.setFont(QFont("Meiryo", 8))
+            spin.setRange(0, 10)
+            spin.setValue(wval)
+            spin.setSuffix(" px")
+            spin.valueChanged.connect(
+                lambda v, k=wkey: self._on_wheel_width_changed(k, v)
+            )
+            grid.addWidget(spin, row, 1)
+            self._wheel_width_spins[wkey] = spin
+            row += 1
+
         pd = self._design.pointer
         add_section("ポインター")
         add_color("塗りつぶし", "pointer", "fill_color", pd.fill_color)
         add_color("輪郭線", "pointer", "outline_color", pd.outline_color)
+
+        # ポインター線幅
+        lbl = QLabel("線幅")
+        lbl.setFont(QFont("Meiryo", 8))
+        grid.addWidget(lbl, row, 0)
+        self._pointer_outline_width_spin = QSpinBox()
+        self._pointer_outline_width_spin.setFont(QFont("Meiryo", 8))
+        self._pointer_outline_width_spin.setRange(0, 10)
+        self._pointer_outline_width_spin.setValue(pd.outline_width)
+        self._pointer_outline_width_spin.setSuffix(" px")
+        self._pointer_outline_width_spin.valueChanged.connect(
+            self._on_pointer_outline_width_changed
+        )
+        grid.addWidget(self._pointer_outline_width_spin, row, 1)
+        row += 1
 
         rd = self._design.result
         add_section("結果表示")
         add_color("背景色", "result", "bg_color", rd.bg_color)
         add_color("枠線色", "result", "outline_color", rd.outline_color)
         add_color("文字色", "result", "text_color", rd.text_color)
+
+        ld = self._design.log
+        add_section("ログオーバーレイ")
+        add_color("背景色", "log", "box_bg_color", ld.box_bg_color)
+        add_color("文字色", "log", "text_color", ld.text_color)
+        add_color("影色", "log", "shadow_color", ld.shadow_color)
+        add_color("枠線色", "log", "box_outline_color", ld.box_outline_color)
 
         grid.setRowStretch(row, 1)
         scroll.setWidget(content)
@@ -277,6 +334,54 @@ class DesignEditorDialog(QDialog):
         add_font_row("UI:", "ui_family", fonts.ui_family)
         add_font_row("ログ:", "log_family", fonts.log_family)
         add_font_row("結果表示:", "result_family", fonts.result_family)
+
+        # ログ文字サイズ
+        size_row = QHBoxLayout()
+        size_row.setSpacing(4)
+        size_lbl = QLabel("ログ文字サイズ:")
+        size_lbl.setFont(QFont("Meiryo", 9))
+        size_lbl.setMinimumWidth(100)
+        size_row.addWidget(size_lbl)
+
+        self._log_font_size_spin = QSpinBox()
+        self._log_font_size_spin.setFont(QFont("Meiryo", 8))
+        self._log_font_size_spin.setRange(6, 24)
+        self._log_font_size_spin.setValue(self._design.log.font_size)
+        self._log_font_size_spin.setSuffix(" pt")
+        self._log_font_size_spin.valueChanged.connect(self._on_log_font_size_changed)
+        size_row.addWidget(self._log_font_size_spin)
+        size_row.addStretch(1)
+        layout.addLayout(size_row)
+
+        # ホイール文字サイズ設定
+        wf = self._design.fonts.wheel
+        self._wheel_font_size_spins = {}
+        for wf_label, wf_key, wf_val in [
+            ("省略モード基準:", "omit_base_size", wf.omit_base_size),
+            ("収めるモード基準:", "fit_base_size", wf.fit_base_size),
+            ("縮小モード基準:", "shrink_base_size", wf.shrink_base_size),
+            ("ホイール最小文字:", "min_size", wf.min_size),
+            ("ホイール最大文字:", "max_size", wf.max_size),
+        ]:
+            wf_row = QHBoxLayout()
+            wf_row.setSpacing(4)
+            wf_lbl = QLabel(wf_label)
+            wf_lbl.setFont(QFont("Meiryo", 9))
+            wf_lbl.setMinimumWidth(100)
+            wf_row.addWidget(wf_lbl)
+
+            wf_spin = QSpinBox()
+            wf_spin.setFont(QFont("Meiryo", 8))
+            wf_spin.setRange(4, 120)
+            wf_spin.setValue(wf_val)
+            wf_spin.setSuffix(" pt")
+            wf_spin.valueChanged.connect(
+                lambda v, k=wf_key: self._on_wheel_font_size_changed(k, v)
+            )
+            wf_row.addWidget(wf_spin)
+            wf_row.addStretch(1)
+            layout.addLayout(wf_row)
+            self._wheel_font_size_spins[wf_key] = wf_spin
 
         layout.addStretch(1)
         return content
@@ -349,6 +454,32 @@ class DesignEditorDialog(QDialog):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
+        # --- 項目個別色上書き ---
+        override_lbl = QLabel("項目個別色上書き:")
+        override_lbl.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        override_lbl.setStyleSheet(f"color: {self._design.gold};")
+        layout.addWidget(override_lbl)
+
+        override_hint = QLabel("色クリックで上書き、×で解除")
+        override_hint.setFont(QFont("Meiryo", 8))
+        override_hint.setStyleSheet(f"color: {self._design.text_sub};")
+        layout.addWidget(override_hint)
+
+        override_scroll = QScrollArea()
+        override_scroll.setWidgetResizable(True)
+        override_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        self._override_container = QWidget()
+        self._override_grid = QGridLayout(self._override_container)
+        self._override_grid.setContentsMargins(4, 4, 4, 4)
+        self._override_grid.setSpacing(4)
+
+        self._override_buttons: list[_ColorButton] = []
+        self._override_reset_buttons: list[QPushButton] = []
+
+        override_scroll.setWidget(self._override_container)
+        layout.addWidget(override_scroll, stretch=1)
+
         return content
 
     def _rebuild_segment_grid(self):
@@ -394,6 +525,8 @@ class DesignEditorDialog(QDialog):
             setattr(self._design.pointer, key, color)
         elif group == "result":
             setattr(self._design.result, key, color)
+        elif group == "log":
+            setattr(self._design.log, key, color)
         self._emit_change()
 
     def _on_font_changed(self, key: str, family: str):
@@ -405,6 +538,22 @@ class DesignEditorDialog(QDialog):
             self._design.fonts.log_family = family
         elif key == "result_family":
             self._design.fonts.result_family = family
+        self._emit_change()
+
+    def _on_log_font_size_changed(self, value: int):
+        self._design.log.font_size = value
+        self._emit_change()
+
+    def _on_wheel_font_size_changed(self, key: str, value: int):
+        setattr(self._design.fonts.wheel, key, value)
+        self._emit_change()
+
+    def _on_wheel_width_changed(self, key: str, value: int):
+        setattr(self._design.wheel, key, value)
+        self._emit_change()
+
+    def _on_pointer_outline_width_changed(self, value: int):
+        self._design.pointer.outline_width = value
         self._emit_change()
 
     def _on_segment_preset_changed(self, name: str):
@@ -535,6 +684,83 @@ class DesignEditorDialog(QDialog):
             self._refresh_segment_ui()
             self._emit_change()
 
+    def _export_preset(self):
+        """現在のデザイン設定を JSON ファイルへ書き出す。"""
+        import json
+        name = self._design.preset_name or "design"
+        safe_name = "".join(
+            c if c not in r'\/:*?"<>|' else "_" for c in name
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "デザイン書き出し",
+            safe_name + ".json",
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            data = self._design.to_dict()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(
+                self, "書き出し完了",
+                "デザイン設定を書き出しました。",
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                self, "書き出し失敗",
+                f"デザイン設定の書き出しに失敗しました。\n{e}",
+            )
+
+    def _import_preset(self):
+        """JSON ファイルからデザイン設定を読み込み、現在の編集対象へ反映する。"""
+        import json
+        path, _ = QFileDialog.getOpenFileName(
+            self, "デザイン読み込み",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "読み込み失敗",
+                f"ファイルの読み込みに失敗しました。\n{e}",
+            )
+            return
+
+        if not isinstance(data, dict):
+            QMessageBox.warning(
+                self, "読み込み失敗",
+                "デザイン設定として認識できないファイルです。",
+            )
+            return
+
+        try:
+            ds = DesignSettings.from_dict(data)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "読み込み失敗",
+                f"デザイン設定の復元に失敗しました。\n{e}",
+            )
+            return
+
+        # 現在のプリセット名を維持
+        ds.preset_name = self._design.preset_name
+        self._design = ds
+        self._refresh_color_buttons()
+        self._refresh_font_combos()
+        self._refresh_segment_ui()
+        self._emit_change()
+
+        QMessageBox.information(
+            self, "読み込み完了",
+            "デザイン設定を読み込みました。",
+        )
+
     # ================================================================
     #  UI 同期ヘルパー
     # ================================================================
@@ -544,6 +770,7 @@ class DesignEditorDialog(QDialog):
         wd = self._design.wheel
         pd = self._design.pointer
         rd = self._design.result
+        ld = self._design.log
         mapping = {
             ("global", "bg"): gc.bg,
             ("global", "panel"): gc.panel,
@@ -560,6 +787,10 @@ class DesignEditorDialog(QDialog):
             ("result", "bg_color"): rd.bg_color,
             ("result", "outline_color"): rd.outline_color,
             ("result", "text_color"): rd.text_color,
+            ("log", "box_bg_color"): ld.box_bg_color,
+            ("log", "text_color"): ld.text_color,
+            ("log", "shadow_color"): ld.shadow_color,
+            ("log", "box_outline_color"): ld.box_outline_color,
         }
         for key, color in mapping.items():
             btn = self._color_buttons.get(key)
@@ -567,6 +798,19 @@ class DesignEditorDialog(QDialog):
                 btn.blockSignals(True)
                 btn.set_color(color)
                 btn.blockSignals(False)
+
+        # ホイール線幅同期
+        for wkey in ["outline_width", "segment_outline_width", "hole_outline_width"]:
+            spin = self._wheel_width_spins.get(wkey)
+            if spin:
+                spin.blockSignals(True)
+                spin.setValue(getattr(wd, wkey))
+                spin.blockSignals(False)
+
+        # ポインター線幅同期
+        self._pointer_outline_width_spin.blockSignals(True)
+        self._pointer_outline_width_spin.setValue(pd.outline_width)
+        self._pointer_outline_width_spin.blockSignals(False)
 
     def _refresh_font_combos(self):
         fonts = self._design.fonts
@@ -582,6 +826,21 @@ class DesignEditorDialog(QDialog):
                 combo.blockSignals(True)
                 combo.setCurrentFont(QFont(family))
                 combo.blockSignals(False)
+
+        # ログ文字サイズ同期
+        self._log_font_size_spin.blockSignals(True)
+        self._log_font_size_spin.setValue(self._design.log.font_size)
+        self._log_font_size_spin.blockSignals(False)
+
+        # ホイール文字サイズ設定同期
+        wf = self._design.fonts.wheel
+        for wf_key in ["omit_base_size", "fit_base_size", "shrink_base_size",
+                        "min_size", "max_size"]:
+            spin = self._wheel_font_size_spins.get(wf_key)
+            if spin:
+                spin.blockSignals(True)
+                spin.setValue(getattr(wf, wf_key))
+                spin.blockSignals(False)
 
     def _refresh_segment_ui(self):
         self._seg_preset_combo.blockSignals(True)
@@ -605,3 +864,76 @@ class DesignEditorDialog(QDialog):
     def get_design(self) -> DesignSettings:
         """現在のデザイン設定を返す。"""
         return self._design
+
+    # ================================================================
+    #  項目個別色上書き
+    # ================================================================
+
+    def set_item_count(self, count: int):
+        """項目数を設定し、override グリッドを再構築する。"""
+        self._item_count = count
+        self._rebuild_override_grid()
+
+    def _rebuild_override_grid(self):
+        """項目個別色上書きグリッドを再構築する。"""
+        for btn in self._override_buttons:
+            btn.deleteLater()
+        self._override_buttons.clear()
+        for btn in self._override_reset_buttons:
+            btn.deleteLater()
+        self._override_reset_buttons.clear()
+
+        while self._override_grid.count():
+            item = self._override_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        n = self._item_count
+        if n == 0:
+            return
+
+        seg = self._design.segment
+        for i in range(n):
+            color = seg.color_for(i)
+            has_override = i in seg.overrides
+
+            # 番号ラベル
+            idx_lbl = QLabel(f"{i+1}")
+            idx_lbl.setFont(QFont("Meiryo", 7))
+            idx_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if has_override:
+                idx_lbl.setStyleSheet(f"color: {self._design.gold}; font-weight: bold;")
+            self._override_grid.addWidget(idx_lbl, i, 0)
+
+            # 色ボタン
+            btn = _ColorButton(color)
+            btn.color_changed.connect(
+                lambda c, idx=i: self._on_override_color_changed(idx, c)
+            )
+            self._override_grid.addWidget(btn, i, 1)
+            self._override_buttons.append(btn)
+
+            # リセットボタン
+            reset_btn = QPushButton("×")
+            reset_btn.setFont(QFont("Meiryo", 8))
+            reset_btn.setFixedSize(24, 24)
+            reset_btn.setToolTip("個別色上書きを解除")
+            reset_btn.setEnabled(has_override)
+            reset_btn.clicked.connect(
+                lambda checked, idx=i: self._on_override_reset(idx)
+            )
+            self._override_grid.addWidget(reset_btn, i, 2)
+            self._override_reset_buttons.append(reset_btn)
+
+    def _on_override_color_changed(self, item_index: int, color: str):
+        """個別色上書きを設定する。"""
+        self._design.segment.overrides[item_index] = color
+        self._rebuild_override_grid()
+        self._emit_change()
+
+    def _on_override_reset(self, item_index: int):
+        """個別色上書きを解除する。"""
+        self._design.segment.overrides.pop(item_index, None)
+        self._rebuild_override_grid()
+        self._emit_change()

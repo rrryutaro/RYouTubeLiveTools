@@ -1989,6 +1989,7 @@ class MainWindow(QMainWindow):
             self._on_design_editor_changed
         )
         self._design_editor.finished.connect(self._on_design_editor_closed)
+        self._design_editor.set_item_count(len(self._active_entries))
         self._design_editor.show()
 
     def _on_design_editor_changed(self, design: DesignSettings):
