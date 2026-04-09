@@ -39,7 +39,7 @@ _RROULETTE_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..")
 )
 if _RROULETTE_DIR not in sys.path:
-    sys.path.insert(0, _RROULETTE_DIR)
+    sys.path.append(_RROULETTE_DIR)
 
 # ── 既存モジュールの import ───────────────────────────────────────
 # tkinter 非依存モジュール: そのまま import
