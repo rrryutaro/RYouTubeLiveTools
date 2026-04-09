@@ -49,6 +49,7 @@ class AppSettings:
 
     spin_direction: int = 1        # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
     spin_preset_name: str = ""     # スピンプリセット名（空 = デフォルト）
+    spin_duration: float = 9.0     # 通常スピン時間（秒）
 
     # ============================================================
     #  design — デザイン設定
@@ -72,11 +73,26 @@ class AppSettings:
     # サウンド:
     sound_tick_enabled: bool = True   # スピン中 tick 音
     sound_result_enabled: bool = True # 結果確定音
+    tick_volume: int = 100            # tick音量 (0-100)
+    win_volume: int = 100             # result音量 (0-100)
+    tick_pattern: int = 0             # tick音パターン (0-5, 6=カスタム)
+    win_pattern: int = 0              # result音パターン (0-5, 6=カスタム)
+    tick_custom_file: str = ""        # カスタムtick音ファイルパス
+    win_custom_file: str = ""         # カスタムresult音ファイルパス
 
     # 結果 overlay:
     result_close_mode: int = 0      # 0=クリックのみ, 1=自動のみ, 2=両方
     result_hold_sec: float = 5.0    # 自動クローズまでの秒数
     macro_hold_sec: float | None = None  # マクロ再生時 hold 秒（None = result_hold_sec と同じ）
+
+    # ログオーバーレイ:
+    log_overlay_show: bool = True    # ホイール上のログ表示
+    log_timestamp: bool = False      # ログにタイムスタンプ表示
+    log_box_border: bool = False     # ログボックス枠線表示
+    log_on_top: bool = False         # ログ前面表示（ホイール装飾より上）
+
+    # リセット確認:
+    confirm_reset: bool = True       # リセット操作前に確認ダイアログを表示
 
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
@@ -98,6 +114,11 @@ class AppSettings:
     item_panel_y: int | None = None
     item_panel_visible: bool = False   # 項目設定パネルの表示状態
     always_on_top: bool = False        # メインウィンドウ常に最前面
+    transparent: bool = False          # OBS透過モード
+    grip_visible: bool = True          # リサイズグリップ表示
+    ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
+    float_win_show_instance: bool = True  # インスタンス番号表示
+    settings_panel_float: bool = False   # 設定パネルフローティング独立化
 
     # ============================================================
     #  ファクトリ
@@ -115,12 +136,19 @@ class AppSettings:
             profile_idx=config.get("profile_idx", 1),
             spin_direction=config.get("spin_direction", 1),
             spin_preset_name=config.get("spin_preset_name", DEFAULT_PRESET_NAME),
+            spin_duration=config.get("spin_duration", 9.0),
             design_preset_name=config.get("design", {}).get("preset_name", "")
                 if isinstance(config.get("design"), dict) else "",
             arrangement_direction=config.get("arrangement_direction", 0),
             auto_shuffle=config.get("auto_shuffle", False),
             sound_tick_enabled=config.get("sound_tick_enabled", True),
             sound_result_enabled=config.get("sound_result_enabled", True),
+            tick_volume=config.get("tick_volume", 100),
+            win_volume=config.get("win_volume", 100),
+            tick_pattern=config.get("tick_pattern", 0),
+            win_pattern=config.get("win_pattern", 0),
+            tick_custom_file=config.get("tick_custom_file", ""),
+            win_custom_file=config.get("win_custom_file", ""),
             result_close_mode=config.get("result_close_mode", 0),
             result_hold_sec=config.get("result_hold_sec", 5.0),
             macro_hold_sec=config.get("macro_hold_sec",
@@ -139,6 +167,16 @@ class AppSettings:
             item_panel_y=config.get("item_panel_y"),
             item_panel_visible=config.get("item_panel_visible", False),
             always_on_top=config.get("always_on_top", False),
+            transparent=config.get("transparent", False),
+            grip_visible=config.get("grip_visible", True),
+            ctrl_box_visible=config.get("ctrl_box_visible", True),
+            float_win_show_instance=config.get("float_win_show_instance", True),
+            settings_panel_float=config.get("settings_panel_float", False),
+            log_overlay_show=config.get("log_overlay_show", True),
+            log_timestamp=config.get("log_timestamp", False),
+            log_box_border=config.get("log_box_border", False),
+            log_on_top=config.get("log_on_top", False),
+            confirm_reset=config.get("confirm_reset", True),
         )
 
     def to_config_patch(self) -> dict:
@@ -154,10 +192,17 @@ class AppSettings:
             "profile_idx": self.profile_idx,
             "spin_direction": self.spin_direction,
             "spin_preset_name": self.spin_preset_name,
+            "spin_duration": self.spin_duration,
             "arrangement_direction": self.arrangement_direction,
             "auto_shuffle": self.auto_shuffle,
             "sound_tick_enabled": self.sound_tick_enabled,
             "sound_result_enabled": self.sound_result_enabled,
+            "tick_volume": self.tick_volume,
+            "win_volume": self.win_volume,
+            "tick_pattern": self.tick_pattern,
+            "win_pattern": self.win_pattern,
+            "tick_custom_file": self.tick_custom_file,
+            "win_custom_file": self.win_custom_file,
             "result_close_mode": self.result_close_mode,
             "result_hold_sec": self.result_hold_sec,
             "macro_hold_sec": self.macro_hold_sec,
@@ -175,4 +220,14 @@ class AppSettings:
             "item_panel_y": self.item_panel_y,
             "item_panel_visible": self.item_panel_visible,
             "always_on_top": self.always_on_top,
+            "transparent": self.transparent,
+            "grip_visible": self.grip_visible,
+            "ctrl_box_visible": self.ctrl_box_visible,
+            "float_win_show_instance": self.float_win_show_instance,
+            "settings_panel_float": self.settings_panel_float,
+            "log_overlay_show": self.log_overlay_show,
+            "log_timestamp": self.log_timestamp,
+            "log_box_border": self.log_box_border,
+            "log_on_top": self.log_on_top,
+            "confirm_reset": self.confirm_reset,
         }

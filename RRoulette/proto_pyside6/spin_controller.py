@@ -59,6 +59,7 @@ class SpinController(QObject):
 
         # --- プリセット ---
         self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
+        self._spin_duration: float = self._spin_preset.duration
 
         # --- タイマー ---
         self._spin_timer: QTimer = QTimer(self)
@@ -82,6 +83,10 @@ class SpinController(QObject):
         if preset_name in SPIN_PRESETS:
             self._spin_preset = SPIN_PRESETS[preset_name]
 
+    def set_spin_duration(self, duration: float):
+        """通常スピン時間を設定する（秒）。"""
+        self._spin_duration = max(1.0, duration)
+
     def set_sound_tick_enabled(self, enabled: bool):
         self._sound_tick_enabled = enabled
 
@@ -104,7 +109,7 @@ class SpinController(QObject):
 
         preset = self._spin_preset
         if duration is None:
-            duration = preset.duration
+            duration = self._spin_duration
 
         target_frames = max(1, duration * 1000 / 16)
 

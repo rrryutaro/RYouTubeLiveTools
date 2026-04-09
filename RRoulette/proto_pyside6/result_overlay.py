@@ -22,8 +22,8 @@ MainWindow から分離し、見た目や挙動の管理を集約する。
   - フォント / パディング / 角丸の設定化
 """
 
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QMouseEvent
+from PySide6.QtCore import Qt, Signal, QTimer, QRectF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 
 from bridge import DesignSettings
@@ -45,6 +45,11 @@ class ResultOverlay(QLabel):
     """
 
     closed = Signal()
+
+    # フラッシュ設定
+    _FLASH_COUNT = 3       # 点滅回数
+    _FLASH_ON_MS = 60      # 表示時間 (ms)
+    _FLASH_OFF_MS = 60     # 非表示時間 (ms)
 
     def __init__(self, parent: QWidget):
         super().__init__("", parent)
@@ -69,18 +74,32 @@ class ResultOverlay(QLabel):
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self._on_auto_close)
 
+        # --- フラッシュアニメーション ---
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._on_flash_tick)
+        self._flash_step: int = 0       # 現在のフラッシュステップ
+        self._flash_total: int = 0      # 総ステップ数
+        self._flashing: bool = False     # フラッシュ中フラグ
+
+        # --- テキストアウトライン描画 ---
+        self._text_color = QColor("#ffd700")       # テキスト塗り色（gold）
+        self._outline_color = QColor("#000000")    # アウトライン色
+        self._outline_width: float = 2.0           # アウトライン幅
+
     # ================================================================
     #  公開 API
     # ================================================================
 
     def show_result(self, winner: str):
-        """結果テキストを表示し、中央に配置する。"""
+        """結果テキストを表示し、フラッシュ演出後に安定表示する。"""
         self._stop_auto_timer()
+        self._stop_flash()
         self.setText(f"  \U0001f3af {winner}  ")
         self.show()
         self.raise_()
         self.update_position()
-        self._start_auto_timer_if_needed()
+        self._start_flash()
 
     def dismiss(self):
         """overlay を確実に閉じる。タイマーも停止する。
@@ -88,6 +107,7 @@ class ResultOverlay(QLabel):
         spin 開始時に RoulettePanel から呼ばれ、残留を防止する。
         パネル面クリックで閉じた場合も closed を emit する。
         """
+        self._stop_flash()
         self._stop_auto_timer()
         self._force_auto_close = False
         self._force_hold_sec = None
@@ -135,8 +155,10 @@ class ResultOverlay(QLabel):
 
     def apply_style(self, design: DesignSettings):
         """デザイン連動の配色を適用する。"""
+        # テキスト色は transparent にし、paintEvent でアウトライン付き描画する
+        self._text_color = QColor(design.gold)
         self.setStyleSheet(
-            f"color: {design.gold}; "
+            f"color: transparent; "
             f"background-color: rgba(0, 0, 0, 180); "
             f"border-radius: 8px; padding: 8px 16px;"
         )
@@ -168,6 +190,102 @@ class ResultOverlay(QLabel):
             self.closed.emit()
 
     # ================================================================
+    #  フラッシュアニメーション
+    # ================================================================
+
+    def _start_flash(self):
+        """フラッシュ演出を開始する。
+
+        ON/OFF を _FLASH_COUNT 回繰り返し、最後に安定表示 + 自動クローズ開始。
+        ステップ: 0=OFF, 1=ON, 2=OFF, 3=ON, 4=OFF, 5=ON(最終) → 安定表示
+        総ステップ = _FLASH_COUNT * 2
+        偶数ステップ=OFF、奇数ステップ=ON、最終ステップ(奇数)=安定表示へ遷移
+        """
+        self._flash_step = 0
+        self._flash_total = self._FLASH_COUNT * 2
+        self._flashing = True
+        # 最初のステップ: 一瞬消す
+        self.setVisible(False)
+        self._flash_timer.start(self._FLASH_OFF_MS)
+
+    def _stop_flash(self):
+        """フラッシュ演出を中断する。"""
+        if self._flash_timer.isActive():
+            self._flash_timer.stop()
+        self._flashing = False
+        self._flash_step = 0
+
+    def _on_flash_tick(self):
+        """フラッシュの1ステップを処理する。"""
+        self._flash_step += 1
+        if self._flash_step >= self._flash_total:
+            # フラッシュ完了 → 安定表示
+            self._flashing = False
+            self.setVisible(True)
+            self.raise_()
+            self._start_auto_timer_if_needed()
+            return
+        # 偶数=OFF、奇数=ON
+        if self._flash_step % 2 == 0:
+            self.setVisible(False)
+            self._flash_timer.start(self._FLASH_OFF_MS)
+        else:
+            self.setVisible(True)
+            self.raise_()
+            self._flash_timer.start(self._FLASH_ON_MS)
+
+    # ================================================================
+    #  描画（テキストアウトライン）
+    # ================================================================
+
+    def paintEvent(self, event):
+        """QLabel の描画後にアウトライン付きテキストを重ねて描画する。"""
+        # QLabel のデフォルト描画（背景・ボーダー。テキストは transparent で見えない）
+        super().paintEvent(event)
+
+        text = self.text()
+        if not text:
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # テキスト描画領域（padding を考慮）
+        margins = self.contentsMargins()
+        rect = QRectF(
+            margins.left(), margins.top(),
+            self.width() - margins.left() - margins.right(),
+            self.height() - margins.top() - margins.bottom(),
+        )
+
+        # QPainterPath でテキストのアウトラインを構築
+        font = self.font()
+        fm = QFontMetrics(font)
+        text_width = fm.horizontalAdvance(text)
+        text_height = fm.height()
+
+        # 中央配置の座標計算
+        x = rect.x() + (rect.width() - text_width) / 2.0
+        y = rect.y() + (rect.height() + fm.ascent() - fm.descent()) / 2.0
+
+        path = QPainterPath()
+        path.addText(x, y, font, text)
+
+        # アウトライン（黒縁）
+        p.setPen(QPen(self._outline_color, self._outline_width,
+                       Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                       Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+
+        # 塗り（テキスト色）
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._text_color)
+        p.drawPath(path)
+
+        p.end()
+
+    # ================================================================
     #  イベント
     # ================================================================
 
@@ -175,6 +293,7 @@ class ResultOverlay(QLabel):
         """左クリック -> close_mode に応じて閉じる。"""
         if event.button() == Qt.MouseButton.LeftButton:
             if self._close_mode in (CLOSE_CLICK, CLOSE_BOTH):
+                self._stop_flash()
                 self._stop_auto_timer()
                 self._force_auto_close = False
                 self._force_hold_sec = None

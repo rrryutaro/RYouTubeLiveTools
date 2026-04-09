@@ -58,6 +58,17 @@ class WheelWidget(QWidget):
         self._text_size_mode: int = 1
         self._text_direction: int = 0
         self._donut_hole: bool = False
+
+        # --- ログオーバーレイ ---
+        self._log_entries: list[tuple[str, str]] = []  # (時刻, テキスト) 新しい順
+        self._log_max: int = 8             # 最大表示件数
+        self._log_visible: bool = True     # 表示ON/OFF
+        self._log_timestamp: bool = False  # タイムスタンプ表示
+        self._log_box_border: bool = False # 枠線表示
+        self._log_on_top: bool = False     # 前面表示
+
+        # --- 透過モード ---
+        self._transparent: bool = False
         self._spin_direction: int = 1  # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
 
         # --- 描画パラメータ ---
@@ -123,6 +134,80 @@ class WheelWidget(QWidget):
     def set_donut_hole(self, enabled: bool):
         self._donut_hole = enabled
         self._layout_cache_key = None
+        self.update()
+
+    # ── ログオーバーレイ ──
+
+    def add_log_entry(self, text: str):
+        """履歴エントリを先頭に追加する（時刻付き）。"""
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._log_entries.insert(0, (ts, text))
+        if len(self._log_entries) > self._log_max:
+            self._log_entries = self._log_entries[:self._log_max]
+        self.update()
+
+    def set_log_visible(self, visible: bool):
+        """ログオーバーレイの表示ON/OFFを設定する。"""
+        self._log_visible = visible
+        self.update()
+
+    def set_log_timestamp(self, enabled: bool):
+        """ログタイムスタンプ表示ON/OFFを設定する。"""
+        self._log_timestamp = enabled
+        self.update()
+
+    def set_log_box_border(self, enabled: bool):
+        """ログボックス枠線表示ON/OFFを設定する。"""
+        self._log_box_border = enabled
+        self.update()
+
+    def set_log_on_top(self, enabled: bool):
+        """ログ前面表示ON/OFFを設定する。"""
+        self._log_on_top = enabled
+        self.update()
+
+    def get_log_entries(self) -> list[tuple[str, str]]:
+        """ログ履歴を返す（新しい順の (時刻, テキスト) リスト）。"""
+        return list(self._log_entries)
+
+    def save_log(self, path: str):
+        """ログ履歴をJSONファイルに保存する。"""
+        import json
+        # 古い順で保存
+        data = [{"ts": ts, "text": text} for ts, text in reversed(self._log_entries)]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_log(self, path: str):
+        """JSONファイルからログ履歴を復元する。"""
+        import json
+        import os
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return
+            # 古い順で保存されている → 新しい順に変換
+            entries = []
+            for item in data:
+                if isinstance(item, dict) and "ts" in item and "text" in item:
+                    entries.append((item["ts"], item["text"]))
+            self._log_entries = list(reversed(entries[-self._log_max:]))
+            self.update()
+        except Exception:
+            pass
+
+    def clear_log(self):
+        """ログ履歴をクリアする。"""
+        self._log_entries.clear()
+        self.update()
+
+    def set_transparent(self, enabled: bool):
+        """透過モードを設定する。"""
+        self._transparent = enabled
         self.update()
 
     def seg_at_pointer(self) -> int:
@@ -254,7 +339,10 @@ class WheelWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         d = self._design
-        painter.fillRect(self.rect(), QColor(d.bg))
+        if self._transparent:
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+        else:
+            painter.fillRect(self.rect(), QColor(d.bg))
 
         cx, cy, r = self._cx, self._cy, self._r
         segs = self._segments
@@ -297,6 +385,10 @@ class WheelWidget(QWidget):
 
             self._draw_sector_text(painter, i, seg_start, seg.arc, cx, cy)
 
+        # --- ログオーバーレイ（背面モード: ホイール装飾の後ろ） ---
+        if self._log_visible and self._log_entries and not self._log_on_top:
+            self._draw_log_overlay(painter, d)
+
         # --- 外周線 ---
         painter.setPen(QPen(QColor(d.wheel.outline_color), d.wheel.outline_width))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -307,12 +399,17 @@ class WheelWidget(QWidget):
             hole_r = DONUT_DRAW_RADIUS
             painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
                                 d.wheel.hole_outline_width))
-            painter.setBrush(QBrush(QColor(d.bg)))
+            hole_fill = QColor(0, 0, 0, 0) if self._transparent else QColor(d.bg)
+            painter.setBrush(QBrush(hole_fill))
             painter.drawEllipse(QRectF(cx - hole_r, cy - hole_r,
                                        hole_r * 2, hole_r * 2))
 
         # --- ポインター ---
         self._draw_pointer(painter, cx, cy, r, d)
+
+        # --- ログオーバーレイ（前面モード: ポインターの上） ---
+        if self._log_visible and self._log_entries and self._log_on_top:
+            self._draw_log_overlay(painter, d)
 
         painter.end()
 
@@ -420,3 +517,65 @@ class WheelWidget(QWidget):
         painter.setPen(QPen(QColor(d.pointer.outline_color), d.pointer.outline_width))
         painter.setBrush(QBrush(QColor(d.pointer.fill_color)))
         painter.drawPolygon(pointer)
+
+    def _draw_log_overlay(self, painter: QPainter, d: DesignSettings):
+        """ログオーバーレイを左下に描画する。"""
+        log_font = QFont(d.fonts.log_family or "Meiryo", d.log.font_size)
+        fm = QFontMetrics(log_font)
+        line_h = fm.height() + 2
+        padding = 6
+        margin = 8
+
+        entries = self._log_entries
+        n = len(entries)
+        if n == 0:
+            return
+
+        # 表示文字列を構築
+        show_ts = self._log_timestamp
+        lines = []
+        for i, (ts, text) in enumerate(entries):
+            num = f"{n - i}."
+            if show_ts:
+                lines.append(f"{num} [{ts}] {text}")
+            else:
+                lines.append(f"{num} {text}")
+
+        # テキスト幅の最大値を算出
+        max_text_w = 0
+        for line in lines:
+            w = fm.horizontalAdvance(line)
+            if w > max_text_w:
+                max_text_w = w
+
+        box_w = max_text_w + padding * 2
+        box_h = line_h * n + padding * 2
+
+        # 左下に配置
+        box_x = margin
+        box_y = self.height() - margin - box_h
+
+        # 背景ボックス
+        bg_color = QColor(d.log.box_bg_color)
+        bg_color.setAlpha(180)
+        if self._log_box_border:
+            painter.setPen(QPen(QColor(d.log.box_outline_color), 1))
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 4, 4)
+
+        # テキスト描画
+        painter.setFont(log_font)
+        text_color = QColor(d.log.text_color)
+        shadow_color = QColor(d.log.shadow_color)
+
+        for i, line in enumerate(lines):
+            y = box_y + padding + (i + 1) * line_h - fm.descent()
+            x = box_x + padding
+            # 影
+            painter.setPen(shadow_color)
+            painter.drawText(QPointF(x + 1, y + 1), line)
+            # 本体
+            painter.setPen(text_color)
+            painter.drawText(QPointF(x, y), line)

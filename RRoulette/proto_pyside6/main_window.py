@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QMenu, QApplication,
 )
 
+import os
+
 from bridge import (
     SIZE_PROFILES, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
@@ -36,7 +38,10 @@ from bridge import (
     load_all_item_entries, load_app_settings,
     build_segments_from_config, build_segments_from_entries,
     save_config, save_item_entries,
+    get_pattern_names, get_current_pattern_name,
+    set_current_pattern, add_pattern, delete_pattern,
 )
+from config_utils import BASE_DIR
 from app_settings import AppSettings
 from roulette_panel import RoulettePanel
 from roulette_context import RouletteContext
@@ -90,6 +95,10 @@ class MainWindow(QMainWindow):
         # frameless + always_on_top
         self._apply_window_flags()
 
+        # OBS透過モード（初期適用）
+        if self._settings.transparent:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
         # サイズプロファイル（保存値が無い場合のデフォルト）
         prof_idx = min(self._settings.profile_idx, len(SIZE_PROFILES) - 1)
         _, default_w, default_h = SIZE_PROFILES[prof_idx]
@@ -101,7 +110,10 @@ class MainWindow(QMainWindow):
 
         # --- 中央ウィジェット（レイアウトなし — パネルを手動配置） ---
         central = QWidget()
-        central.setStyleSheet(f"background-color: {self._design.bg};")
+        if self._settings.transparent:
+            central.setStyleSheet("background-color: transparent;")
+        else:
+            central.setStyleSheet(f"background-color: {self._design.bg};")
         central.setMouseTracking(True)
         self.setCentralWidget(central)
 
@@ -129,6 +141,15 @@ class MainWindow(QMainWindow):
         # ============================================================
 
         self._sound = SoundManager()
+        self._log_autosave_path = os.path.join(BASE_DIR, "roulette_autosave_log.json")
+        self._sound.set_tick_volume(self._settings.tick_volume / 100.0)
+        self._sound.set_win_volume(self._settings.win_volume / 100.0)
+        self._sound.set_tick_pattern(self._settings.tick_pattern)
+        self._sound.set_win_pattern(self._settings.win_pattern)
+        if self._settings.tick_custom_file:
+            self._sound.load_tick_custom(self._settings.tick_custom_file)
+        if self._settings.win_custom_file:
+            self._sound.load_win_custom(self._settings.win_custom_file)
 
         # ============================================================
         #  ルーレットパネル（独立パネル）
@@ -136,12 +157,17 @@ class MainWindow(QMainWindow):
 
         self._roulette_panel = self._create_roulette("default", central)
 
+        # ログ履歴復元
+        self._roulette_panel.wheel.load_log(self._log_autosave_path)
+
         # ============================================================
         #  項目設定パネル（独立パネル）
         # ============================================================
 
         self._settings_panel = SettingsPanel(
             self._active_context.item_entries, self._settings, self._design,
+            pattern_names=get_pattern_names(self._config),
+            current_pattern=get_current_pattern_name(self._config),
             parent=central,
         )
         self._settings_panel_visible = False
@@ -153,8 +179,30 @@ class MainWindow(QMainWindow):
         self._settings_panel.item_entries_changed.connect(
             self._on_item_entries_changed
         )
+        self._settings_panel.pattern_switched.connect(self._on_pattern_switched)
+        self._settings_panel.pattern_added.connect(self._on_pattern_added)
+        self._settings_panel.pattern_deleted.connect(self._on_pattern_deleted)
+        self._settings_panel.preview_tick_requested.connect(self._on_preview_tick)
+        self._settings_panel.preview_win_requested.connect(self._on_preview_win)
+        self._settings_panel.custom_tick_file_changed.connect(self._on_custom_tick_file)
+        self._settings_panel.custom_win_file_changed.connect(self._on_custom_win_file)
+        self._settings_panel.log_clear_requested.connect(self._on_log_clear)
+        self._settings_panel.shuffle_once_requested.connect(self._on_shuffle_once)
+        self._settings_panel.pattern_export_requested.connect(self._on_pattern_export)
+        self._settings_panel.pattern_import_requested.connect(self._on_pattern_import)
+        self._settings_panel.log_export_requested.connect(self._on_log_export)
+
+        # --- フローティング初期状態適用（復元前に設定） ---
+        if self._settings.settings_panel_float:
+            self._apply_settings_panel_float(True)
 
         self._restore_settings_panel_visibility()
+
+        # --- grip / ctrl_box の初期状態適用 ---
+        if not self._settings.grip_visible:
+            self._apply_grip_visible(False)
+        if not self._settings.ctrl_box_visible:
+            self._apply_ctrl_box_visible(False)
 
         # --- パネル一覧（Z オーダー管理対象）に SettingsPanel を追加 ---
         self._panels.append(self._settings_panel)
@@ -266,6 +314,16 @@ class MainWindow(QMainWindow):
         panel = ctx.panel
         if panel.spin_ctrl.is_spinning:
             return False
+        # auto_shuffle: スピン前に項目順をランダム化してセグメント再構築
+        if self._settings.auto_shuffle:
+            import random
+            entries = list(ctx.item_entries)
+            random.shuffle(entries)
+            ctx.item_entries = entries
+            ctx.segments, _ = build_segments_from_entries(
+                entries, self._config
+            )
+            panel.set_segments(ctx.segments)
         self._settings_panel.set_spinning(True)
         panel.start_spin()
         return True
@@ -724,6 +782,12 @@ class MainWindow(QMainWindow):
             panel.spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
         panel.result_overlay.set_close_mode(self._settings.result_close_mode)
         panel.result_overlay.set_hold_sec(self._settings.result_hold_sec)
+        panel.wheel.set_log_visible(self._settings.log_overlay_show)
+        panel.wheel.set_log_timestamp(self._settings.log_timestamp)
+        panel.wheel.set_log_box_border(self._settings.log_box_border)
+        panel.wheel.set_log_on_top(self._settings.log_on_top)
+        panel.spin_ctrl.set_spin_duration(self._settings.spin_duration)
+        panel.wheel.set_transparent(self._settings.transparent)
 
         # manager 登録
         self._manager.register(RouletteContext(
@@ -792,6 +856,7 @@ class MainWindow(QMainWindow):
         if activate:
             self._set_active_roulette(roulette_id)
 
+        self._update_instance_labels()
         return panel
 
     def _remove_roulette(self, roulette_id: str) -> bool:
@@ -828,6 +893,7 @@ class MainWindow(QMainWindow):
                 and self._last_spin_result.roulette_id == roulette_id):
             self._last_spin_result = None
 
+        self._update_instance_labels()
         return True
 
     # ---- ID 採番 ----
@@ -886,6 +952,28 @@ class MainWindow(QMainWindow):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
+    def _apply_transparent(self, enabled: bool):
+        """OBS透過モードを適用する。"""
+        self._settings.transparent = enabled
+        central = self.centralWidget()
+        rp = self._active_panel
+        if enabled:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if central:
+                central.setStyleSheet("background-color: transparent;")
+        else:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            if central:
+                central.setStyleSheet(
+                    f"background-color: {self._design.bg};"
+                )
+        rp.wheel.set_transparent(enabled)
+        # ウィンドウフラグの再適用が必要（WA_TranslucentBackground の変更を反映）
+        was_visible = self.isVisible()
+        self._apply_window_flags()
+        if was_visible:
+            self.show()
+
     def _toggle_always_on_top(self):
         """常に最前面の ON/OFF を切り替える。"""
         self._settings.always_on_top = not self._settings.always_on_top
@@ -894,6 +982,130 @@ class MainWindow(QMainWindow):
         if was_visible:
             self.show()  # setWindowFlags 後に再表示が必要
         self._save_config()
+
+    def _toggle_grip_visible(self):
+        """リサイズグリップの表示/非表示を切り替える。"""
+        new_val = not self._settings.grip_visible
+        self._settings.grip_visible = new_val
+        self._apply_grip_visible(new_val)
+        self._settings_panel.update_setting("grip_visible", new_val)
+        self._save_config()
+
+    def _toggle_ctrl_box_visible(self):
+        """コントロールボックスの表示/非表示を切り替える。"""
+        new_val = not self._settings.ctrl_box_visible
+        self._settings.ctrl_box_visible = new_val
+        self._apply_ctrl_box_visible(new_val)
+        self._settings_panel.update_setting("ctrl_box_visible", new_val)
+        self._save_config()
+
+    def _toggle_show_instance(self):
+        """インスタンス番号表示の ON/OFF を切り替える。"""
+        new_val = not self._settings.float_win_show_instance
+        self._settings.float_win_show_instance = new_val
+        self._update_instance_labels()
+        self._settings_panel.update_setting("float_win_show_instance", new_val)
+        self._save_config()
+
+    def _toggle_settings_panel_float(self):
+        """設定パネルのフローティング独立化を切り替える。"""
+        new_val = not self._settings.settings_panel_float
+        self._settings.settings_panel_float = new_val
+        self._apply_settings_panel_float(new_val)
+        self._settings_panel.update_setting("settings_panel_float", new_val)
+        self._save_config()
+
+    def _apply_settings_panel_float(self, floating: bool):
+        """設定パネルの埋め込み/フローティングを切り替える。"""
+        sp = self._settings_panel
+        was_visible = self._settings_panel_visible
+
+        # 現在の位置・サイズを保存
+        if was_visible:
+            cur_w, cur_h = sp.width(), sp.height()
+            if floating:
+                # 埋め込み→フローティング: 親内座標→スクリーン座標に変換
+                global_pos = sp.mapToGlobal(QPoint(0, 0))
+                cur_x, cur_y = global_pos.x(), global_pos.y()
+            else:
+                # フローティング→埋め込み: スクリーン座標→親内座標に変換
+                parent = self.centralWidget()
+                if parent:
+                    local_pos = parent.mapFromGlobal(sp.pos())
+                    cur_x, cur_y = local_pos.x(), local_pos.y()
+                else:
+                    cur_x, cur_y = sp.x(), sp.y()
+        else:
+            cur_w = getattr(self, '_last_sp_w', sp._panel_min_w)
+            cur_h = getattr(self, '_last_sp_h', 400)
+            cur_x = getattr(self, '_last_sp_x', 0)
+            cur_y = getattr(self, '_last_sp_y', 0)
+
+        # 一旦隠す
+        sp.hide()
+
+        if floating:
+            # フローティング化: 親から切り離し
+            sp.setParent(None)
+            sp.setWindowFlags(
+                Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+            )
+            sp._floating = True
+            # スクリーン座標で配置
+            sp.setGeometry(cur_x, cur_y, cur_w, cur_h)
+        else:
+            # 埋め込み化: 親に戻す
+            central = self.centralWidget()
+            sp.setParent(central)
+            sp.setWindowFlags(Qt.WindowType.Widget)
+            sp._floating = False
+            # 親内座標で配置（クランプ）
+            pw = central.width() if central else self.width()
+            ph = central.height() if central else self.height()
+            cur_x = max(0, min(cur_x, pw - cur_w))
+            cur_y = max(0, min(cur_y, ph - cur_h))
+            sp.setGeometry(cur_x, cur_y, cur_w, cur_h)
+
+        # 表示復元
+        if was_visible:
+            sp.show()
+            sp.raise_()
+
+        # 保存座標を更新
+        self._last_sp_w = cur_w
+        self._last_sp_h = cur_h
+        self._last_sp_x = cur_x
+        self._last_sp_y = cur_y
+
+    def _apply_grip_visible(self, visible: bool):
+        """全パネルのリサイズグリップの表示状態を反映する。"""
+        self._active_panel._grip.setVisible(visible)
+        self._settings_panel._resize_grip.setVisible(visible)
+
+    def _apply_ctrl_box_visible(self, visible: bool):
+        """コントロールボックス相当UIの表示状態を反映する。
+
+        PySide6 側では v0.4.4 のコントロールボックス（最小化/閉じるボタン群）に
+        直接対応するUIがない。ここでは SettingsPanel のスピンセクション
+        （スピンボタン + プリセット選択行）を「操作ボックス」相当とみなし、
+        その表示/非表示を制御する。
+        """
+        self._settings_panel.set_spin_section_visible(visible)
+
+    def _update_instance_labels(self):
+        """全 RoulettePanel のインスタンス番号ラベルを更新する。
+
+        表示条件:
+          - float_win_show_instance が ON
+          - かつルーレットが2個以上
+        単窓時や設定 OFF 時は番号を非表示にする。
+        """
+        ids = self._manager.ids()
+        show = self._settings.float_win_show_instance and len(ids) > 1
+        for i, rid in enumerate(ids):
+            ctx = self._manager.get(rid)
+            if ctx and ctx.panel:
+                ctx.panel.set_instance_label(i + 1 if show else None)
 
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。
@@ -983,25 +1195,47 @@ class MainWindow(QMainWindow):
 
     def _show_settings_panel_at_saved_or_default(self):
         """項目設定パネルを保存位置またはデフォルト位置で表示する。"""
-        panel_min = self._settings_panel._panel_min_w
-        parent = self.centralWidget()
-        pw = parent.width() if parent else self.width()
-        ph = parent.height() if parent else self.height()
-        m = 2
+        sp = self._settings_panel
+        panel_min = sp._panel_min_w
 
-        sp_w = getattr(self, '_last_sp_w', panel_min)
-        sp_h = getattr(self, '_last_sp_h', ph - 2 * m)
-        sp_x = getattr(self, '_last_sp_x', pw - sp_w - m)
-        sp_y = getattr(self, '_last_sp_y', m)
+        if sp._floating:
+            # フローティング時: スクリーン座標で配置
+            avail = self._get_available_geometry()
+            sw = avail.width() if avail else 1920
+            sh = avail.height() if avail else 1080
+            sx = avail.x() if avail else 0
+            sy = avail.y() if avail else 0
 
-        sp_w = max(panel_min, min(sp_w, pw))
-        sp_h = max(100, min(sp_h, ph))
-        sp_x = max(0, min(sp_x, pw - sp_w))
-        sp_y = max(0, min(sp_y, ph - sp_h))
+            sp_w = getattr(self, '_last_sp_w', panel_min)
+            sp_h = getattr(self, '_last_sp_h', 600)
+            sp_x = getattr(self, '_last_sp_x', sx + sw - sp_w - 10)
+            sp_y = getattr(self, '_last_sp_y', sy + 10)
 
-        self._settings_panel.setGeometry(sp_x, sp_y, sp_w, sp_h)
-        self._settings_panel.show()
-        self._settings_panel.raise_()
+            sp_w = max(panel_min, min(sp_w, sw))
+            sp_h = max(100, min(sp_h, sh))
+
+            sp.setGeometry(sp_x, sp_y, sp_w, sp_h)
+        else:
+            # 埋め込み時: 親内座標で配置
+            parent = self.centralWidget()
+            pw = parent.width() if parent else self.width()
+            ph = parent.height() if parent else self.height()
+            m = 2
+
+            sp_w = getattr(self, '_last_sp_w', panel_min)
+            sp_h = getattr(self, '_last_sp_h', ph - 2 * m)
+            sp_x = getattr(self, '_last_sp_x', pw - sp_w - m)
+            sp_y = getattr(self, '_last_sp_y', m)
+
+            sp_w = max(panel_min, min(sp_w, pw))
+            sp_h = max(100, min(sp_h, ph))
+            sp_x = max(0, min(sp_x, pw - sp_w))
+            sp_y = max(0, min(sp_y, ph - sp_h))
+
+            sp.setGeometry(sp_x, sp_y, sp_w, sp_h)
+
+        sp.show()
+        sp.raise_()
         self._settings_panel_visible = True
 
     def _clamp_position(self, x: int, y: int, w: int, h: int) -> tuple[int, int]:
@@ -1105,6 +1339,12 @@ class MainWindow(QMainWindow):
         )
         print(f"[dev] last_spin_result: roulette='{roulette_id}', "
               f"winner='{winner}', seg={seg_idx}")
+        # ログオーバーレイに追加 + 自動保存
+        if winner:
+            ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+            if ctx:
+                ctx.panel.wheel.add_log_entry(winner)
+                ctx.panel.wheel.save_log(self._log_autosave_path)
         # auto advance の再開は ResultOverlay.closed で行う（spin_finished 直後ではなく
         # 結果表示の hold 完了後に再開するため）
 
@@ -1116,8 +1356,178 @@ class MainWindow(QMainWindow):
         self._save_config()
 
     def _on_preset_changed(self, name: str):
+        from spin_preset import SPIN_PRESETS
         self._active_panel.spin_ctrl.set_spin_preset(name)
         self._settings.spin_preset_name = name
+        # プリセット切替時、そのプリセットの duration で spin_duration を連動更新
+        if name in SPIN_PRESETS:
+            dur = SPIN_PRESETS[name].duration
+            self._settings.spin_duration = dur
+            self._active_panel.spin_ctrl.set_spin_duration(dur)
+            self._settings_panel.update_setting("spin_duration", dur)
+        self._save_config()
+
+    def _on_preview_tick(self):
+        """tick音テスト再生。"""
+        self._sound.preview_tick(self._settings.tick_pattern)
+
+    def _on_preview_win(self):
+        """result音テスト再生。"""
+        self._sound.preview_win(self._settings.win_pattern)
+
+    def _on_pattern_export(self):
+        """現在のパターンをJSONファイルにエクスポートする。"""
+        import json
+        from PySide6.QtWidgets import QFileDialog
+        ctx = self._active_context
+        pattern_name = get_current_pattern_name(self._config)
+        entries = [e.to_dict() for e in ctx.item_entries]
+        if not entries:
+            return
+        default_name = f"{pattern_name}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "パターンをエクスポート", default_name,
+            "JSON ファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+        data = {
+            "pattern_name": pattern_name,
+            "entries": entries,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _on_pattern_import(self):
+        """JSONファイルからパターンをインポートする。"""
+        import json
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        path, _ = QFileDialog.getOpenFileName(
+            self, "パターンをインポート", "",
+            "JSON ファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+        # ファイル読み込み
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            QMessageBox.warning(self, "インポートエラー",
+                                f"ファイルを読み込めませんでした。\n{e}")
+            return
+        # バリデーション: トップレベル構造
+        if not isinstance(data, dict):
+            QMessageBox.warning(self, "インポートエラー",
+                                "不正な形式です。JSON オブジェクトが必要です。")
+            return
+        pattern_name = data.get("pattern_name")
+        entries_raw = data.get("entries")
+        if not isinstance(pattern_name, str) or not pattern_name.strip():
+            QMessageBox.warning(self, "インポートエラー",
+                                "pattern_name が見つからないか不正です。")
+            return
+        if not isinstance(entries_raw, list):
+            QMessageBox.warning(self, "インポートエラー",
+                                "entries が見つからないか不正です。")
+            return
+        # バリデーション: 各エントリ
+        for i, entry in enumerate(entries_raw):
+            if not isinstance(entry, dict):
+                QMessageBox.warning(self, "インポートエラー",
+                                    f"entries[{i}] が不正な形式です。")
+                return
+            if "text" not in entry:
+                QMessageBox.warning(self, "インポートエラー",
+                                    f"entries[{i}] に text キーがありません。")
+                return
+        # 同名パターン衝突時: 連番付き別名で追加
+        pattern_name = pattern_name.strip()
+        existing = get_pattern_names(self._config)
+        final_name = pattern_name
+        if final_name in existing:
+            suffix = 1
+            while f"{pattern_name}_{suffix}" in existing:
+                suffix += 1
+            final_name = f"{pattern_name}_{suffix}"
+        # 現在のパターンを保存してからインポート
+        self._save_item_entries()
+        # パターン追加 + エントリ書き込み
+        add_pattern(self._config, final_name)
+        # ItemEntry に変換して保存
+        from item_entry import ItemEntry
+        imported_entries = []
+        for raw in entries_raw:
+            item = ItemEntry.from_config_entry(raw, keep_disabled=True)
+            if item is not None:
+                imported_entries.append(item)
+        save_item_entries(self._config, imported_entries, pattern_name=final_name)
+        # インポートしたパターンに切替
+        set_current_pattern(self._config, final_name)
+        ctx = self._active_context
+        ctx.item_entries = imported_entries
+        ctx.segments, _ = build_segments_from_entries(imported_entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(imported_entries)
+        self._settings_panel.set_pattern_list(
+            get_pattern_names(self._config), final_name
+        )
+
+    def _on_shuffle_once(self):
+        """単発ランダム再配置。item_entries をシャッフルしてセグメント再構築。"""
+        import random
+        ctx = self._active_context
+        entries = list(ctx.item_entries)
+        random.shuffle(entries)
+        ctx.item_entries = entries
+        ctx.segments, _ = build_segments_from_entries(entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(entries)
+        self._save_item_entries()
+
+    def _on_log_clear(self):
+        """ログ履歴クリア。confirm_reset=ON なら確認ダイアログを表示。"""
+        if self._settings.confirm_reset:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, "確認", "ログ履歴をクリアしますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._active_panel.wheel.clear_log()
+        self._active_panel.wheel.save_log(self._log_autosave_path)
+
+    def _on_log_export(self):
+        """ログ履歴をテキストファイルにエクスポートする。"""
+        from PySide6.QtWidgets import QFileDialog
+        entries = self._active_panel.wheel.get_log_entries()
+        if not entries:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "ログをエクスポート", "roulette_log.txt",
+            "テキストファイル (*.txt);;全てのファイル (*)"
+        )
+        if not path:
+            return
+        # 古い順に出力（entries は新しい順なので逆順）
+        lines = []
+        for ts, text in reversed(entries):
+            lines.append(f"[{ts}] {text}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def _on_custom_tick_file(self, path: str):
+        """カスタムtick音ファイル変更。"""
+        self._settings.tick_custom_file = path
+        self._sound.load_tick_custom(path)
+        self._save_config()
+
+    def _on_custom_win_file(self, path: str):
+        """カスタムresult音ファイル変更。"""
+        self._settings.win_custom_file = path
+        self._sound.load_win_custom(path)
         self._save_config()
 
     # ================================================================
@@ -1172,6 +1582,42 @@ class MainWindow(QMainWindow):
             rp.spin_ctrl.set_sound_tick_enabled(value)
         elif key == "sound_result_enabled":
             rp.spin_ctrl.set_sound_result_enabled(value)
+        elif key == "tick_volume":
+            self._sound.set_tick_volume(value / 100.0)
+        elif key == "win_volume":
+            self._sound.set_win_volume(value / 100.0)
+        elif key == "tick_pattern":
+            self._sound.set_tick_pattern(value)
+        elif key == "win_pattern":
+            self._sound.set_win_pattern(value)
+        elif key == "log_overlay_show":
+            rp.wheel.set_log_visible(value)
+        elif key == "log_timestamp":
+            rp.wheel.set_log_timestamp(value)
+        elif key == "log_box_border":
+            rp.wheel.set_log_box_border(value)
+        elif key == "log_on_top":
+            rp.wheel.set_log_on_top(value)
+        elif key == "spin_duration":
+            rp.spin_ctrl.set_spin_duration(value)
+        elif key == "transparent":
+            self._apply_transparent(value)
+        elif key == "arrangement_direction":
+            # 配置方向変更: config 更新 → セグメント再構築
+            self._config["arrangement_direction"] = value
+            ctx = self._active_context
+            ctx.segments, _ = build_segments_from_entries(
+                ctx.item_entries, self._config
+            )
+            rp.set_segments(ctx.segments)
+        elif key == "grip_visible":
+            self._apply_grip_visible(value)
+        elif key == "ctrl_box_visible":
+            self._apply_ctrl_box_visible(value)
+        elif key == "float_win_show_instance":
+            self._update_instance_labels()
+        elif key == "settings_panel_float":
+            self._apply_settings_panel_float(value)
 
         self._save_config()
         return True
@@ -1207,6 +1653,54 @@ class MainWindow(QMainWindow):
         ctx.panel.set_segments(ctx.segments)
         self._save_item_entries()
         return True
+
+    # ================================================================
+    #  パターン管理ハンドラ
+    # ================================================================
+
+    def _on_pattern_switched(self, name: str):
+        """パターン切替: 項目を切り替えてホイールを更新する。"""
+        # 現在のパターンの項目を保存してから切替
+        self._save_item_entries()
+        set_current_pattern(self._config, name)
+        # 新パターンの項目を読み込み
+        entries = load_all_item_entries(self._config)
+        ctx = self._active_context
+        ctx.item_entries = entries
+        ctx.segments, _ = build_segments_from_entries(entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(entries)
+
+    def _on_pattern_added(self, name: str):
+        """パターン追加: 空パターンを作成し、切り替える。"""
+        # 現在のパターンの項目を保存
+        self._save_item_entries()
+        add_pattern(self._config, name)
+        set_current_pattern(self._config, name)
+        # 空の項目リストで更新
+        entries = []
+        ctx = self._active_context
+        ctx.item_entries = entries
+        ctx.segments, _ = build_segments_from_entries(entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(entries)
+
+    def _on_pattern_deleted(self, name: str):
+        """パターン削除: 削除後に残りの先頭パターンに切り替える。"""
+        # 現在のパターンを保存してから削除
+        self._save_item_entries()
+        delete_pattern(self._config, name)
+        # 新しい current の項目を読み込み
+        new_current = get_current_pattern_name(self._config)
+        entries = load_all_item_entries(self._config)
+        ctx = self._active_context
+        ctx.item_entries = entries
+        ctx.segments, _ = build_segments_from_entries(entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(entries)
+        self._settings_panel.set_pattern_list(
+            get_pattern_names(self._config), new_current
+        )
 
     # ================================================================
     #  パネル開閉（F1 でトグル）
@@ -1297,6 +1791,26 @@ class MainWindow(QMainWindow):
         aot_mark = "\u25cf" if s.always_on_top else "  "
         action = menu.addAction(f"{aot_mark} 常に最前面")
         action.triggered.connect(self._toggle_always_on_top)
+
+        # リサイズグリップ表示
+        grip_mark = "\u25cf" if s.grip_visible else "  "
+        action = menu.addAction(f"{grip_mark} リサイズグリップ表示")
+        action.triggered.connect(self._toggle_grip_visible)
+
+        # コントロールボックス表示
+        cb_mark = "\u25cf" if s.ctrl_box_visible else "  "
+        action = menu.addAction(f"{cb_mark} コントロールボックス表示")
+        action.triggered.connect(self._toggle_ctrl_box_visible)
+
+        # インスタンス番号表示
+        inst_mark = "\u25cf" if s.float_win_show_instance else "  "
+        action = menu.addAction(f"{inst_mark} インスタンス番号表示")
+        action.triggered.connect(self._toggle_show_instance)
+
+        # 設定パネル独立化
+        float_mark = "\u25cf" if s.settings_panel_float else "  "
+        action = menu.addAction(f"{float_mark} 設定パネル独立化")
+        action.triggered.connect(self._toggle_settings_panel_float)
 
         menu.addSeparator()
 

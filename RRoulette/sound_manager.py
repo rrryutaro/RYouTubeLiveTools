@@ -223,6 +223,7 @@ class SoundManager:
         """試聴用（ミュート無視）"""
         if idx == len(TICK_PATTERN_NAMES) - 1:
             if self._tick_custom_snd:
+                self._tick_custom_snd.set_volume(self._tick_volume)
                 self._tick_custom_snd.play()
             return
         if self._tick_snds:
@@ -235,6 +236,7 @@ class SoundManager:
         """試聴用（ミュート無視）"""
         if idx == len(WIN_PATTERN_NAMES) - 1:
             if self._win_custom_snd:
+                self._win_custom_snd.set_volume(self._win_volume)
                 self._win_custom_snd.play()
             return
         if self._win_snds:

@@ -30,7 +30,8 @@ from PySide6.QtGui import QFont, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
-    QDoubleSpinBox, QLineEdit, QStackedWidget,
+    QDoubleSpinBox, QSpinBox, QLineEdit, QStackedWidget, QSlider,
+    QFileDialog,
 )
 
 from bridge import (
@@ -280,10 +281,25 @@ class SettingsPanel(QFrame):
     preset_changed = Signal(str)
     setting_changed = Signal(str, object)
     item_entries_changed = Signal(list)
+    pattern_switched = Signal(str)      # パターン切替 (新パターン名)
+    pattern_added = Signal(str)         # パターン追加 (新パターン名)
+    pattern_deleted = Signal(str)       # パターン削除 (削除パターン名)
+    preview_tick_requested = Signal()   # tick音テスト再生
+    preview_win_requested = Signal()    # result音テスト再生
+    log_clear_requested = Signal()     # 履歴クリア
+    log_export_requested = Signal()    # ログエクスポート
+    shuffle_once_requested = Signal()  # 単発ランダム再配置
+    pattern_export_requested = Signal()  # パターンエクスポート
+    pattern_import_requested = Signal()  # パターンインポート
+    custom_tick_file_changed = Signal(str)  # カスタムtick音ファイル変更
+    custom_win_file_changed = Signal(str)   # カスタムresult音ファイル変更
     geometry_changed = Signal()
 
     def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
-                 design: DesignSettings, parent=None):
+                 design: DesignSettings, *,
+                 pattern_names: list[str] | None = None,
+                 current_pattern: str = "デフォルト",
+                 parent=None):
         """操作・設定パネル。
 
         Args:
@@ -292,6 +308,8 @@ class SettingsPanel(QFrame):
                 確率・分割等を保持する ItemEntry のリスト。
             settings: アプリ設定データ（AppSettings）。
             design: デザイン設定。
+            pattern_names: パターン名一覧（None なら ["デフォルト"]）。
+            current_pattern: 現在選択中のパターン名。
         """
         super().__init__(parent)
         self._design = design
@@ -320,10 +338,16 @@ class SettingsPanel(QFrame):
         self._layout.setSpacing(8)
 
         # ── アプリ設定セクション ──
-        self._build_spin_section(design)
+        self._build_spin_section(settings, design)
         self._build_display_section(settings, design)
         self._build_result_section(settings, design)
         self._build_sound_section(settings, design)
+        self._build_log_section(settings, design)
+
+        # ── パターン管理セクション ──
+        self._pattern_names = list(pattern_names or ["デフォルト"])
+        self._current_pattern = current_pattern
+        self._build_pattern_section(design)
 
         # ── 項目データセクション ──
         self._build_items_section(item_entries, design)
@@ -352,6 +376,9 @@ class SettingsPanel(QFrame):
         # ── パネル前後関係 ──
         self.pinned_front = False  # True: 通常パネルより常に上に表示
 
+        # ── フローティング独立化状態 ──
+        self._floating = False
+
         # ── パネルドラッグ状態 ──
         self._dragging_panel = False
         self._panel_drag_start = QPoint()
@@ -361,9 +388,16 @@ class SettingsPanel(QFrame):
     #  セクション 1: スピン操作（実装済み）
     # ================================================================
 
-    def _build_spin_section(self, design: DesignSettings):
+    def _build_spin_section(self, settings: AppSettings,
+                            design: DesignSettings):
+        # スピンセクション全体をコンテナで囲む（ctrl_box_visible で一括制御用）
+        self._spin_section = QWidget()
+        spin_layout = QVBoxLayout(self._spin_section)
+        spin_layout.setContentsMargins(0, 0, 0, 0)
+        spin_layout.setSpacing(8)
+
         self._spin_header = _SectionHeader("スピン", design)
-        self._layout.addWidget(self._spin_header)
+        spin_layout.addWidget(self._spin_header)
 
         # spin ボタン
         self._spin_btn = QPushButton("▶  スピン開始")
@@ -372,7 +406,7 @@ class SettingsPanel(QFrame):
         self._spin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_spin_btn_style(design)
         self._spin_btn.clicked.connect(self.spin_requested.emit)
-        self._layout.addWidget(self._spin_btn)
+        spin_layout.addWidget(self._spin_btn)
 
         # プリセット選択
         preset_row = QHBoxLayout()
@@ -393,7 +427,40 @@ class SettingsPanel(QFrame):
         self._preset_combo.currentTextChanged.connect(self.preset_changed.emit)
         preset_row.addWidget(self._preset_combo, stretch=1)
 
-        self._layout.addLayout(preset_row)
+        spin_layout.addLayout(preset_row)
+
+        # スピン時間
+        dur_row = QHBoxLayout()
+        dur_row.setSpacing(4)
+
+        dur_lbl = QLabel("スピン時間:")
+        dur_lbl.setFont(QFont("Meiryo", 8))
+        dur_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._dur_lbl = dur_lbl
+        dur_row.addWidget(dur_lbl)
+
+        self._dur_spin = QDoubleSpinBox()
+        self._dur_spin.setFont(QFont("Meiryo", 8))
+        self._dur_spin.setRange(1.0, 30.0)
+        self._dur_spin.setSingleStep(1.0)
+        self._dur_spin.setDecimals(1)
+        self._dur_spin.setSuffix(" 秒")
+        self._dur_spin.setValue(settings.spin_duration)
+        self._dur_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._dur_spin.valueChanged.connect(
+            lambda v: self.setting_changed.emit("spin_duration", v)
+        )
+        dur_row.addWidget(self._dur_spin, stretch=1)
+
+        spin_layout.addLayout(dur_row)
+
+        self._layout.addWidget(self._spin_section)
 
     # ================================================================
     #  セクション 2: 表示設定（実装済み）
@@ -434,6 +501,56 @@ class SettingsPanel(QFrame):
             lambda v: self.setting_changed.emit("donut_hole", v)
         )
         self._layout.addWidget(self._donut_cb)
+
+        # OBS透過モード
+        self._transparent_cb = QCheckBox("OBS透過モード")
+        self._transparent_cb.setFont(QFont("Meiryo", 8))
+        self._transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._transparent_cb.setChecked(settings.transparent)
+        self._transparent_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("transparent", v)
+        )
+        self._layout.addWidget(self._transparent_cb)
+
+        # リサイズグリップ表示
+        self._grip_visible_cb = QCheckBox("リサイズグリップ表示")
+        self._grip_visible_cb.setFont(QFont("Meiryo", 8))
+        self._grip_visible_cb.setStyleSheet(f"color: {design.text};")
+        self._grip_visible_cb.setChecked(settings.grip_visible)
+        self._grip_visible_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("grip_visible", v)
+        )
+        self._layout.addWidget(self._grip_visible_cb)
+
+        # コントロールボックス表示（ドラッグバー）
+        self._ctrl_box_visible_cb = QCheckBox("コントロールボックス表示")
+        self._ctrl_box_visible_cb.setFont(QFont("Meiryo", 8))
+        self._ctrl_box_visible_cb.setStyleSheet(f"color: {design.text};")
+        self._ctrl_box_visible_cb.setChecked(settings.ctrl_box_visible)
+        self._ctrl_box_visible_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("ctrl_box_visible", v)
+        )
+        self._layout.addWidget(self._ctrl_box_visible_cb)
+
+        # インスタンス番号表示
+        self._instance_label_cb = QCheckBox("インスタンス番号表示")
+        self._instance_label_cb.setFont(QFont("Meiryo", 8))
+        self._instance_label_cb.setStyleSheet(f"color: {design.text};")
+        self._instance_label_cb.setChecked(settings.float_win_show_instance)
+        self._instance_label_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("float_win_show_instance", v)
+        )
+        self._layout.addWidget(self._instance_label_cb)
+
+        # 設定パネルフローティング
+        self._float_panel_cb = QCheckBox("設定パネル独立化")
+        self._float_panel_cb.setFont(QFont("Meiryo", 8))
+        self._float_panel_cb.setStyleSheet(f"color: {design.text};")
+        self._float_panel_cb.setChecked(settings.settings_panel_float)
+        self._float_panel_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("settings_panel_float", v)
+        )
+        self._layout.addWidget(self._float_panel_cb)
 
         # サイズプロファイル
         prof_row = QHBoxLayout()
@@ -700,6 +817,430 @@ class SettingsPanel(QFrame):
         )
         self._layout.addWidget(self._sound_result_cb)
 
+        # tick 音量スライダー
+        tick_vol_row = QHBoxLayout()
+        tick_vol_row.setSpacing(4)
+        tick_vol_lbl = QLabel("スピン音量:")
+        tick_vol_lbl.setFont(QFont("Meiryo", 8))
+        tick_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tick_vol_lbl = tick_vol_lbl
+        tick_vol_row.addWidget(tick_vol_lbl)
+
+        self._tick_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._tick_vol_slider.setRange(0, 100)
+        self._tick_vol_slider.setValue(settings.tick_volume)
+        self._tick_vol_slider.setStyleSheet(
+            f"QSlider::groove:horizontal {{"
+            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
+            f"}}"
+            f"QSlider::handle:horizontal {{"
+            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        self._tick_vol_slider.valueChanged.connect(
+            lambda v: self.setting_changed.emit("tick_volume", v)
+        )
+        tick_vol_row.addWidget(self._tick_vol_slider, stretch=1)
+
+        self._tick_vol_val = QLabel(f"{settings.tick_volume}%")
+        self._tick_vol_val.setFont(QFont("Meiryo", 7))
+        self._tick_vol_val.setStyleSheet(f"color: {design.text_sub};")
+        self._tick_vol_val.setFixedWidth(32)
+        self._tick_vol_slider.valueChanged.connect(
+            lambda v: self._tick_vol_val.setText(f"{v}%")
+        )
+        tick_vol_row.addWidget(self._tick_vol_val)
+        self._layout.addLayout(tick_vol_row)
+
+        # result 音量スライダー
+        win_vol_row = QHBoxLayout()
+        win_vol_row.setSpacing(4)
+        win_vol_lbl = QLabel("決定音量:")
+        win_vol_lbl.setFont(QFont("Meiryo", 8))
+        win_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._win_vol_lbl = win_vol_lbl
+        win_vol_row.addWidget(win_vol_lbl)
+
+        self._win_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._win_vol_slider.setRange(0, 100)
+        self._win_vol_slider.setValue(settings.win_volume)
+        self._win_vol_slider.setStyleSheet(
+            f"QSlider::groove:horizontal {{"
+            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
+            f"}}"
+            f"QSlider::handle:horizontal {{"
+            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        self._win_vol_slider.valueChanged.connect(
+            lambda v: self.setting_changed.emit("win_volume", v)
+        )
+        win_vol_row.addWidget(self._win_vol_slider, stretch=1)
+
+        self._win_vol_val = QLabel(f"{settings.win_volume}%")
+        self._win_vol_val.setFont(QFont("Meiryo", 7))
+        self._win_vol_val.setStyleSheet(f"color: {design.text_sub};")
+        self._win_vol_val.setFixedWidth(32)
+        self._win_vol_slider.valueChanged.connect(
+            lambda v: self._win_vol_val.setText(f"{v}%")
+        )
+        win_vol_row.addWidget(self._win_vol_val)
+        self._layout.addLayout(win_vol_row)
+
+        # tick 音パターン選択
+        from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
+        self._TICK_CUSTOM_IDX = len(TICK_PATTERN_NAMES) - 1
+        self._WIN_CUSTOM_IDX = len(WIN_PATTERN_NAMES) - 1
+
+        tick_pat_row = QHBoxLayout()
+        tick_pat_row.setSpacing(4)
+        tick_pat_lbl = QLabel("スピン音:")
+        tick_pat_lbl.setFont(QFont("Meiryo", 8))
+        tick_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tick_pat_lbl = tick_pat_lbl
+        tick_pat_row.addWidget(tick_pat_lbl)
+
+        self._tick_pat_combo = QComboBox()
+        self._tick_pat_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._tick_pat_combo, design)
+        for name in TICK_PATTERN_NAMES:
+            self._tick_pat_combo.addItem(name)
+        self._tick_pat_combo.setCurrentIndex(
+            min(settings.tick_pattern, len(TICK_PATTERN_NAMES) - 1)
+        )
+        self._tick_pat_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("tick_pattern", idx)
+        )
+        tick_pat_row.addWidget(self._tick_pat_combo, stretch=1)
+
+        small_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+
+        self._tick_file_btn = QPushButton("📁")
+        self._tick_file_btn.setFont(QFont("Meiryo", 8))
+        self._tick_file_btn.setStyleSheet(small_btn_style)
+        self._tick_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tick_file_btn.setToolTip("カスタムスピン音ファイルを選択")
+        self._tick_file_btn.clicked.connect(self._on_tick_custom_browse)
+        tick_pat_row.addWidget(self._tick_file_btn)
+
+        self._tick_test_btn = QPushButton("♪")
+        self._tick_test_btn.setFont(QFont("Meiryo", 8))
+        self._tick_test_btn.setStyleSheet(small_btn_style)
+        self._tick_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tick_test_btn.setToolTip("スピン音をテスト再生")
+        self._tick_test_btn.clicked.connect(self.preview_tick_requested.emit)
+        tick_pat_row.addWidget(self._tick_test_btn)
+
+        self._layout.addLayout(tick_pat_row)
+
+        # result 音パターン選択
+        win_pat_row = QHBoxLayout()
+        win_pat_row.setSpacing(4)
+        win_pat_lbl = QLabel("決定音:")
+        win_pat_lbl.setFont(QFont("Meiryo", 8))
+        win_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._win_pat_lbl = win_pat_lbl
+        win_pat_row.addWidget(win_pat_lbl)
+
+        self._win_pat_combo = QComboBox()
+        self._win_pat_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._win_pat_combo, design)
+        for name in WIN_PATTERN_NAMES:
+            self._win_pat_combo.addItem(name)
+        self._win_pat_combo.setCurrentIndex(
+            min(settings.win_pattern, len(WIN_PATTERN_NAMES) - 1)
+        )
+        self._win_pat_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("win_pattern", idx)
+        )
+        win_pat_row.addWidget(self._win_pat_combo, stretch=1)
+
+        self._win_file_btn = QPushButton("📁")
+        self._win_file_btn.setFont(QFont("Meiryo", 8))
+        self._win_file_btn.setStyleSheet(small_btn_style)
+        self._win_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._win_file_btn.setToolTip("カスタム決定音ファイルを選択")
+        self._win_file_btn.clicked.connect(self._on_win_custom_browse)
+        win_pat_row.addWidget(self._win_file_btn)
+
+        self._win_test_btn = QPushButton("♪")
+        self._win_test_btn.setFont(QFont("Meiryo", 8))
+        self._win_test_btn.setStyleSheet(small_btn_style)
+        self._win_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._win_test_btn.setToolTip("決定音をテスト再生")
+        self._win_test_btn.clicked.connect(self.preview_win_requested.emit)
+        win_pat_row.addWidget(self._win_test_btn)
+
+        self._layout.addLayout(win_pat_row)
+
+    def _on_tick_custom_browse(self):
+        """カスタムtick音ファイル選択ダイアログ。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "スピン音ファイルを選択", "",
+            "音声ファイル (*.wav *.mp3 *.ogg);;全てのファイル (*)"
+        )
+        if path:
+            self._tick_pat_combo.blockSignals(True)
+            self._tick_pat_combo.setCurrentIndex(self._TICK_CUSTOM_IDX)
+            self._tick_pat_combo.blockSignals(False)
+            self.setting_changed.emit("tick_pattern", self._TICK_CUSTOM_IDX)
+            self.custom_tick_file_changed.emit(path)
+
+    def _on_win_custom_browse(self):
+        """カスタムresult音ファイル選択ダイアログ。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "決定音ファイルを選択", "",
+            "音声ファイル (*.wav *.mp3 *.ogg);;全てのファイル (*)"
+        )
+        if path:
+            self._win_pat_combo.blockSignals(True)
+            self._win_pat_combo.setCurrentIndex(self._WIN_CUSTOM_IDX)
+            self._win_pat_combo.blockSignals(False)
+            self.setting_changed.emit("win_pattern", self._WIN_CUSTOM_IDX)
+            self.custom_win_file_changed.emit(path)
+
+    # ================================================================
+    #  セクション 3d: ログオーバーレイ
+    # ================================================================
+
+    def _build_log_section(self, settings: AppSettings,
+                           design: DesignSettings):
+        self._log_header = _SectionHeader("ログ", design)
+        self._layout.addWidget(self._log_header)
+
+        self._log_show_cb = QCheckBox("ログオーバーレイ表示")
+        self._log_show_cb.setFont(QFont("Meiryo", 8))
+        self._log_show_cb.setStyleSheet(f"color: {design.text};")
+        self._log_show_cb.setChecked(settings.log_overlay_show)
+        self._log_show_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_overlay_show", v)
+        )
+        self._layout.addWidget(self._log_show_cb)
+
+        self._log_ts_cb = QCheckBox("タイムスタンプ表示")
+        self._log_ts_cb.setFont(QFont("Meiryo", 8))
+        self._log_ts_cb.setStyleSheet(f"color: {design.text};")
+        self._log_ts_cb.setChecked(settings.log_timestamp)
+        self._log_ts_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_timestamp", v)
+        )
+        self._layout.addWidget(self._log_ts_cb)
+
+        self._log_border_cb = QCheckBox("枠線表示")
+        self._log_border_cb.setFont(QFont("Meiryo", 8))
+        self._log_border_cb.setStyleSheet(f"color: {design.text};")
+        self._log_border_cb.setChecked(settings.log_box_border)
+        self._log_border_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_box_border", v)
+        )
+        self._layout.addWidget(self._log_border_cb)
+
+        self._log_on_top_cb = QCheckBox("ログ前面表示")
+        self._log_on_top_cb.setFont(QFont("Meiryo", 8))
+        self._log_on_top_cb.setStyleSheet(f"color: {design.text};")
+        self._log_on_top_cb.setChecked(settings.log_on_top)
+        self._log_on_top_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_on_top", v)
+        )
+        self._layout.addWidget(self._log_on_top_cb)
+
+        # リセット確認
+        self._confirm_reset_cb = QCheckBox("リセット確認")
+        self._confirm_reset_cb.setFont(QFont("Meiryo", 8))
+        self._confirm_reset_cb.setStyleSheet(f"color: {design.text};")
+        self._confirm_reset_cb.setChecked(settings.confirm_reset)
+        self._confirm_reset_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("confirm_reset", v)
+        )
+        self._layout.addWidget(self._confirm_reset_cb)
+
+        # ログ操作ボタン行
+        log_btn_row = QHBoxLayout()
+        log_btn_row.setSpacing(4)
+
+        self._log_export_btn = QPushButton("エクスポート")
+        self._log_export_btn.setFont(QFont("Meiryo", 8))
+        self._log_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_export_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._log_export_btn.clicked.connect(self.log_export_requested.emit)
+        log_btn_row.addWidget(self._log_export_btn)
+
+        self._log_clear_btn = QPushButton("履歴クリア")
+        self._log_clear_btn.setFont(QFont("Meiryo", 8))
+        self._log_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_clear_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._log_clear_btn.clicked.connect(self.log_clear_requested.emit)
+        log_btn_row.addWidget(self._log_clear_btn)
+
+        self._layout.addLayout(log_btn_row)
+
+    # ================================================================
+    #  セクション 3c: パターン管理
+    # ================================================================
+
+    def _build_pattern_section(self, design: DesignSettings):
+        """パターン選択・追加・削除セクションを構築する。"""
+        self._pattern_header = _SectionHeader("パターン", design)
+        self._layout.addWidget(self._pattern_header)
+
+        # パターン選択行: [コンボ] [＋] [－]
+        pat_row = QHBoxLayout()
+        pat_row.setSpacing(4)
+
+        self._pattern_combo = QComboBox()
+        self._pattern_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._pattern_combo, design)
+        for name in self._pattern_names:
+            self._pattern_combo.addItem(name)
+        self._pattern_combo.setCurrentText(self._current_pattern)
+        self._pattern_combo.currentTextChanged.connect(self._on_pattern_switched)
+        pat_row.addWidget(self._pattern_combo, stretch=1)
+
+        btn_font = QFont("Meiryo", 8)
+        btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+
+        self._pattern_add_btn = QPushButton("＋")
+        self._pattern_add_btn.setFont(btn_font)
+        self._pattern_add_btn.setStyleSheet(btn_style)
+        self._pattern_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pattern_add_btn.setToolTip("新しいパターンを追加")
+        self._pattern_add_btn.clicked.connect(self._on_pattern_add)
+        pat_row.addWidget(self._pattern_add_btn)
+
+        del_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._pattern_del_btn = QPushButton("－")
+        self._pattern_del_btn.setFont(btn_font)
+        self._pattern_del_btn.setStyleSheet(del_btn_style)
+        self._pattern_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pattern_del_btn.setToolTip("現在のパターンを削除")
+        self._pattern_del_btn.clicked.connect(self._on_pattern_delete)
+        pat_row.addWidget(self._pattern_del_btn)
+
+        self._pattern_export_btn = QPushButton("↑")
+        self._pattern_export_btn.setFont(btn_font)
+        self._pattern_export_btn.setStyleSheet(btn_style)
+        self._pattern_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pattern_export_btn.setToolTip("現在のパターンをエクスポート")
+        self._pattern_export_btn.clicked.connect(self.pattern_export_requested.emit)
+        pat_row.addWidget(self._pattern_export_btn)
+
+        self._pattern_import_btn = QPushButton("↓")
+        self._pattern_import_btn.setFont(btn_font)
+        self._pattern_import_btn.setStyleSheet(btn_style)
+        self._pattern_import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pattern_import_btn.setToolTip("パターンをインポート")
+        self._pattern_import_btn.clicked.connect(self.pattern_import_requested.emit)
+        pat_row.addWidget(self._pattern_import_btn)
+
+        self._layout.addLayout(pat_row)
+        self._update_pattern_del_enabled()
+
+    def _on_pattern_switched(self, name: str):
+        """パターン選択変更時。"""
+        if name and name != self._current_pattern:
+            self._current_pattern = name
+            self.pattern_switched.emit(name)
+
+    def _on_pattern_add(self):
+        """パターン追加ボタン押下。"""
+        # 既存名と被らない名前を自動生成
+        base = "パターン"
+        idx = 1
+        while True:
+            name = f"{base}{idx}"
+            if name not in self._pattern_names:
+                break
+            idx += 1
+        self._pattern_names.append(name)
+        self._pattern_combo.blockSignals(True)
+        self._pattern_combo.addItem(name)
+        self._pattern_combo.setCurrentText(name)
+        self._pattern_combo.blockSignals(False)
+        self._current_pattern = name
+        self._update_pattern_del_enabled()
+        self.pattern_added.emit(name)
+
+    def _on_pattern_delete(self):
+        """パターン削除ボタン押下。confirm_reset=ON なら確認ダイアログ。"""
+        if len(self._pattern_names) <= 1:
+            return
+        if self._settings.confirm_reset:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, "確認",
+                f"パターン「{self._current_pattern}」を削除しますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        name = self._current_pattern
+        self._pattern_names.remove(name)
+        self._pattern_combo.blockSignals(True)
+        idx = self._pattern_combo.findText(name)
+        if idx >= 0:
+            self._pattern_combo.removeItem(idx)
+        self._pattern_combo.blockSignals(False)
+        # 新しい current を先頭に
+        self._current_pattern = self._pattern_combo.currentText()
+        self._update_pattern_del_enabled()
+        self.pattern_deleted.emit(name)
+
+    def _update_pattern_del_enabled(self):
+        """パターンが1件のみなら削除ボタンを無効化。"""
+        self._pattern_del_btn.setEnabled(len(self._pattern_names) > 1)
+
+    def set_spin_section_visible(self, visible: bool):
+        """スピンセクション（操作ボックス相当）の表示/非表示を切り替える。"""
+        self._spin_section.setVisible(visible)
+
+    def set_pattern_list(self, names: list[str], current: str):
+        """外部からパターン一覧と選択を更新する。"""
+        self._pattern_names = list(names)
+        self._current_pattern = current
+        self._pattern_combo.blockSignals(True)
+        self._pattern_combo.clear()
+        for name in names:
+            self._pattern_combo.addItem(name)
+        self._pattern_combo.setCurrentText(current)
+        self._pattern_combo.blockSignals(False)
+        self._update_pattern_del_enabled()
+
     # ================================================================
     #  セクション 4: 項目リスト（編集可能・ItemEntry 側）
     # ================================================================
@@ -908,6 +1449,28 @@ class SettingsPanel(QFrame):
         value_stack.addWidget(fixed_spin)
 
         prob_row.addWidget(value_stack, stretch=1)
+
+        # 分割数
+        split_lbl = QLabel("分割:")
+        split_lbl.setFont(QFont("Meiryo", 7))
+        split_lbl.setStyleSheet(f"color: {design.text_sub};")
+        prob_row.addWidget(split_lbl)
+
+        split_spin = QSpinBox()
+        split_spin.setFont(QFont("Meiryo", 7))
+        split_spin.setRange(1, 10)
+        split_spin.setValue(max(1, min(10, entry.split_count)))
+        split_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-size: 8pt;"
+            f"  min-width: 36px; max-width: 48px;"
+            f"}}"
+        )
+        split_spin.valueChanged.connect(lambda _: self._emit_entries_changed())
+        prob_row.addWidget(split_spin)
+
         outer_layout.addLayout(prob_row)
 
         # モード切替で表示切替
@@ -922,6 +1485,8 @@ class SettingsPanel(QFrame):
         row._value_stack = value_stack
         row._weight_combo = weight_combo
         row._fixed_spin = fixed_spin
+        row._split_lbl = split_lbl
+        row._split_spin = split_spin
 
         # 既存データから確率モード/値を復元
         self._restore_prob_ui(row, entry)
@@ -1021,6 +1586,7 @@ class SettingsPanel(QFrame):
             entries.append(ItemEntry(
                 text=text,
                 enabled=row._cb.isChecked(),
+                split_count=row._split_spin.value(),
                 prob_mode=prob_mode,
                 prob_value=prob_value,
             ))
@@ -1039,7 +1605,20 @@ class SettingsPanel(QFrame):
         self._emit_entries_changed()
 
     def _on_delete_item(self, row: QWidget):
-        """削除ボタン押下: 指定行を削除する。"""
+        """削除ボタン押下: 指定行を削除する。confirm_reset=ON なら確認ダイアログ。"""
+        if row not in self._item_rows:
+            return
+        if self._settings.confirm_reset:
+            from PySide6.QtWidgets import QMessageBox
+            text = row._edit.text().strip() or "（空）"
+            reply = QMessageBox.question(
+                self, "確認",
+                f"項目「{text}」を削除しますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         if row in self._item_rows:
             self._item_rows.remove(row)
             self._item_rows_layout.removeWidget(row)
@@ -1144,6 +1723,16 @@ class SettingsPanel(QFrame):
             row._mode_combo.setStyleSheet(combo_style)
             row._weight_combo.setStyleSheet(combo_style)
             row._fixed_spin.setStyleSheet(spin_style)
+            # 分割数 UI
+            row._split_lbl.setStyleSheet(f"color: {design.text_sub};")
+            row._split_spin.setStyleSheet(
+                f"QSpinBox {{"
+                f"  background-color: {design.separator}; color: {design.text};"
+                f"  border: 1px solid {design.separator}; border-radius: 3px;"
+                f"  padding: 1px 4px; font-size: 8pt;"
+                f"  min-width: 36px; max-width: 48px;"
+                f"}}"
+            )
 
     # ================================================================
     #  セクション 5-8: 項目編集系（ItemEntry 側の将来拡張）
@@ -1166,21 +1755,59 @@ class SettingsPanel(QFrame):
     # ================================================================
 
     def _build_item_edit_sections(self, design: DesignSettings):
-        """項目データに関する将来の編集セクション（プレースホルダー）。
+        """項目データに関する将来の編集セクション。
 
-        確率変更は各項目行に統合済み（i079）。
+        確率変更・分割数は各項目行に統合済み。
+        常時ランダムはチェックボックスで実装済み。
         """
         self._item_edit_sections: list[_PlaceholderSection] = []
 
-        sections = [
-            ("分割", "項目の分割数を変更（未実装）"),
-            ("配置", "segment の並び順を変更（未実装）"),
-            ("常時ランダム", "spin ごとに配置をランダム化（未実装）"),
-        ]
-        for title, desc in sections:
-            section = _PlaceholderSection(title, desc, design)
-            self._layout.addWidget(section)
-            self._item_edit_sections.append(section)
+        # 常時ランダム
+        self._shuffle_cb = QCheckBox("常時ランダム（スピンごとに配置をランダム化）")
+        self._shuffle_cb.setFont(QFont("Meiryo", 8))
+        self._shuffle_cb.setStyleSheet(f"color: {design.text};")
+        self._shuffle_cb.setChecked(self._settings.auto_shuffle)
+        self._shuffle_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("auto_shuffle", v)
+        )
+        self._layout.addWidget(self._shuffle_cb)
+
+        # 配置方向
+        arr_row = QHBoxLayout()
+        arr_row.setSpacing(4)
+        arr_lbl = QLabel("配置方向:")
+        arr_lbl.setFont(QFont("Meiryo", 8))
+        arr_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._arr_lbl = arr_lbl
+        arr_row.addWidget(arr_lbl)
+
+        self._arr_combo = QComboBox()
+        self._arr_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._arr_combo, design)
+        for name in ["逆順 (CW)", "順 (CCW)"]:
+            self._arr_combo.addItem(name)
+        self._arr_combo.setCurrentIndex(self._settings.arrangement_direction)
+        self._arr_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit("arrangement_direction", idx)
+        )
+        arr_row.addWidget(self._arr_combo, stretch=1)
+
+        self._shuffle_once_btn = QPushButton("🔀")
+        self._shuffle_once_btn.setFont(QFont("Meiryo", 8))
+        self._shuffle_once_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._shuffle_once_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._shuffle_once_btn.setToolTip("1回だけランダム再配置")
+        self._shuffle_once_btn.clicked.connect(self.shuffle_once_requested.emit)
+        arr_row.addWidget(self._shuffle_once_btn)
+
+        self._layout.addLayout(arr_row)
 
     # ================================================================
     #  内部ヘルパー
@@ -1234,18 +1861,33 @@ class SettingsPanel(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging_panel = True
             self._panel_drag_start = event.globalPosition().toPoint()
-            self._panel_start_pos = self.pos()
+            # フローティング時はスクリーン座標、埋め込み時は親内座標
+            self._panel_start_pos = self.pos() if not self._floating else self.frameGeometry().topLeft()
         event.accept()
 
     def mouseMoveEvent(self, event):
         if getattr(self, '_dragging_panel', False):
             delta = event.globalPosition().toPoint() - self._panel_drag_start
             new_pos = self._panel_start_pos + delta
-            parent = self.parentWidget()
-            if parent:
-                new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
-                new_y = max(0, min(new_pos.y(), parent.height() - self.height()))
-                self.move(new_x, new_y)
+            if self._floating:
+                # フローティング時: スクリーン座標でクランプ
+                from PySide6.QtWidgets import QApplication
+                screen = QApplication.primaryScreen()
+                if screen:
+                    sg = screen.availableGeometry()
+                    min_vis = 60
+                    new_x = max(sg.x() - self.width() + min_vis,
+                                min(new_pos.x(), sg.x() + sg.width() - min_vis))
+                    new_y = max(sg.y(),
+                                min(new_pos.y(), sg.y() + sg.height() - 30))
+                    self.move(new_x, new_y)
+            else:
+                # 埋め込み時: 親ウィジェット内クランプ
+                parent = self.parentWidget()
+                if parent:
+                    new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
+                    new_y = max(0, min(new_pos.y(), parent.height() - self.height()))
+                    self.move(new_x, new_y)
             event.accept()
             return
         event.accept()
@@ -1368,6 +2010,76 @@ class SettingsPanel(QFrame):
             self._sound_result_cb.blockSignals(True)
             self._sound_result_cb.setChecked(value)
             self._sound_result_cb.blockSignals(False)
+        elif key == "log_overlay_show":
+            self._log_show_cb.blockSignals(True)
+            self._log_show_cb.setChecked(value)
+            self._log_show_cb.blockSignals(False)
+        elif key == "spin_duration":
+            self._dur_spin.blockSignals(True)
+            self._dur_spin.setValue(value)
+            self._dur_spin.blockSignals(False)
+        elif key == "auto_shuffle":
+            self._shuffle_cb.blockSignals(True)
+            self._shuffle_cb.setChecked(value)
+            self._shuffle_cb.blockSignals(False)
+        elif key == "arrangement_direction":
+            self._arr_combo.blockSignals(True)
+            self._arr_combo.setCurrentIndex(value)
+            self._arr_combo.blockSignals(False)
+        elif key == "transparent":
+            self._transparent_cb.blockSignals(True)
+            self._transparent_cb.setChecked(value)
+            self._transparent_cb.blockSignals(False)
+        elif key == "tick_volume":
+            self._tick_vol_slider.blockSignals(True)
+            self._tick_vol_slider.setValue(value)
+            self._tick_vol_slider.blockSignals(False)
+            self._tick_vol_val.setText(f"{value}%")
+        elif key == "win_volume":
+            self._win_vol_slider.blockSignals(True)
+            self._win_vol_slider.setValue(value)
+            self._win_vol_slider.blockSignals(False)
+            self._win_vol_val.setText(f"{value}%")
+        elif key == "tick_pattern":
+            self._tick_pat_combo.blockSignals(True)
+            self._tick_pat_combo.setCurrentIndex(value)
+            self._tick_pat_combo.blockSignals(False)
+        elif key == "win_pattern":
+            self._win_pat_combo.blockSignals(True)
+            self._win_pat_combo.setCurrentIndex(value)
+            self._win_pat_combo.blockSignals(False)
+        elif key == "log_timestamp":
+            self._log_ts_cb.blockSignals(True)
+            self._log_ts_cb.setChecked(value)
+            self._log_ts_cb.blockSignals(False)
+        elif key == "log_box_border":
+            self._log_border_cb.blockSignals(True)
+            self._log_border_cb.setChecked(value)
+            self._log_border_cb.blockSignals(False)
+        elif key == "log_on_top":
+            self._log_on_top_cb.blockSignals(True)
+            self._log_on_top_cb.setChecked(value)
+            self._log_on_top_cb.blockSignals(False)
+        elif key == "confirm_reset":
+            self._confirm_reset_cb.blockSignals(True)
+            self._confirm_reset_cb.setChecked(value)
+            self._confirm_reset_cb.blockSignals(False)
+        elif key == "grip_visible":
+            self._grip_visible_cb.blockSignals(True)
+            self._grip_visible_cb.setChecked(value)
+            self._grip_visible_cb.blockSignals(False)
+        elif key == "ctrl_box_visible":
+            self._ctrl_box_visible_cb.blockSignals(True)
+            self._ctrl_box_visible_cb.setChecked(value)
+            self._ctrl_box_visible_cb.blockSignals(False)
+        elif key == "float_win_show_instance":
+            self._instance_label_cb.blockSignals(True)
+            self._instance_label_cb.setChecked(value)
+            self._instance_label_cb.blockSignals(False)
+        elif key == "settings_panel_float":
+            self._float_panel_cb.blockSignals(True)
+            self._float_panel_cb.setChecked(value)
+            self._float_panel_cb.blockSignals(False)
 
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
@@ -1384,11 +2096,44 @@ class SettingsPanel(QFrame):
         self._apply_combo_style(self._ptr_combo, design)
         self._apply_spin_btn_style(design)
 
+        # パターンセクション
+        self._apply_combo_style(self._pattern_combo, design)
+        pat_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._pattern_add_btn.setStyleSheet(pat_btn_style)
+        self._pattern_del_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._pattern_export_btn.setStyleSheet(pat_btn_style)
+        self._pattern_import_btn.setStyleSheet(pat_btn_style)
+
         # セクションヘッダー
         for header in [self._spin_header, self._display_header,
                        self._result_header, self._sound_header,
-                       self._items_header]:
+                       self._log_header,
+                       self._pattern_header, self._items_header]:
             header._apply_style(design)
+
+        # スピン時間
+        self._dur_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._dur_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
 
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
@@ -1398,8 +2143,70 @@ class SettingsPanel(QFrame):
         self._sdir_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._ptr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._donut_cb.setStyleSheet(f"color: {design.text};")
+        self._transparent_cb.setStyleSheet(f"color: {design.text};")
         self._sound_tick_cb.setStyleSheet(f"color: {design.text};")
         self._sound_result_cb.setStyleSheet(f"color: {design.text};")
+        slider_style = (
+            f"QSlider::groove:horizontal {{"
+            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
+            f"}}"
+            f"QSlider::handle:horizontal {{"
+            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        self._tick_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._tick_vol_slider.setStyleSheet(slider_style)
+        self._tick_vol_val.setStyleSheet(f"color: {design.text_sub};")
+        self._win_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._win_vol_slider.setStyleSheet(slider_style)
+        self._win_vol_val.setStyleSheet(f"color: {design.text_sub};")
+        self._tick_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._tick_pat_combo, design)
+        self._win_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._win_pat_combo, design)
+        small_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._tick_file_btn.setStyleSheet(small_btn_style)
+        self._tick_test_btn.setStyleSheet(small_btn_style)
+        self._win_file_btn.setStyleSheet(small_btn_style)
+        self._win_test_btn.setStyleSheet(small_btn_style)
+        self._log_show_cb.setStyleSheet(f"color: {design.text};")
+        self._log_ts_cb.setStyleSheet(f"color: {design.text};")
+        self._log_border_cb.setStyleSheet(f"color: {design.text};")
+        self._log_on_top_cb.setStyleSheet(f"color: {design.text};")
+        self._confirm_reset_cb.setStyleSheet(f"color: {design.text};")
+        self._log_export_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._log_clear_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._shuffle_cb.setStyleSheet(f"color: {design.text};")
+        self._arr_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._arr_combo, design)
+        self._shuffle_once_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 24px; max-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
         self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._result_mode_combo, design)

@@ -100,6 +100,60 @@ from app_settings import AppSettings
 from item_entry import ItemEntry
 
 
+# ── パターン管理 ─────────────────────────────────────────────────
+
+def get_pattern_names(config: dict) -> list[str]:
+    """config dict からパターン名の一覧を返す。"""
+    patterns = config.get("item_patterns", {})
+    if not patterns:
+        return ["デフォルト"]
+    return list(patterns.keys())
+
+
+def get_current_pattern_name(config: dict) -> str:
+    """config dict から現在のパターン名を返す。"""
+    return config.get("current_pattern", "デフォルト")
+
+
+def set_current_pattern(config: dict, pattern_name: str) -> None:
+    """現在パターンを切り替えて保存する。"""
+    patterns = config.get("item_patterns", {})
+    if pattern_name not in patterns:
+        return
+    config["current_pattern"] = pattern_name
+    save_config(config)
+
+
+def add_pattern(config: dict, pattern_name: str) -> bool:
+    """新しい空パターンを追加する。既に同名があれば False を返す。"""
+    if "item_patterns" not in config:
+        config["item_patterns"] = {}
+    if pattern_name in config["item_patterns"]:
+        return False
+    config["item_patterns"][pattern_name] = []
+    save_config(config)
+    return True
+
+
+def delete_pattern(config: dict, pattern_name: str) -> bool:
+    """指定パターンを削除する。最後の1件は削除不可。
+
+    削除後、current_pattern が削除対象だった場合は残りの先頭に切り替える。
+    Returns:
+        削除できたら True。
+    """
+    patterns = config.get("item_patterns", {})
+    if pattern_name not in patterns:
+        return False
+    if len(patterns) <= 1:
+        return False
+    del patterns[pattern_name]
+    if config.get("current_pattern") == pattern_name:
+        config["current_pattern"] = next(iter(patterns))
+    save_config(config)
+    return True
+
+
 def load_app_settings(config: dict | None = None) -> AppSettings:
     """config dict から型付き AppSettings を構築する。
 
