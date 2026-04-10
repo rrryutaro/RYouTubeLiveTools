@@ -52,6 +52,8 @@ class SpinController(QObject):
         self._spin_sign: int = 1
         self._cruise_decel: float = 1.0
         self._prev_seg_idx: int = -1   # tick 音用: 前フレームのセグメント番号
+        # 短時間モード (固定フェーズを使わず v0.4.4 互換の単段減衰で動く)
+        self._single_phase_mode: bool = False
 
         # --- 音設定 ---
         self._sound_tick_enabled: bool = True
@@ -59,6 +61,21 @@ class SpinController(QObject):
 
         # --- プリセット ---
         self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
+        self._spin_duration: float = self._spin_preset.duration
+
+        # --- リプレイ記録 ---
+        self._replay_mgr = None  # ReplayManager (optional)
+
+        # --- マルチスピン ---
+        self._spin_mode: int = 0               # 0=single, 1=double, 2=triple
+        self._double_duration: float = 9.0
+        self._triple_duration: float = 9.0
+        self._multi_phase: int = 0             # 現在のスピン回数 (0-indexed)
+        self._multi_total: int = 1             # このシーケンスの合計回数
+        self._multi_delay_timer: QTimer = QTimer(self)
+        self._multi_delay_timer.setSingleShot(True)
+        self._multi_delay_timer.setInterval(800)  # 次スピンまでの待機 ms
+        self._multi_delay_timer.timeout.connect(self._start_next_phase)
 
         # --- タイマー ---
         self._spin_timer: QTimer = QTimer(self)
@@ -71,7 +88,7 @@ class SpinController(QObject):
 
     @property
     def is_spinning(self) -> bool:
-        return self._spinning
+        return self._spinning or self._multi_delay_timer.isActive()
 
     @property
     def preset_name(self) -> str:
@@ -82,6 +99,26 @@ class SpinController(QObject):
         if preset_name in SPIN_PRESETS:
             self._spin_preset = SPIN_PRESETS[preset_name]
 
+    def set_spin_duration(self, duration: float):
+        """通常スピン時間を設定する（秒）。"""
+        self._spin_duration = max(1.0, duration)
+
+    def set_spin_mode(self, mode: int):
+        """スピンモードを設定する（0=single, 1=double, 2=triple）。"""
+        self._spin_mode = max(0, min(2, mode))
+
+    def set_double_duration(self, duration: float):
+        """ダブルスピン時の1回あたり時間を設定する（秒）。"""
+        self._double_duration = max(1.0, duration)
+
+    def set_triple_duration(self, duration: float):
+        """トリプルスピン時の1回あたり時間を設定する（秒）。"""
+        self._triple_duration = max(1.0, duration)
+
+    def set_replay_manager(self, mgr):
+        """リプレイ記録用マネージャーを設定する。"""
+        self._replay_mgr = mgr
+
     def set_sound_tick_enabled(self, enabled: bool):
         self._sound_tick_enabled = enabled
 
@@ -91,6 +128,7 @@ class SpinController(QObject):
     def start_spin(self, duration: float | None = None):
         """spin を開始する（プリセットベース多段階減速）。
 
+        マルチスピンモード時は自動的に複数回スピンを連続実行する。
         着地位置は事前計算で確定済み。
         """
         if self._spinning:
@@ -99,12 +137,28 @@ class SpinController(QObject):
         if len(segs) < 2:
             return
 
+        # マルチスピンの初期化（外部からの start_spin 呼び出し時のみ）
+        if self._multi_phase == 0:
+            if self._spin_mode == 0:
+                self._multi_total = 1
+            elif self._spin_mode == 1:
+                self._multi_total = 2
+            else:
+                self._multi_total = 3
+            # リプレイ記録開始（シーケンス最初のフェーズのみ）
+            if self._replay_mgr is not None:
+                self._replay_mgr.start_recording(
+                    self._wheel._segments,
+                    self._wheel._pointer_angle,
+                    self._wheel._spin_direction,
+                )
+
         self._spinning = True
         self.spin_started.emit()
 
         preset = self._spin_preset
         if duration is None:
-            duration = preset.duration
+            duration = self._duration_for_current_phase()
 
         target_frames = max(1, duration * 1000 / 16)
 
@@ -125,24 +179,14 @@ class SpinController(QObject):
         # --- 固定フェーズの合計フレーム・距離を事前計算 ---
         fixed_frames, fixed_dist = preset.fixed_phases_stats()
 
-        # CRUISE フェーズのフレーム予算
-        cruise_frames = max(1, target_frames - fixed_frames)
-
-        # CRUISE -> 最初の固定フェーズの入口速度
-        if preset.fixed_phases:
-            v_cruise_exit = preset.fixed_phases[0].v_threshold
-        else:
-            v_cruise_exit = V_STOP
-
-        # 回転数の基準を計算
-        v_ref = preset.v_ref
-        d_ref = (v_cruise_exit / v_ref) ** (1.0 / cruise_frames)
-        if d_ref < 1.0:
-            ref_cruise_dist = v_ref * (1.0 - d_ref ** cruise_frames) / (1.0 - d_ref)
-        else:
-            ref_cruise_dist = v_ref * cruise_frames
-        ref_total = ref_cruise_dist + fixed_dist
-        base_rots = max(3, int(ref_total / 360))
+        # 短時間モード判定: 指定 duration が固定フェーズの合計時間よりも
+        # 短い (= 余裕を持って CRUISE が回せない) ときは v0.4.4 互換の
+        # 単段減衰モードに切り替える。これによりユーザーが「1秒スピン」
+        # と指定した時に LINGER フェーズが支配して 3 秒近く回ってしまう
+        # 問題を回避する。
+        # しきい値は「target_frames < fixed_frames + 30」(約 0.5 秒の
+        # 余白を持って CRUISE が回せるか) で判定する。
+        self._single_phase_mode = target_frames < fixed_frames + 30
 
         # 時計回り(1) → angle 増加 → 視覚的 CW、反時計回り(0) → angle 減少
         spin_sign = 1 if self._wheel._spin_direction == 1 else -1
@@ -151,27 +195,78 @@ class SpinController(QObject):
             needed_residual = (target_angle - current_angle) % 360
         else:
             needed_residual = (current_angle - target_angle) % 360
-        adjusted_total = base_rots * 360 + needed_residual
 
-        # CRUISE フェーズで必要な距離
-        cruise_dist_needed = adjusted_total - fixed_dist
-
-        # v0 を二分探索（CRUISE 距離を合わせる）
-        def cruise_total_for_v(v0):
-            d = (v_cruise_exit / v0) ** (1.0 / cruise_frames)
-            if d >= 1.0:
-                return v0 * cruise_frames
-            return v0 * (1.0 - d ** cruise_frames) / (1.0 - d)
-
-        lo, hi = v_cruise_exit + 0.01, 300.0
-        for _ in range(60):
-            mid = (lo + hi) / 2
-            if cruise_total_for_v(mid) < cruise_dist_needed:
-                lo = mid
+        if self._single_phase_mode:
+            # === v0.4.4 互換: 単段指数減衰（高速立ち上がり → 1段減速 → 停止）===
+            # base_rots は target_frames から逆算（v0.4.4 と同じロジック）
+            v_ref = 25.0
+            d_ref = (V_STOP / v_ref) ** (1.0 / target_frames)
+            if d_ref < 1.0:
+                ref_total = (v_ref - V_STOP) / (1.0 - d_ref)
             else:
-                hi = mid
-        self._velocity = (lo + hi) / 2
-        self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
+                ref_total = v_ref * target_frames
+            base_rots = max(3, int(ref_total / 360))
+            adjusted_total = base_rots * 360 + needed_residual
+
+            def total_for_v(v):
+                d = (V_STOP / v) ** (1.0 / target_frames)
+                if d >= 1.0:
+                    return v * target_frames
+                return (v - V_STOP) / (1.0 - d)
+
+            lo, hi = 1.0, 300.0
+            for _ in range(60):
+                mid = (lo + hi) / 2
+                if total_for_v(mid) < adjusted_total:
+                    lo = mid
+                else:
+                    hi = mid
+            self._velocity = (lo + hi) / 2
+            # 単段減衰: target_frames 全体で V_STOP に到達するように
+            self._cruise_decel = (V_STOP / self._velocity) ** (1.0 / target_frames)
+        else:
+            # === 通常モード: プリセットの多段階フェーズを使う ===
+            # CRUISE フェーズのフレーム予算
+            cruise_frames = max(1, target_frames - fixed_frames)
+
+            # CRUISE -> 最初の固定フェーズの入口速度
+            if preset.fixed_phases:
+                v_cruise_exit = preset.fixed_phases[0].v_threshold
+            else:
+                v_cruise_exit = V_STOP
+
+            # 回転数の基準を計算
+            v_ref = preset.v_ref
+            d_ref = (v_cruise_exit / v_ref) ** (1.0 / cruise_frames)
+            if d_ref < 1.0:
+                ref_cruise_dist = v_ref * (1.0 - d_ref ** cruise_frames) / (1.0 - d_ref)
+            else:
+                ref_cruise_dist = v_ref * cruise_frames
+            ref_total = ref_cruise_dist + fixed_dist
+            base_rots = max(3, int(ref_total / 360))
+
+            adjusted_total = base_rots * 360 + needed_residual
+
+            # CRUISE フェーズで必要な距離
+            cruise_dist_needed = adjusted_total - fixed_dist
+
+            # v0 を二分探索（CRUISE 距離を合わせる）
+            def cruise_total_for_v(v0):
+                d = (v_cruise_exit / v0) ** (1.0 / cruise_frames)
+                if d >= 1.0:
+                    return v0 * cruise_frames
+                return v0 * (1.0 - d ** cruise_frames) / (1.0 - d)
+
+            lo, hi = v_cruise_exit + 0.01, 300.0
+            for _ in range(60):
+                mid = (lo + hi) / 2
+                if cruise_total_for_v(mid) < cruise_dist_needed:
+                    lo = mid
+                else:
+                    hi = mid
+            self._velocity = (lo + hi) / 2
+            self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
+
         self._spin_sign = spin_sign
 
         self._prev_seg_idx = self._wheel.seg_at_pointer()
@@ -186,29 +281,68 @@ class SpinController(QObject):
         new_angle = (self._wheel._angle + self._spin_sign * self._velocity) % 360
         self._wheel.set_angle(new_angle)
 
+        # リプレイ: フレーム記録
+        if self._replay_mgr is not None:
+            self._replay_mgr.record_frame(new_angle)
+
         # tick 音: セグメント境界を越えたら鳴らす
         if self._sound_tick_enabled and self._sound:
             cur_seg = self._wheel.seg_at_pointer()
             if cur_seg != self._prev_seg_idx:
                 self._sound.play_tick()
                 self._prev_seg_idx = cur_seg
+                # リプレイ: tick 音記録
+                if self._replay_mgr is not None:
+                    self._replay_mgr.record_sound("tick")
 
-        decel = self._spin_preset.decel_for_velocity(
-            self._velocity, self._cruise_decel
-        )
+        if self._single_phase_mode:
+            # 短時間モード: 固定フェーズを介さず常に同じ減衰率で減速する
+            decel = self._cruise_decel
+        else:
+            decel = self._spin_preset.decel_for_velocity(
+                self._velocity, self._cruise_decel
+            )
         self._velocity *= decel
 
         if self._velocity < V_STOP:
             self._spin_finish()
+
+    def _duration_for_current_phase(self) -> float:
+        """現在のフェーズに応じたスピン時間を返す。"""
+        if self._multi_total == 1:
+            return self._spin_duration
+        elif self._multi_total == 2:
+            return self._double_duration
+        else:
+            return self._triple_duration
+
+    def _start_next_phase(self):
+        """マルチスピンの次フェーズを開始する。"""
+        self.start_spin()
 
     def _spin_finish(self):
         """spin 停止・結果確定。"""
         self._spin_timer.stop()
         self._spinning = False
 
-        # 決定音
+        self._multi_phase += 1
+
+        # マルチスピンの途中フェーズ: 決定音を鳴らして次フェーズへ
+        if self._multi_phase < self._multi_total:
+            if self._sound_result_enabled and self._sound:
+                self._sound.play_win()
+                if self._replay_mgr is not None:
+                    self._replay_mgr.record_sound("win")
+            self._multi_delay_timer.start()
+            return
+
+        # 最終フェーズ: 結果確定
+        self._multi_phase = 0
+
         if self._sound_result_enabled and self._sound:
             self._sound.play_win()
+            if self._replay_mgr is not None:
+                self._replay_mgr.record_sound("win")
 
         seg_idx = self._wheel.seg_at_pointer()
         segs = self._wheel._segments
@@ -216,4 +350,11 @@ class SpinController(QObject):
             winner = segs[seg_idx].item_text
         else:
             winner = ""
+
+        # リプレイ: 記録完了
+        if self._replay_mgr is not None:
+            self._replay_mgr.finish_recording(
+                winner, seg_idx, self._wheel._angle
+            )
+
         self.spin_finished.emit(winner, seg_idx)

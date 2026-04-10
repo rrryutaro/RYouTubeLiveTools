@@ -22,7 +22,8 @@ PySide6 プロトタイプ — ルーレットパネル
 """
 
 from PySide6.QtCore import Qt, Signal, QTimer, QPoint
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from bridge import (
     DesignSettings, WHEEL_OUTER_MARGIN, MIN_R, POINTER_OVERHANG,
@@ -66,7 +67,8 @@ class RoulettePanel(QFrame):
         super().__init__(parent)
         self._roulette_id = roulette_id
         self._design = design
-        self.setStyleSheet(f"background-color: {design.bg};")
+        self._transparent = False
+        self._apply_panel_background()
         self.setMinimumSize(self._MIN_W, self._MIN_H)
 
         # ── WheelWidget（パネル全体に配置） ──
@@ -88,6 +90,18 @@ class RoulettePanel(QFrame):
             min_w=self._MIN_W, min_h=self._MIN_H,
             parent=self,
         )
+
+        # ── インスタンス番号ラベル（マルチ時のみ表示） ──
+        self._instance_label = QLabel(self)
+        self._instance_label.setFont(QFont("Meiryo", 8, QFont.Weight.Bold))
+        self._instance_label.setStyleSheet(
+            f"color: {design.text}; background-color: rgba(0, 0, 0, 120);"
+            f" border-radius: 3px; padding: 1px 4px;"
+        )
+        self._instance_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self._instance_label.hide()  # 単窓時は非表示
 
         # ── パネル前後関係 ──
         self.pinned_front = False  # True: 通常パネルより常に上に表示
@@ -136,13 +150,57 @@ class RoulettePanel(QFrame):
         """ルーレットのセグメントを設定する。"""
         self._wheel.set_segments(segments)
 
+    def set_instance_label(self, number: int | None):
+        """インスタンス番号ラベルを設定する。
+
+        Args:
+            number: 表示する番号。None または 0 以下なら非表示。
+        """
+        if number is not None and number > 0:
+            self._instance_label.setText(f"#{number}")
+            self._instance_label.adjustSize()
+            self._instance_label.move(6, 6)
+            self._instance_label.show()
+            self._instance_label.raise_()
+        else:
+            self._instance_label.hide()
+
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
         self._design = design
-        self.setStyleSheet(f"background-color: {design.bg};")
+        self._apply_panel_background()
         self._wheel.set_design(design)
         self._result_overlay.apply_style(design)
         self._grip.update_design(design)
+        self._instance_label.setStyleSheet(
+            f"color: {design.text}; background-color: rgba(0, 0, 0, 120);"
+            f" border-radius: 3px; padding: 1px 4px;"
+        )
+
+    def set_transparent(self, enabled: bool):
+        """透過モードを設定する。
+
+        パネル自身の背景描画と、内部 WheelWidget の透過モードを連動させる。
+        透過 ON のときはパネル QFrame 自身の背景を transparent にし、
+        WheelWidget も背景を描かなくなるため、メインウィンドウの
+        WA_TranslucentBackground と組み合わせて OBS 透過が成立する。
+        """
+        self._transparent = enabled
+        self._apply_panel_background()
+        self._wheel.set_transparent(enabled)
+        self.update()
+
+    def _apply_panel_background(self):
+        """現在の透過状態に合わせてパネル背景の StyleSheet を設定する。"""
+        if self._transparent:
+            # QFrame 自身の塗りつぶしも透明に
+            self.setStyleSheet("QFrame { background-color: transparent; }")
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        else:
+            self.setStyleSheet(
+                f"QFrame {{ background-color: {self._design.bg}; }}"
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
 
     # ================================================================
     #  スピン

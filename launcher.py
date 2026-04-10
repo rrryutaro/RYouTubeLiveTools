@@ -24,6 +24,13 @@ VERSION_HINTS = {
     "RCommentHub":   ("constants.py",   5),
 }
 
+# ─── エントリポイントオーバーライド（ツール名 → ツールフォルダからの相対パス）───
+# 既定の spec_base 一致ロジックでは拾えない場所にエントリスクリプトがある場合に指定する。
+# 値は os.path.join 用のパス要素タプル。
+ENTRY_OVERRIDES = {
+    "RRoulette": ("proto_pyside6", "run_proto.py"),
+}
+
 
 def _read_version(tool_dir, tool_name):
     """VERSION_HINTS に登録された行を直接読んでバージョン文字列を返す。未登録・読み取り失敗時は None。"""
@@ -129,6 +136,13 @@ def discover_tools(base_dir):
             if os.path.splitext(os.path.basename(pf))[0].lower() == spec_base:
                 main_py = pf
                 break
+
+        # エントリポイントオーバーライド（特定ツール用）
+        override = ENTRY_OVERRIDES.get(entry.name)
+        if override:
+            override_path = os.path.join(folder, *override)
+            if os.path.exists(override_path):
+                main_py = override_path
 
         # dist/ 以下の .exe を検索
         exe_files = glob.glob(os.path.join(folder, "dist", "*.exe"))

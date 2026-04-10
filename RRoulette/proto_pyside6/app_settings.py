@@ -49,6 +49,10 @@ class AppSettings:
 
     spin_direction: int = 1        # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
     spin_preset_name: str = ""     # スピンプリセット名（空 = デフォルト）
+    spin_duration: float = 9.0     # 通常スピン時間（秒）
+    spin_mode: int = 0             # 0=シングル, 1=ダブル, 2=トリプル
+    double_duration: float = 9.0   # ダブルスピン時の1回あたり時間（秒）
+    triple_duration: float = 9.0   # トリプルスピン時の1回あたり時間（秒）
 
     # ============================================================
     #  design — デザイン設定
@@ -72,11 +76,35 @@ class AppSettings:
     # サウンド:
     sound_tick_enabled: bool = True   # スピン中 tick 音
     sound_result_enabled: bool = True # 結果確定音
+    tick_volume: int = 100            # tick音量 (0-100)
+    win_volume: int = 100             # result音量 (0-100)
+    tick_pattern: int = 0             # tick音パターン (0-5, 6=カスタム)
+    win_pattern: int = 0              # result音パターン (0-5, 6=カスタム)
+    tick_custom_file: str = ""        # カスタムtick音ファイルパス
+    win_custom_file: str = ""         # カスタムresult音ファイルパス
 
     # 結果 overlay:
     result_close_mode: int = 0      # 0=クリックのみ, 1=自動のみ, 2=両方
     result_hold_sec: float = 5.0    # 自動クローズまでの秒数
     macro_hold_sec: float | None = None  # マクロ再生時 hold 秒（None = result_hold_sec と同じ）
+
+    # ログオーバーレイ:
+    log_overlay_show: bool = True    # ホイール上のログ表示
+    log_timestamp: bool = False      # ログにタイムスタンプ表示
+    log_box_border: bool = False     # ログボックス枠線表示
+    log_on_top: bool = False         # ログ前面表示（ホイール装飾より上）
+
+    # リセット確認:
+    confirm_reset: bool = True       # リセット操作前に確認ダイアログを表示
+    confirm_item_delete: bool = True  # 項目削除前に確認ダイアログを表示 (i286)
+
+    # 項目パネル表示 (i283):
+    show_item_prob: bool = True       # 各項目行の確率/分割 UI を表示
+    show_item_win_count: bool = True  # 各項目行の当選回数ラベルを表示
+
+    # リプレイ:
+    replay_max_count: int = 5        # リプレイ保存上限
+    replay_show_indicator: bool = True  # リプレイ中インジケーター表示
 
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
@@ -92,12 +120,39 @@ class AppSettings:
     roulette_panel_y: int | None = None
     roulette_panel_width: int | None = None
     roulette_panel_height: int | None = None
-    item_panel_width: int | None = None
-    item_panel_height: int | None = None
-    item_panel_x: int | None = None
-    item_panel_y: int | None = None
-    item_panel_visible: bool = False   # 項目設定パネルの表示状態
+    # 設定パネル (右側のアプリ設定パネル) の保存位置
+    # 旧キー `item_panel_*` を保持していた値はこちらへ移行する
+    settings_panel_x: int | None = None
+    settings_panel_y: int | None = None
+    settings_panel_width: int | None = None
+    settings_panel_height: int | None = None
+    settings_panel_visible: bool = False
+    # 項目パネル (新 ItemPanel) の保存位置・表示状態
+    items_panel_x: int | None = None
+    items_panel_y: int | None = None
+    items_panel_width: int | None = None
+    items_panel_height: int | None = None
+    items_panel_visible: bool = True
+    # 全体管理パネル (i275 ManagePanel) の保存位置・表示状態
+    manage_panel_x: int | None = None
+    manage_panel_y: int | None = None
+    manage_panel_width: int | None = None
+    manage_panel_height: int | None = None
+    manage_panel_visible: bool = False
     always_on_top: bool = False        # メインウィンドウ常に最前面
+    # 透過フラグは window / roulette を独立に持つ
+    # 旧 `transparent` キーは互換のため from_config 側でフォールバック読込
+    window_transparent: bool = False   # メインウィンドウ背景透過
+    roulette_transparent: bool = False # ルーレットパネル背景透過
+    grip_visible: bool = True          # リサイズグリップ表示
+    ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
+    float_win_show_instance: bool = True  # インスタンス番号表示
+    settings_panel_float: bool = False   # 設定パネルフローティング独立化
+
+    # 設定パネル折りたたみ状態 (セクション名 → True=折りたたみ)
+    collapsed_sections: dict = field(default_factory=dict)
+    collapse_anim_ms: int = 150        # 折りたたみアニメーション時間 (ms, 0=無効)
+    theme_mode: str = "dark"           # テーマモード ("light" / "dark")
 
     # ============================================================
     #  ファクトリ
@@ -115,12 +170,22 @@ class AppSettings:
             profile_idx=config.get("profile_idx", 1),
             spin_direction=config.get("spin_direction", 1),
             spin_preset_name=config.get("spin_preset_name", DEFAULT_PRESET_NAME),
+            spin_duration=config.get("spin_duration", 9.0),
+            spin_mode=config.get("spin_mode", 0),
+            double_duration=config.get("double_duration", 9.0),
+            triple_duration=config.get("triple_duration", 9.0),
             design_preset_name=config.get("design", {}).get("preset_name", "")
                 if isinstance(config.get("design"), dict) else "",
             arrangement_direction=config.get("arrangement_direction", 0),
             auto_shuffle=config.get("auto_shuffle", False),
             sound_tick_enabled=config.get("sound_tick_enabled", True),
             sound_result_enabled=config.get("sound_result_enabled", True),
+            tick_volume=config.get("tick_volume", 100),
+            win_volume=config.get("win_volume", 100),
+            tick_pattern=config.get("tick_pattern", 0),
+            win_pattern=config.get("win_pattern", 0),
+            tick_custom_file=config.get("tick_custom_file", ""),
+            win_custom_file=config.get("win_custom_file", ""),
             result_close_mode=config.get("result_close_mode", 0),
             result_hold_sec=config.get("result_hold_sec", 5.0),
             macro_hold_sec=config.get("macro_hold_sec",
@@ -133,12 +198,58 @@ class AppSettings:
             roulette_panel_y=config.get("roulette_panel_y"),
             roulette_panel_width=config.get("roulette_panel_width"),
             roulette_panel_height=config.get("roulette_panel_height"),
-            item_panel_width=config.get("item_panel_width"),
-            item_panel_height=config.get("item_panel_height"),
-            item_panel_x=config.get("item_panel_x"),
-            item_panel_y=config.get("item_panel_y"),
-            item_panel_visible=config.get("item_panel_visible", False),
+            # 設定パネル: 新キー優先、旧 item_panel_* 互換
+            settings_panel_x=config.get(
+                "settings_panel_x", config.get("item_panel_x")
+            ),
+            settings_panel_y=config.get(
+                "settings_panel_y", config.get("item_panel_y")
+            ),
+            settings_panel_width=config.get(
+                "settings_panel_width", config.get("item_panel_width")
+            ),
+            settings_panel_height=config.get(
+                "settings_panel_height", config.get("item_panel_height")
+            ),
+            settings_panel_visible=config.get(
+                "settings_panel_visible",
+                config.get("item_panel_visible", False),
+            ),
+            items_panel_x=config.get("items_panel_x"),
+            items_panel_y=config.get("items_panel_y"),
+            items_panel_width=config.get("items_panel_width"),
+            items_panel_height=config.get("items_panel_height"),
+            items_panel_visible=config.get("items_panel_visible", True),
+            manage_panel_x=config.get("manage_panel_x"),
+            manage_panel_y=config.get("manage_panel_y"),
+            manage_panel_width=config.get("manage_panel_width"),
+            manage_panel_height=config.get("manage_panel_height"),
+            manage_panel_visible=config.get("manage_panel_visible", False),
             always_on_top=config.get("always_on_top", False),
+            # 透過: 新キー優先、旧 transparent 互換 (両方に同じ値)
+            window_transparent=config.get(
+                "window_transparent", config.get("transparent", False)
+            ),
+            roulette_transparent=config.get(
+                "roulette_transparent", config.get("transparent", False)
+            ),
+            grip_visible=config.get("grip_visible", True),
+            ctrl_box_visible=config.get("ctrl_box_visible", True),
+            float_win_show_instance=config.get("float_win_show_instance", True),
+            settings_panel_float=config.get("settings_panel_float", False),
+            collapsed_sections=config.get("collapsed_sections", {}),
+            collapse_anim_ms=config.get("collapse_anim_ms", 150),
+            theme_mode=config.get("theme_mode", "dark"),
+            log_overlay_show=config.get("log_overlay_show", True),
+            log_timestamp=config.get("log_timestamp", False),
+            log_box_border=config.get("log_box_border", False),
+            log_on_top=config.get("log_on_top", False),
+            confirm_reset=config.get("confirm_reset", True),
+            confirm_item_delete=config.get("confirm_item_delete", True),
+            replay_max_count=config.get("replay_max_count", 5),
+            replay_show_indicator=config.get("replay_show_indicator", True),
+            show_item_prob=config.get("show_item_prob", True),
+            show_item_win_count=config.get("show_item_win_count", True),
         )
 
     def to_config_patch(self) -> dict:
@@ -154,10 +265,20 @@ class AppSettings:
             "profile_idx": self.profile_idx,
             "spin_direction": self.spin_direction,
             "spin_preset_name": self.spin_preset_name,
+            "spin_duration": self.spin_duration,
+            "spin_mode": self.spin_mode,
+            "double_duration": self.double_duration,
+            "triple_duration": self.triple_duration,
             "arrangement_direction": self.arrangement_direction,
             "auto_shuffle": self.auto_shuffle,
             "sound_tick_enabled": self.sound_tick_enabled,
             "sound_result_enabled": self.sound_result_enabled,
+            "tick_volume": self.tick_volume,
+            "win_volume": self.win_volume,
+            "tick_pattern": self.tick_pattern,
+            "win_pattern": self.win_pattern,
+            "tick_custom_file": self.tick_custom_file,
+            "win_custom_file": self.win_custom_file,
             "result_close_mode": self.result_close_mode,
             "result_hold_sec": self.result_hold_sec,
             "macro_hold_sec": self.macro_hold_sec,
@@ -169,10 +290,39 @@ class AppSettings:
             "roulette_panel_y": self.roulette_panel_y,
             "roulette_panel_width": self.roulette_panel_width,
             "roulette_panel_height": self.roulette_panel_height,
-            "item_panel_width": self.item_panel_width,
-            "item_panel_height": self.item_panel_height,
-            "item_panel_x": self.item_panel_x,
-            "item_panel_y": self.item_panel_y,
-            "item_panel_visible": self.item_panel_visible,
+            "settings_panel_x": self.settings_panel_x,
+            "settings_panel_y": self.settings_panel_y,
+            "settings_panel_width": self.settings_panel_width,
+            "settings_panel_height": self.settings_panel_height,
+            "settings_panel_visible": self.settings_panel_visible,
+            "items_panel_x": self.items_panel_x,
+            "items_panel_y": self.items_panel_y,
+            "items_panel_width": self.items_panel_width,
+            "items_panel_height": self.items_panel_height,
+            "items_panel_visible": self.items_panel_visible,
+            "manage_panel_x": self.manage_panel_x,
+            "manage_panel_y": self.manage_panel_y,
+            "manage_panel_width": self.manage_panel_width,
+            "manage_panel_height": self.manage_panel_height,
+            "manage_panel_visible": self.manage_panel_visible,
             "always_on_top": self.always_on_top,
+            "window_transparent": self.window_transparent,
+            "roulette_transparent": self.roulette_transparent,
+            "grip_visible": self.grip_visible,
+            "ctrl_box_visible": self.ctrl_box_visible,
+            "float_win_show_instance": self.float_win_show_instance,
+            "settings_panel_float": self.settings_panel_float,
+            "collapsed_sections": self.collapsed_sections,
+            "collapse_anim_ms": self.collapse_anim_ms,
+            "theme_mode": self.theme_mode,
+            "log_overlay_show": self.log_overlay_show,
+            "log_timestamp": self.log_timestamp,
+            "log_box_border": self.log_box_border,
+            "log_on_top": self.log_on_top,
+            "confirm_reset": self.confirm_reset,
+            "confirm_item_delete": self.confirm_item_delete,
+            "replay_max_count": self.replay_max_count,
+            "replay_show_indicator": self.replay_show_indicator,
+            "show_item_prob": self.show_item_prob,
+            "show_item_win_count": self.show_item_win_count,
         }
