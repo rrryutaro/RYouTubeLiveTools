@@ -27,6 +27,16 @@ from PySide6.QtWidgets import (
     QFileDialog, QComboBox, QGroupBox,
 )
 
+# ── ダークテーマ用 状態色定数 ──
+_CLR_ERROR = "#ff6b6b"       # エラー (赤)
+_CLR_OK = "#6bcf6b"          # 完了 / OK (緑)
+_CLR_RUNNING = "#5ba3d9"     # 実行中 (青)
+_CLR_IDLE = "#aaaacc"        # 待機 / 補助テキスト
+_CLR_MUTED = "#888899"       # 未接続 / 空 / 情報
+_CLR_EXEC_DONE_FG = "#999999"  # 実行済み文字色
+_CLR_EXEC_ERROR_BG = "#5a2020" # エラー行背景
+_CLR_EXEC_NEXT_BG = "#1a3050"  # 次実行行背景
+
 from roulette_actions import (
     RouletteAction,
     AddRoulette, RemoveRoulette, SetActiveRoulette,
@@ -118,7 +128,7 @@ class ActionEditDialog(QDialog):
 
         # エラー表示ラベル
         self._error_label = QLabel("")
-        self._error_label.setStyleSheet("color: red;")
+        self._error_label.setStyleSheet(f"color: {_CLR_ERROR};")
         self._error_label.setWordWrap(True)
         layout.addWidget(self._error_label)
 
@@ -169,7 +179,7 @@ class ActionEditDialog(QDialog):
             # then/else は read-only 情報として表示
             info = QLabel(f"then_actions: {len(action.then_actions)} 件  /  "
                           f"else_actions: {len(action.else_actions)} 件")
-            info.setStyleSheet("color: gray;")
+            info.setStyleSheet(f"color: {_CLR_MUTED};")
             form.addRow("子 actions:", info)
 
     def _add_line(self, label: str, value: str, form: QFormLayout, *,
@@ -704,7 +714,7 @@ class MacroActionViewer(QDialog):
 
         # --- 実行状態ステータス ---
         self._exec_status_label = QLabel()
-        self._exec_status_label.setStyleSheet("color: #555;")
+        self._exec_status_label.setStyleSheet(f"color: {_CLR_IDLE};")
         layout.addWidget(self._exec_status_label)
 
         # --- メイン: リスト（左） + 詳細（右） ---
@@ -965,7 +975,7 @@ class MacroActionViewer(QDialog):
         """
         if self._session is None:
             self._exec_status_label.setText("Session: (未接続)")
-            self._exec_status_label.setStyleSheet("color: #999;")
+            self._exec_status_label.setStyleSheet(f"color: {_CLR_MUTED};")
             return
 
         idx = self._session.current_index
@@ -980,19 +990,19 @@ class MacroActionViewer(QDialog):
         if error and total > 0:
             detail_suffix = f" - {error_detail}" if error_detail else ""
             status = f"Session: エラー停止 [{idx}/{total}]{detail_suffix}"
-            style = "color: red; font-weight: bold;"
+            style = f"color: {_CLR_ERROR}; font-weight: bold;"
         elif total == 0:
             status = "Session: 空"
-            style = "color: #999;"
+            style = f"color: {_CLR_MUTED};"
         elif is_running:
             status = f"Session: 実行中 [{idx}/{total}] (残り {remaining})"
-            style = "color: #0070c0; font-weight: bold;"
+            style = f"color: {_CLR_RUNNING}; font-weight: bold;"
         elif remaining == 0:
             status = f"Session: 完了 [{idx}/{total}]"
-            style = "color: green; font-weight: bold;"
+            style = f"color: {_CLR_OK}; font-weight: bold;"
         else:
             status = f"Session: 待機 [{idx}/{total}] (残り {remaining})"
-            style = "color: #555;"
+            style = f"color: {_CLR_IDLE};"
 
         self._exec_status_label.setText(status)
         self._exec_status_label.setStyleSheet(style)
@@ -1014,17 +1024,17 @@ class MacroActionViewer(QDialog):
                 continue
             if i < exec_index:
                 # 実行済み: 薄いグレー
-                item.setForeground(QBrush(QColor(160, 160, 160)))
+                item.setForeground(QBrush(QColor(_CLR_EXEC_DONE_FG)))
                 item.setBackground(QBrush())
             elif i == exec_index:
                 if error:
-                    # エラー停止位置: 赤背景
-                    item.setForeground(QBrush())
-                    item.setBackground(QBrush(QColor(255, 220, 220)))
+                    # エラー停止位置: 暗い赤背景
+                    item.setForeground(QBrush(QColor(_CLR_ERROR)))
+                    item.setBackground(QBrush(QColor(_CLR_EXEC_ERROR_BG)))
                 else:
-                    # 次の実行対象: 青背景ハイライト
+                    # 次の実行対象: 暗い青背景ハイライト
                     item.setForeground(QBrush())
-                    item.setBackground(QBrush(QColor(220, 235, 255)))
+                    item.setBackground(QBrush(QColor(_CLR_EXEC_NEXT_BG)))
             else:
                 # 未実行: デフォルト
                 item.setForeground(QBrush())
@@ -1224,12 +1234,12 @@ class MacroActionViewer(QDialog):
 
         if not self._actions:
             self._validation_label.setText("Validation: -")
-            self._validation_label.setStyleSheet("")
+            self._validation_label.setStyleSheet(f"color: {_CLR_IDLE};")
         elif all_errors:
             self._validation_label.setText(
                 f"Validation: NG ({len(all_errors)} error{'s' if len(all_errors) > 1 else ''})"
             )
-            self._validation_label.setStyleSheet("color: red; font-weight: bold;")
+            self._validation_label.setStyleSheet(f"color: {_CLR_ERROR}; font-weight: bold;")
         else:
             self._validation_label.setText("Validation: OK")
-            self._validation_label.setStyleSheet("color: green; font-weight: bold;")
+            self._validation_label.setStyleSheet(f"color: {_CLR_OK}; font-weight: bold;")

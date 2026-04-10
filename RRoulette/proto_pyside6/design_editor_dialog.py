@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QSpinBox, QFileDialog,
 )
 
+from dark_theme import build_dialog_stylesheet
 from design_settings import (
     DesignSettings, DesignPresetManager,
     GlobalColors, WheelDesign, PointerDesign, ResultDesign,
@@ -110,20 +111,7 @@ class DesignEditorDialog(QDialog):
         sep = self._design.separator
         accent = self._design.accent
 
-        self.setStyleSheet(
-            f"QDialog {{ background-color: {panel}; color: {text}; }}"
-            f"QLabel {{ color: {text}; }}"
-            f"QTabWidget::pane {{ border: 1px solid {sep}; background: {bg}; }}"
-            f"QTabBar::tab {{ background: {sep}; color: {text}; padding: 6px 12px; }}"
-            f"QTabBar::tab:selected {{ background: {accent}; }}"
-            f"QPushButton {{ background-color: {sep}; color: {text}; border: none;"
-            f"  border-radius: 3px; padding: 4px 10px; }}"
-            f"QPushButton:hover {{ background-color: {accent}; }}"
-            f"QComboBox {{ background-color: {sep}; color: {text};"
-            f"  border: 1px solid {sep}; border-radius: 3px; padding: 2px 4px; }}"
-            f"QLineEdit {{ background-color: {sep}; color: {text};"
-            f"  border: 1px solid {sep}; border-radius: 3px; padding: 2px 4px; }}"
-        )
+        self.setStyleSheet(build_dialog_stylesheet(self._design))
 
         # --- プリセット管理バー ---
         preset_bar = QHBoxLayout()

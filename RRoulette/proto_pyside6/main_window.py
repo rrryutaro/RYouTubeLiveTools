@@ -60,6 +60,7 @@ from roulette_macro_session import MacroPlaybackSession
 from settings_panel import SettingsPanel
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from sound_manager import SoundManager
+from dark_theme import get_app_stylesheet, resolve_theme_mode
 
 
 class MainWindow(QMainWindow):
@@ -127,6 +128,9 @@ class MainWindow(QMainWindow):
             central.setStyleSheet(f"background-color: {self._design.bg};")
         central.setMouseTracking(True)
         self.setCentralWidget(central)
+
+        # --- ダークテーマ適用 ---
+        self._apply_app_theme(self._design)
 
         # ============================================================
         #  アクション記録バッファ
@@ -258,6 +262,14 @@ class MainWindow(QMainWindow):
         # --- コンテキストメニュー ---
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # --- OS テーマ変更の定期監視 (system モード用) ---
+        self._last_os_theme = resolve_theme_mode("system")
+        self._os_theme_timer = QTimer(self)
+        self._os_theme_timer.setInterval(3000)  # 3秒ごと
+        self._os_theme_timer.timeout.connect(self._check_os_theme_change)
+        if self._settings.theme_mode in ("system", "auto"):
+            self._os_theme_timer.start()
 
     # ================================================================
     #  アクティブルーレット参照（manager 経由）
@@ -972,6 +984,24 @@ class MainWindow(QMainWindow):
     # ================================================================
     #  保存ヘルパー
     # ================================================================
+
+    def _apply_app_theme(self, design: DesignSettings):
+        """QApplication 全体にテーマを適用する。"""
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(
+                get_app_stylesheet(self._settings.theme_mode, design)
+            )
+
+    def _check_os_theme_change(self):
+        """OS テーマの変化を検知し、system モード時にテーマを再適用する。"""
+        if self._settings.theme_mode not in ("system", "auto"):
+            return
+        current = resolve_theme_mode("system")
+        if current != self._last_os_theme:
+            self._last_os_theme = current
+            self._apply_app_theme(self._design)
+            self._settings_panel.set_panel_theme_mode(self._settings.theme_mode)
 
     def _save_config(self):
         """アプリ設定・デザイン設定を config に書き戻して保存する。"""
@@ -1691,6 +1721,16 @@ class MainWindow(QMainWindow):
             self._update_instance_labels()
         elif key == "settings_panel_float":
             self._apply_settings_panel_float(value)
+        elif key == "theme_mode":
+            self._apply_app_theme(self._design)
+            self._settings_panel.set_panel_theme_mode(value)
+            # system モード時のみ OS テーマ監視を有効化
+            if value in ("system", "auto"):
+                self._last_os_theme = resolve_theme_mode("system")
+                if not self._os_theme_timer.isActive():
+                    self._os_theme_timer.start()
+            else:
+                self._os_theme_timer.stop()
 
         self._save_config()
         return True
@@ -1970,6 +2010,7 @@ class MainWindow(QMainWindow):
         self._design.preset_name = name
         self._settings.design_preset_name = name
 
+        self._apply_app_theme(self._design)
         self._active_panel.update_design(self._design)
         self.centralWidget().setStyleSheet(f"background-color: {self._design.bg};")
         self._settings_panel.update_design(self._design)
@@ -1996,6 +2037,7 @@ class MainWindow(QMainWindow):
         """デザインエディタからの変更を即時反映する。"""
         self._design = DesignSettings.from_dict(design.to_dict())
         self._settings.design_preset_name = design.preset_name
+        self._apply_app_theme(self._design)
         self._active_panel.update_design(self._design)
         self.centralWidget().setStyleSheet(
             f"background-color: {self._design.bg};"

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 
+from dark_theme import build_dialog_stylesheet
 from design_settings import DesignSettings
 
 
@@ -57,9 +58,7 @@ class ReplayDialog(QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self.setStyleSheet(
-            f"QDialog {{ background-color: {d.panel}; color: {d.text}; }}"
-        )
+        self.setStyleSheet(build_dialog_stylesheet(d))
 
         # ヘッダー
         header = QLabel("保存済みリプレイ")

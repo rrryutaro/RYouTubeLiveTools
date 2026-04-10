@@ -25,7 +25,7 @@ PySide6 プロトタイプ — 操作・設定パネル
     8. 常時ランダム — プレースホルダー（spin 前の配置制御）
 """
 
-from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
@@ -41,6 +41,7 @@ from bridge import (
 from app_settings import AppSettings
 from item_entry import ItemEntry
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
+from dark_theme import dark_checkbox_style, dark_spinbox_style, get_header_colors
 
 
 # ================================================================
@@ -61,6 +62,144 @@ class _SectionHeader(QLabel):
             f"padding: 4px 0 2px 0; "
             f"border-bottom: 1px solid {design.separator};"
         )
+
+
+class CollapsibleSection(QWidget):
+    """折りたたみ可能なセクション。
+
+    ヘッダークリックでコンテンツの表示/非表示を切り替える。
+    再利用可能な UI 部品として、任意のセクションに適用できる。
+    """
+
+    _ANIM_DURATION = 150  # アニメーション時間 (ms)
+
+    toggled = Signal(bool)  # 開閉切替時に collapsed 状態を通知
+
+    def __init__(self, title: str, design: DesignSettings,
+                 expanded: bool = True, theme_mode: str = "dark",
+                 parent=None):
+        super().__init__(parent)
+        self._expanded = expanded
+        self._title = title
+        self._design = design
+        self._theme_mode = theme_mode
+        self._animating = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # クリック可能なヘッダー
+        self._header = QLabel(self._format_title(expanded))
+        self._header.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._header.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._header.mousePressEvent = lambda _ev: self.toggle()
+        self._apply_header_style(design)
+        layout.addWidget(self._header)
+
+        # コンテンツ領域
+        self._container = QWidget()
+        self._container.setStyleSheet("background: transparent;")
+        self._content_layout = QVBoxLayout(self._container)
+        self._content_layout.setContentsMargins(4, 6, 4, 2)
+        self._content_layout.setSpacing(8)
+        self._container.setVisible(expanded)
+        if not expanded:
+            self._container.setMaximumHeight(0)
+        layout.addWidget(self._container)
+
+        # アニメーション
+        self._anim = QPropertyAnimation(self._container, b"maximumHeight")
+        self._anim.setDuration(self._ANIM_DURATION)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_anim_finished)
+
+    def _format_title(self, expanded: bool) -> str:
+        arrow = "\u25bc" if expanded else "\u25b6"
+        return f"{arrow} {self._title}"
+
+    @property
+    def content_layout(self) -> QVBoxLayout:
+        """コンテンツ側のレイアウトを返す。"""
+        return self._content_layout
+
+    @property
+    def is_collapsed(self) -> bool:
+        return not self._expanded
+
+    def set_expanded(self, expanded: bool):
+        """外部から展開/折りたたみ状態を設定する（シグナルなし、即座）。"""
+        self._anim.stop()
+        self._animating = False
+        self._expanded = expanded
+        self._container.setVisible(expanded)
+        self._container.setMaximumHeight(
+            16777215 if expanded else 0
+        )
+        self._header.setText(self._format_title(expanded))
+        self._apply_header_style(self._design)
+
+    def toggle(self):
+        if self._animating:
+            return
+        self._expanded = not self._expanded
+        self._header.setText(self._format_title(self._expanded))
+        self._apply_header_style(self._design)
+        self.toggled.emit(not self._expanded)  # collapsed を通知
+        self._start_animation(self._expanded)
+
+    def _start_animation(self, expanding: bool):
+        self._anim.stop()
+        self._animating = True
+        if expanding:
+            self._container.setVisible(True)
+            self._container.setMaximumHeight(0)
+            target_h = self._container.sizeHint().height()
+            self._anim.setStartValue(0)
+            self._anim.setEndValue(target_h)
+        else:
+            current_h = self._container.height()
+            self._anim.setStartValue(current_h)
+            self._anim.setEndValue(0)
+        self._anim.start()
+
+    def _on_anim_finished(self):
+        self._animating = False
+        if self._expanded:
+            # 展開完了: 最大高さ制限を解除
+            self._container.setMaximumHeight(16777215)
+        else:
+            # 折りたたみ完了: 非表示化
+            self._container.setVisible(False)
+
+    def _apply_header_style(self, design: DesignSettings):
+        c = get_header_colors(self._theme_mode, design)
+        bg = c["bg_expanded"] if self._expanded else c["bg_collapsed"]
+        self._header.setStyleSheet(
+            f"QLabel {{"
+            f"  color: {c['text']};"
+            f"  background-color: {bg};"
+            f"  padding: 5px 8px;"
+            f"  border-radius: 3px;"
+            f"  margin-top: 2px;"
+            f"}}"
+            f"QLabel:hover {{"
+            f"  background-color: {c['hover']};"
+            f"}}"
+        )
+
+    def set_anim_duration(self, ms: int):
+        """アニメーション時間を変更する (ms)。0 で無効化。"""
+        self._anim.setDuration(max(ms, 0))
+
+    def set_theme_mode(self, theme_mode: str):
+        """テーマモードを更新してヘッダーを再描画する。"""
+        self._theme_mode = theme_mode
+        self._apply_header_style(self._design)
+
+    def apply_design(self, design: DesignSettings):
+        self._design = design
+        self._apply_header_style(design)
 
 
 class _PanelGrip(QWidget):
@@ -360,6 +499,41 @@ class SettingsPanel(QFrame):
         self._build_items_section(item_entries, design)
         self._build_item_edit_sections(design)
 
+        # ── 折りたたみ状態の復元とシグナル接続 ──
+        self._collapsible_map: dict[str, CollapsibleSection] = {
+            "spin": self._spin_collapsible,
+            "display": self._display_section,
+            "design": self._design_collapsible,
+            "result": self._result_collapsible,
+            "sound": self._sound_collapsible,
+            "log": self._log_collapsible,
+            "replay": self._replay_collapsible,
+            "pattern": self._pattern_collapsible,
+            "items": self._items_collapsible,
+        }
+        # アニメーション時間の初期適用
+        for cs in self._collapsible_map.values():
+            cs.set_anim_duration(settings.collapse_anim_ms)
+        saved = settings.collapsed_sections
+        if saved:
+            for name, cs in self._collapsible_map.items():
+                if name in saved:
+                    cs.set_expanded(not saved[name])
+        # 排他開閉の正規化: 展開セクションが2個以上なら最初の1個だけ残す
+        expanded = [n for n, cs in self._collapsible_map.items()
+                    if not cs.is_collapsed]
+        self._sections_normalized = len(expanded) > 1
+        if self._sections_normalized:
+            for name in expanded[1:]:
+                self._collapsible_map[name].set_expanded(False)
+        for name, cs in self._collapsible_map.items():
+            cs.toggled.connect(
+                lambda collapsed, _n=name: self._on_section_toggled(_n, collapsed)
+            )
+        # 正規化で変更があった場合、保存フローへ反映
+        if self._sections_normalized:
+            self._emit_collapsed_state()
+
         self._layout.addStretch()
 
         self._scroll.setWidget(self._content)
@@ -392,19 +566,36 @@ class SettingsPanel(QFrame):
         self._panel_start_pos = QPoint()
 
     # ================================================================
+    #  折りたたみ状態の保存
+    # ================================================================
+
+    def _emit_collapsed_state(self):
+        """現在の折りたたみ状態を保存フローへ送出する。"""
+        state = {
+            name: cs.is_collapsed
+            for name, cs in self._collapsible_map.items()
+        }
+        self.setting_changed.emit("collapsed_sections", state)
+
+    def _on_section_toggled(self, toggled_name: str, collapsed: bool):
+        """いずれかのセクションが開閉されたとき、排他開閉＋状態保存を行う。"""
+        if not collapsed:
+            # 開いた場合: 他の展開中セクションを閉じる
+            for name, cs in self._collapsible_map.items():
+                if name != toggled_name and not cs.is_collapsed:
+                    cs.set_expanded(False)
+        self._emit_collapsed_state()
+
+    # ================================================================
     #  セクション 1: スピン操作（実装済み）
     # ================================================================
 
     def _build_spin_section(self, settings: AppSettings,
                             design: DesignSettings):
         # スピンセクション全体をコンテナで囲む（ctrl_box_visible で一括制御用）
-        self._spin_section = QWidget()
-        spin_layout = QVBoxLayout(self._spin_section)
-        spin_layout.setContentsMargins(0, 0, 0, 0)
-        spin_layout.setSpacing(8)
-
-        self._spin_header = _SectionHeader("スピン", design)
-        spin_layout.addWidget(self._spin_header)
+        self._spin_collapsible = CollapsibleSection("スピン", design, expanded=True, theme_mode=settings.theme_mode)
+        self._spin_section = self._spin_collapsible
+        spin_layout = self._spin_collapsible.content_layout
 
         # spin ボタン
         self._spin_btn = QPushButton("▶  スピン開始")
@@ -559,7 +750,7 @@ class SettingsPanel(QFrame):
         # 初期表示: モードに応じて duration 行の表示/非表示
         self._update_duration_rows_visibility(settings.spin_mode)
 
-        self._layout.addWidget(self._spin_section)
+        self._layout.addWidget(self._spin_collapsible)
 
     def _on_spin_mode_changed(self, index: int):
         """スピンモード変更時のハンドラ。"""
@@ -582,8 +773,35 @@ class SettingsPanel(QFrame):
 
     def _build_display_section(self, settings: AppSettings,
                                design: DesignSettings):
-        self._display_header = _SectionHeader("表示", design)
-        self._layout.addWidget(self._display_header)
+        self._display_section = CollapsibleSection("表示", design, expanded=True, theme_mode=settings.theme_mode)
+        sec = self._display_section.content_layout
+        self._layout.addWidget(self._display_section)
+
+        # テーマモード
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(4)
+        theme_lbl = QLabel("テーマ:")
+        theme_lbl.setFont(QFont("Meiryo", 8))
+        theme_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._theme_lbl = theme_lbl
+        theme_row.addWidget(theme_lbl)
+
+        self._theme_combo = QComboBox()
+        self._theme_combo.setFont(QFont("Meiryo", 8))
+        self._apply_combo_style(self._theme_combo, design)
+        self._theme_combo.addItems(["ダーク", "ライト", "システム"])
+        _theme_idx_map = {"dark": 0, "light": 1, "system": 2, "auto": 2}
+        self._theme_combo.setCurrentIndex(
+            _theme_idx_map.get(settings.theme_mode, 0)
+        )
+        _theme_val_map = ["dark", "light", "system"]
+        self._theme_combo.currentIndexChanged.connect(
+            lambda idx: self.setting_changed.emit(
+                "theme_mode", _theme_val_map[idx] if idx < len(_theme_val_map) else "dark"
+            )
+        )
+        theme_row.addWidget(self._theme_combo, stretch=1)
+        sec.addLayout(theme_row)
 
         # テキスト表示モード
         text_row = QHBoxLayout()
@@ -604,7 +822,7 @@ class SettingsPanel(QFrame):
             lambda idx: self.setting_changed.emit("text_size_mode", idx)
         )
         text_row.addWidget(self._text_mode_combo, stretch=1)
-        self._layout.addLayout(text_row)
+        sec.addLayout(text_row)
 
         # ドーナツ穴
         self._donut_cb = QCheckBox("ドーナツ穴")
@@ -614,7 +832,7 @@ class SettingsPanel(QFrame):
         self._donut_cb.toggled.connect(
             lambda v: self.setting_changed.emit("donut_hole", v)
         )
-        self._layout.addWidget(self._donut_cb)
+        sec.addWidget(self._donut_cb)
 
         # OBS透過モード
         self._transparent_cb = QCheckBox("OBS透過モード")
@@ -624,7 +842,7 @@ class SettingsPanel(QFrame):
         self._transparent_cb.toggled.connect(
             lambda v: self.setting_changed.emit("transparent", v)
         )
-        self._layout.addWidget(self._transparent_cb)
+        sec.addWidget(self._transparent_cb)
 
         # リサイズグリップ表示
         self._grip_visible_cb = QCheckBox("リサイズグリップ表示")
@@ -634,7 +852,7 @@ class SettingsPanel(QFrame):
         self._grip_visible_cb.toggled.connect(
             lambda v: self.setting_changed.emit("grip_visible", v)
         )
-        self._layout.addWidget(self._grip_visible_cb)
+        sec.addWidget(self._grip_visible_cb)
 
         # コントロールボックス表示（ドラッグバー）
         self._ctrl_box_visible_cb = QCheckBox("コントロールボックス表示")
@@ -644,7 +862,7 @@ class SettingsPanel(QFrame):
         self._ctrl_box_visible_cb.toggled.connect(
             lambda v: self.setting_changed.emit("ctrl_box_visible", v)
         )
-        self._layout.addWidget(self._ctrl_box_visible_cb)
+        sec.addWidget(self._ctrl_box_visible_cb)
 
         # インスタンス番号表示
         self._instance_label_cb = QCheckBox("インスタンス番号表示")
@@ -654,7 +872,7 @@ class SettingsPanel(QFrame):
         self._instance_label_cb.toggled.connect(
             lambda v: self.setting_changed.emit("float_win_show_instance", v)
         )
-        self._layout.addWidget(self._instance_label_cb)
+        sec.addWidget(self._instance_label_cb)
 
         # 設定パネルフローティング
         self._float_panel_cb = QCheckBox("設定パネル独立化")
@@ -664,7 +882,7 @@ class SettingsPanel(QFrame):
         self._float_panel_cb.toggled.connect(
             lambda v: self.setting_changed.emit("settings_panel_float", v)
         )
-        self._layout.addWidget(self._float_panel_cb)
+        sec.addWidget(self._float_panel_cb)
 
         # サイズプロファイル
         prof_row = QHBoxLayout()
@@ -686,7 +904,7 @@ class SettingsPanel(QFrame):
             lambda idx: self.setting_changed.emit("profile_idx", idx)
         )
         prof_row.addWidget(self._prof_combo, stretch=1)
-        self._layout.addLayout(prof_row)
+        sec.addLayout(prof_row)
 
         # テキスト方向
         tdir_row = QHBoxLayout()
@@ -707,7 +925,7 @@ class SettingsPanel(QFrame):
             lambda idx: self.setting_changed.emit("text_direction", idx)
         )
         tdir_row.addWidget(self._tdir_combo, stretch=1)
-        self._layout.addLayout(tdir_row)
+        sec.addLayout(tdir_row)
 
         # スピン回転方向
         sdir_row = QHBoxLayout()
@@ -728,7 +946,7 @@ class SettingsPanel(QFrame):
             lambda idx: self.setting_changed.emit("spin_direction", idx)
         )
         sdir_row.addWidget(self._sdir_combo, stretch=1)
-        self._layout.addLayout(sdir_row)
+        sec.addLayout(sdir_row)
 
         # ポインター位置
         ptr_row = QHBoxLayout()
@@ -749,7 +967,39 @@ class SettingsPanel(QFrame):
         self._ptr_combo.setCurrentIndex(ptr_preset_idx)
         self._ptr_combo.currentIndexChanged.connect(self._on_pointer_preset_changed)
         ptr_row.addWidget(self._ptr_combo, stretch=1)
-        self._layout.addLayout(ptr_row)
+        sec.addLayout(ptr_row)
+
+        # 折りたたみアニメーション時間
+        anim_row = QHBoxLayout()
+        anim_row.setSpacing(4)
+        anim_lbl = QLabel("アニメ速度:")
+        anim_lbl.setFont(QFont("Meiryo", 8))
+        anim_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._anim_lbl = anim_lbl
+        anim_row.addWidget(anim_lbl)
+
+        self._anim_spin = QSpinBox()
+        self._anim_spin.setFont(QFont("Meiryo", 8))
+        self._anim_spin.setRange(0, 500)
+        self._anim_spin.setSingleStep(50)
+        self._anim_spin.setSuffix(" ms")
+        self._anim_spin.setValue(settings.collapse_anim_ms)
+        self._anim_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        self._anim_spin.valueChanged.connect(self._on_anim_duration_changed)
+        anim_row.addWidget(self._anim_spin, stretch=1)
+        sec.addLayout(anim_row)
+
+    def _on_anim_duration_changed(self, value: int):
+        """アニメーション時間変更時: 全セクションへ即時反映 + 保存。"""
+        for cs in self._collapsible_map.values():
+            cs.set_anim_duration(value)
+        self.setting_changed.emit("collapse_anim_ms", value)
 
     @staticmethod
     def _angle_to_preset_idx(angle: float) -> int:
@@ -771,8 +1021,9 @@ class SettingsPanel(QFrame):
 
     def _build_design_section(self, settings: AppSettings,
                               design: DesignSettings):
-        self._design_header = _SectionHeader("デザイン", design)
-        self._layout.addWidget(self._design_header)
+        self._design_collapsible = CollapsibleSection("デザイン", design, expanded=False, theme_mode=settings.theme_mode)
+        sec = self._design_collapsible.content_layout
+        self._layout.addWidget(self._design_collapsible)
 
         self._design_editor_btn = QPushButton("デザインエディタを開く")
         self._design_editor_btn.setFont(QFont("Meiryo", 9))
@@ -787,7 +1038,7 @@ class SettingsPanel(QFrame):
         self._design_editor_btn.clicked.connect(
             self.design_editor_requested.emit
         )
-        self._layout.addWidget(self._design_editor_btn)
+        sec.addWidget(self._design_editor_btn)
 
     # ================================================================
     #  セクション 3: 結果表示設定（実装済み）
@@ -795,8 +1046,9 @@ class SettingsPanel(QFrame):
 
     def _build_result_section(self, settings: AppSettings,
                               design: DesignSettings):
-        self._result_header = _SectionHeader("結果表示", design)
-        self._layout.addWidget(self._result_header)
+        self._result_collapsible = CollapsibleSection("結果表示", design, expanded=False, theme_mode=settings.theme_mode)
+        sec = self._result_collapsible.content_layout
+        self._layout.addWidget(self._result_collapsible)
 
         # 閉じ方モード
         mode_row = QHBoxLayout()
@@ -817,7 +1069,7 @@ class SettingsPanel(QFrame):
             self._on_result_mode_changed
         )
         mode_row.addWidget(self._result_mode_combo, stretch=1)
-        self._layout.addLayout(mode_row)
+        sec.addLayout(mode_row)
 
         # 保持秒数
         sec_row = QHBoxLayout()
@@ -846,7 +1098,7 @@ class SettingsPanel(QFrame):
             lambda v: self.setting_changed.emit("result_hold_sec", v)
         )
         sec_row.addWidget(self._result_sec_spin, stretch=1)
-        self._layout.addLayout(sec_row)
+        sec.addLayout(sec_row)
 
         # 再生時保持秒数（チェックボックスで通常保持の継承/個別設定を切替）
         macro_cb_row = QHBoxLayout()
@@ -855,7 +1107,7 @@ class SettingsPanel(QFrame):
         self._macro_hold_cb.setFont(QFont("Meiryo", 8))
         self._macro_hold_cb.setStyleSheet(f"color: {design.text_sub};")
         macro_cb_row.addWidget(self._macro_hold_cb)
-        self._layout.addLayout(macro_cb_row)
+        sec.addLayout(macro_cb_row)
 
         macro_sec_row = QHBoxLayout()
         macro_sec_row.setSpacing(4)
@@ -891,7 +1143,7 @@ class SettingsPanel(QFrame):
         self._macro_sec_spin.valueChanged.connect(self._on_macro_hold_value_changed)
 
         macro_sec_row.addWidget(self._macro_sec_spin, stretch=1)
-        self._layout.addLayout(macro_sec_row)
+        sec.addLayout(macro_sec_row)
 
         # 保持秒数の有効/無効を閉じ方モードに連動
         self._update_hold_sec_enabled()
@@ -932,8 +1184,9 @@ class SettingsPanel(QFrame):
 
     def _build_sound_section(self, settings: AppSettings,
                              design: DesignSettings):
-        self._sound_header = _SectionHeader("サウンド", design)
-        self._layout.addWidget(self._sound_header)
+        self._sound_collapsible = CollapsibleSection("サウンド", design, expanded=False, theme_mode=settings.theme_mode)
+        sec = self._sound_collapsible.content_layout
+        self._layout.addWidget(self._sound_collapsible)
 
         # tick 音 ON/OFF
         self._sound_tick_cb = QCheckBox("スピン音")
@@ -943,7 +1196,7 @@ class SettingsPanel(QFrame):
         self._sound_tick_cb.toggled.connect(
             lambda v: self.setting_changed.emit("sound_tick_enabled", v)
         )
-        self._layout.addWidget(self._sound_tick_cb)
+        sec.addWidget(self._sound_tick_cb)
 
         # result 音 ON/OFF
         self._sound_result_cb = QCheckBox("決定音")
@@ -953,7 +1206,7 @@ class SettingsPanel(QFrame):
         self._sound_result_cb.toggled.connect(
             lambda v: self.setting_changed.emit("sound_result_enabled", v)
         )
-        self._layout.addWidget(self._sound_result_cb)
+        sec.addWidget(self._sound_result_cb)
 
         # tick 音量スライダー
         tick_vol_row = QHBoxLayout()
@@ -989,7 +1242,7 @@ class SettingsPanel(QFrame):
             lambda v: self._tick_vol_val.setText(f"{v}%")
         )
         tick_vol_row.addWidget(self._tick_vol_val)
-        self._layout.addLayout(tick_vol_row)
+        sec.addLayout(tick_vol_row)
 
         # result 音量スライダー
         win_vol_row = QHBoxLayout()
@@ -1025,7 +1278,7 @@ class SettingsPanel(QFrame):
             lambda v: self._win_vol_val.setText(f"{v}%")
         )
         win_vol_row.addWidget(self._win_vol_val)
-        self._layout.addLayout(win_vol_row)
+        sec.addLayout(win_vol_row)
 
         # tick 音パターン選択
         from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
@@ -1078,7 +1331,7 @@ class SettingsPanel(QFrame):
         self._tick_test_btn.clicked.connect(self.preview_tick_requested.emit)
         tick_pat_row.addWidget(self._tick_test_btn)
 
-        self._layout.addLayout(tick_pat_row)
+        sec.addLayout(tick_pat_row)
 
         # result 音パターン選択
         win_pat_row = QHBoxLayout()
@@ -1118,7 +1371,7 @@ class SettingsPanel(QFrame):
         self._win_test_btn.clicked.connect(self.preview_win_requested.emit)
         win_pat_row.addWidget(self._win_test_btn)
 
-        self._layout.addLayout(win_pat_row)
+        sec.addLayout(win_pat_row)
 
     def _on_tick_custom_browse(self):
         """カスタムtick音ファイル選択ダイアログ。"""
@@ -1152,8 +1405,9 @@ class SettingsPanel(QFrame):
 
     def _build_log_section(self, settings: AppSettings,
                            design: DesignSettings):
-        self._log_header = _SectionHeader("ログ", design)
-        self._layout.addWidget(self._log_header)
+        self._log_collapsible = CollapsibleSection("ログ", design, expanded=False, theme_mode=settings.theme_mode)
+        sec = self._log_collapsible.content_layout
+        self._layout.addWidget(self._log_collapsible)
 
         self._log_show_cb = QCheckBox("ログオーバーレイ表示")
         self._log_show_cb.setFont(QFont("Meiryo", 8))
@@ -1162,7 +1416,7 @@ class SettingsPanel(QFrame):
         self._log_show_cb.toggled.connect(
             lambda v: self.setting_changed.emit("log_overlay_show", v)
         )
-        self._layout.addWidget(self._log_show_cb)
+        sec.addWidget(self._log_show_cb)
 
         self._log_ts_cb = QCheckBox("タイムスタンプ表示")
         self._log_ts_cb.setFont(QFont("Meiryo", 8))
@@ -1171,7 +1425,7 @@ class SettingsPanel(QFrame):
         self._log_ts_cb.toggled.connect(
             lambda v: self.setting_changed.emit("log_timestamp", v)
         )
-        self._layout.addWidget(self._log_ts_cb)
+        sec.addWidget(self._log_ts_cb)
 
         self._log_border_cb = QCheckBox("枠線表示")
         self._log_border_cb.setFont(QFont("Meiryo", 8))
@@ -1180,7 +1434,7 @@ class SettingsPanel(QFrame):
         self._log_border_cb.toggled.connect(
             lambda v: self.setting_changed.emit("log_box_border", v)
         )
-        self._layout.addWidget(self._log_border_cb)
+        sec.addWidget(self._log_border_cb)
 
         self._log_on_top_cb = QCheckBox("ログ前面表示")
         self._log_on_top_cb.setFont(QFont("Meiryo", 8))
@@ -1189,7 +1443,7 @@ class SettingsPanel(QFrame):
         self._log_on_top_cb.toggled.connect(
             lambda v: self.setting_changed.emit("log_on_top", v)
         )
-        self._layout.addWidget(self._log_on_top_cb)
+        sec.addWidget(self._log_on_top_cb)
 
         # リセット確認
         self._confirm_reset_cb = QCheckBox("リセット確認")
@@ -1199,7 +1453,7 @@ class SettingsPanel(QFrame):
         self._confirm_reset_cb.toggled.connect(
             lambda v: self.setting_changed.emit("confirm_reset", v)
         )
-        self._layout.addWidget(self._confirm_reset_cb)
+        sec.addWidget(self._confirm_reset_cb)
 
         # ログ操作ボタン行
         log_btn_row = QHBoxLayout()
@@ -1244,7 +1498,7 @@ class SettingsPanel(QFrame):
         self._graph_btn.clicked.connect(self.graph_requested.emit)
         log_btn_row.addWidget(self._graph_btn)
 
-        self._layout.addLayout(log_btn_row)
+        sec.addLayout(log_btn_row)
 
     # ================================================================
     #  セクション: リプレイ
@@ -1252,8 +1506,9 @@ class SettingsPanel(QFrame):
 
     def _build_replay_section(self, settings: AppSettings,
                               design: DesignSettings):
-        self._replay_header = _SectionHeader("リプレイ", design)
-        self._layout.addWidget(self._replay_header)
+        self._replay_collapsible = CollapsibleSection("リプレイ", design, expanded=False, theme_mode=settings.theme_mode)
+        sec = self._replay_collapsible.content_layout
+        self._layout.addWidget(self._replay_collapsible)
 
         # リプレイ件数表示 + 再生/中断ボタン
         replay_row = QHBoxLayout()
@@ -1308,7 +1563,7 @@ class SettingsPanel(QFrame):
         )
         replay_row.addWidget(self._replay_mgr_btn)
 
-        self._layout.addLayout(replay_row)
+        sec.addLayout(replay_row)
 
         # 設定行: 保存上限
         max_row = QHBoxLayout()
@@ -1338,7 +1593,7 @@ class SettingsPanel(QFrame):
 
         max_row.addStretch(1)
 
-        self._layout.addLayout(max_row)
+        sec.addLayout(max_row)
 
         # 設定行: 再生中表示
         self._replay_indicator_cb = QCheckBox("再生中表示")
@@ -1348,7 +1603,7 @@ class SettingsPanel(QFrame):
         self._replay_indicator_cb.toggled.connect(
             lambda v: self.setting_changed.emit("replay_show_indicator", v)
         )
-        self._layout.addWidget(self._replay_indicator_cb)
+        sec.addWidget(self._replay_indicator_cb)
 
     def set_replay_count(self, count: int):
         """リプレイ件数表示を更新する。"""
@@ -1366,8 +1621,9 @@ class SettingsPanel(QFrame):
 
     def _build_pattern_section(self, design: DesignSettings):
         """パターン選択・追加・削除セクションを構築する。"""
-        self._pattern_header = _SectionHeader("パターン", design)
-        self._layout.addWidget(self._pattern_header)
+        self._pattern_collapsible = CollapsibleSection("パターン", design, expanded=False, theme_mode=self._settings.theme_mode)
+        sec = self._pattern_collapsible.content_layout
+        self._layout.addWidget(self._pattern_collapsible)
 
         # パターン選択行: [コンボ] [＋] [－]
         pat_row = QHBoxLayout()
@@ -1432,7 +1688,7 @@ class SettingsPanel(QFrame):
         self._pattern_import_btn.clicked.connect(self.pattern_import_requested.emit)
         pat_row.addWidget(self._pattern_import_btn)
 
-        self._layout.addLayout(pat_row)
+        sec.addLayout(pat_row)
         self._update_pattern_del_enabled()
 
     def _on_pattern_switched(self, name: str):
@@ -1517,8 +1773,9 @@ class SettingsPanel(QFrame):
         各行: [有効CB] [テキスト入力] [▲] [▼] [×]
         末尾に「＋追加」ボタン。
         """
-        self._items_header = _SectionHeader("項目リスト", design)
-        self._layout.addWidget(self._items_header)
+        self._items_collapsible = CollapsibleSection("項目リスト", design, expanded=True, theme_mode=self._settings.theme_mode)
+        sec = self._items_collapsible.content_layout
+        self._layout.addWidget(self._items_collapsible)
 
         # ── 検索・フィルター行 ──
         filter_bar = QHBoxLayout()
@@ -1547,14 +1804,14 @@ class SettingsPanel(QFrame):
         )
         filter_bar.addWidget(self._filter_combo)
 
-        self._layout.addLayout(filter_bar)
+        sec.addLayout(filter_bar)
 
         # 行ウィジェットを格納するコンテナ
         self._item_rows_container = QWidget()
         self._item_rows_layout = QVBoxLayout(self._item_rows_container)
         self._item_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._item_rows_layout.setSpacing(2)
-        self._layout.addWidget(self._item_rows_container)
+        sec.addWidget(self._item_rows_container)
 
         self._item_rows: list[QWidget] = []
 
@@ -1567,7 +1824,7 @@ class SettingsPanel(QFrame):
         self._add_item_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_add_btn_style(self._add_item_btn, design)
         self._add_item_btn.clicked.connect(self._on_add_item)
-        self._layout.addWidget(self._add_item_btn)
+        sec.addWidget(self._add_item_btn)
 
     # ── 確率変更ヘルパー ──
 
@@ -2094,6 +2351,7 @@ class SettingsPanel(QFrame):
         常時ランダムはチェックボックスで実装済み。
         """
         self._item_edit_sections: list[_PlaceholderSection] = []
+        sec = self._items_collapsible.content_layout
 
         # 常時ランダム
         self._shuffle_cb = QCheckBox("常時ランダム（スピンごとに配置をランダム化）")
@@ -2103,7 +2361,7 @@ class SettingsPanel(QFrame):
         self._shuffle_cb.toggled.connect(
             lambda v: self.setting_changed.emit("auto_shuffle", v)
         )
-        self._layout.addWidget(self._shuffle_cb)
+        sec.addWidget(self._shuffle_cb)
 
         # 配置方向
         arr_row = QHBoxLayout()
@@ -2140,7 +2398,7 @@ class SettingsPanel(QFrame):
         self._shuffle_once_btn.clicked.connect(self.shuffle_once_requested.emit)
         arr_row.addWidget(self._shuffle_once_btn)
 
-        self._layout.addLayout(arr_row)
+        sec.addLayout(arr_row)
 
     # ================================================================
     #  内部ヘルパー
@@ -2166,6 +2424,14 @@ class SettingsPanel(QFrame):
             f"QPushButton:hover {{ background-color: {design.separator}; }}"
             f"QPushButton:disabled {{ background-color: {design.separator}; color: {design.text_sub}; }}"
         )
+
+    @staticmethod
+    def _dark_checkbox_style(design: DesignSettings) -> str:
+        return dark_checkbox_style(design)
+
+    @staticmethod
+    def _dark_spinbox_style(design: DesignSettings) -> str:
+        return dark_spinbox_style(design)
 
     @staticmethod
     def _apply_combo_style(combo: QComboBox, design: DesignSettings):
@@ -2450,6 +2716,11 @@ class SettingsPanel(QFrame):
             self._float_panel_cb.setChecked(value)
             self._float_panel_cb.blockSignals(False)
 
+    def set_panel_theme_mode(self, theme_mode: str):
+        """テーマモード変更時に全折りたたみセクションのヘッダーを更新する。"""
+        for cs in self._collapsible_map.values():
+            cs.set_theme_mode(theme_mode)
+
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
         self._design = design
@@ -2487,13 +2758,13 @@ class SettingsPanel(QFrame):
         self._pattern_export_btn.setStyleSheet(pat_btn_style)
         self._pattern_import_btn.setStyleSheet(pat_btn_style)
 
-        # セクションヘッダー
-        for header in [self._spin_header, self._display_header,
-                       self._design_header,
-                       self._result_header, self._sound_header,
-                       self._log_header, self._replay_header,
-                       self._pattern_header, self._items_header]:
-            header._apply_style(design)
+        # 折りたたみセクション
+        for cs in [self._spin_collapsible, self._display_section,
+                   self._design_collapsible, self._result_collapsible,
+                   self._sound_collapsible, self._log_collapsible,
+                   self._replay_collapsible, self._pattern_collapsible,
+                   self._items_collapsible]:
+            cs.apply_design(design)
 
         # デザインエディタボタン
         self._design_editor_btn.setStyleSheet(
@@ -2504,36 +2775,41 @@ class SettingsPanel(QFrame):
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
         )
 
+        # ダークテーマ共通スタイル
+        sb_style = self._dark_spinbox_style(design)
+        cb_style = self._dark_checkbox_style(design)
+
         # スピン時間
         self._dur_lbl.setStyleSheet(f"color: {design.text_sub};")
-        spinbox_style = (
-            f"QDoubleSpinBox {{"
-            f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
-            f"}}"
-        )
-        self._dur_spin.setStyleSheet(spinbox_style)
+        self._dur_spin.setStyleSheet(sb_style)
 
         # スピンモード / ダブル・トリプル時間
         self._mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._mode_combo, design)
         self._dbl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dbl_spin.setStyleSheet(spinbox_style)
+        self._dbl_spin.setStyleSheet(sb_style)
         self._tpl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._tpl_spin.setStyleSheet(spinbox_style)
+        self._tpl_spin.setStyleSheet(sb_style)
 
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._theme_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._apply_combo_style(self._theme_combo, design)
         self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._prof_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._tdir_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._sdir_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._ptr_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._donut_cb.setStyleSheet(f"color: {design.text};")
-        self._transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._sound_tick_cb.setStyleSheet(f"color: {design.text};")
-        self._sound_result_cb.setStyleSheet(f"color: {design.text};")
+        self._anim_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._anim_spin.setStyleSheet(sb_style)
+        self._donut_cb.setStyleSheet(cb_style)
+        self._transparent_cb.setStyleSheet(cb_style)
+        self._grip_visible_cb.setStyleSheet(cb_style)
+        self._ctrl_box_visible_cb.setStyleSheet(cb_style)
+        self._instance_label_cb.setStyleSheet(cb_style)
+        self._float_panel_cb.setStyleSheet(cb_style)
+        self._sound_tick_cb.setStyleSheet(cb_style)
+        self._sound_result_cb.setStyleSheet(cb_style)
         slider_style = (
             f"QSlider::groove:horizontal {{"
             f"  background: {design.separator}; height: 4px; border-radius: 2px;"
@@ -2565,11 +2841,11 @@ class SettingsPanel(QFrame):
         self._tick_test_btn.setStyleSheet(small_btn_style)
         self._win_file_btn.setStyleSheet(small_btn_style)
         self._win_test_btn.setStyleSheet(small_btn_style)
-        self._log_show_cb.setStyleSheet(f"color: {design.text};")
-        self._log_ts_cb.setStyleSheet(f"color: {design.text};")
-        self._log_border_cb.setStyleSheet(f"color: {design.text};")
-        self._log_on_top_cb.setStyleSheet(f"color: {design.text};")
-        self._confirm_reset_cb.setStyleSheet(f"color: {design.text};")
+        self._log_show_cb.setStyleSheet(cb_style)
+        self._log_ts_cb.setStyleSheet(cb_style)
+        self._log_border_cb.setStyleSheet(cb_style)
+        self._log_on_top_cb.setStyleSheet(cb_style)
+        self._confirm_reset_cb.setStyleSheet(cb_style)
         self._log_export_btn.setStyleSheet(
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
@@ -2591,7 +2867,7 @@ class SettingsPanel(QFrame):
             f"}}"
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
         )
-        self._shuffle_cb.setStyleSheet(f"color: {design.text};")
+        self._shuffle_cb.setStyleSheet(cb_style)
         self._arr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._arr_combo, design)
         self._shuffle_once_btn.setStyleSheet(
@@ -2605,13 +2881,14 @@ class SettingsPanel(QFrame):
         self._result_mode_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._result_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._result_mode_combo, design)
-        self._result_sec_spin.setStyleSheet(
-            f"QDoubleSpinBox {{"
-            f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
-            f"}}"
-        )
+        self._result_sec_spin.setStyleSheet(sb_style)
+        self._macro_hold_cb.setStyleSheet(cb_style)
+        self._macro_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._macro_sec_spin.setStyleSheet(sb_style)
+        self._replay_indicator_cb.setStyleSheet(cb_style)
+        self._replay_max_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._replay_max_spin.setStyleSheet(sb_style)
+        self._replay_count_lbl.setStyleSheet(f"color: {design.text_sub};")
 
         # 検索・フィルター
         self._search_edit.setStyleSheet(

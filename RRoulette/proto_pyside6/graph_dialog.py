@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QWidget
 
+from dark_theme import build_dialog_stylesheet
 from design_settings import DesignSettings
 
 
@@ -151,10 +152,7 @@ class GraphDialog(QDialog):
         self._apply_style()
 
     def _apply_style(self):
-        d = self._design
-        self.setStyleSheet(
-            f"QDialog {{ background-color: {d.bg}; }}"
-        )
+        self.setStyleSheet(build_dialog_stylesheet(self._design))
 
     def update_graph(self, items: list[tuple[str, int, int]],
                      total: int, pattern_name: str):
