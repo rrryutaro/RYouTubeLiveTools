@@ -31,13 +31,146 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
     QDoubleSpinBox, QSpinBox, QLineEdit, QStackedWidget, QSlider,
-    QFileDialog,
+    QFileDialog, QPlainTextEdit, QStackedLayout, QMenu,
 )
 
 from bridge import (
     SIDEBAR_W, SIZE_PROFILES, DesignSettings,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
+    ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
 )
+
+
+# ================================================================
+#  項目テキスト直接編集ヘルパー (v0.4.4 item_list 由来)
+# ================================================================
+
+def serialize_items_text(items: list[str]) -> str:
+    """項目リストをテキストエリア用の文字列に変換する。
+
+    改行を含む項目はクォートブロックで囲む。通常項目はそのまま出力。
+    （v0.4.4 `item_list._serialize_items` を移植）
+    """
+    parts = []
+    for item in items:
+        if "\n" in item:
+            content_lines = item.split("\n")
+            esc = []
+            for ln in content_lines:
+                if ln.endswith('"') and not ln.endswith('""'):
+                    ln += '"'
+                esc.append(ln)
+            esc[0] = '"' + esc[0]
+            last = esc[-1]
+            if last.endswith('"'):
+                esc.append('"')
+            else:
+                esc[-1] += '"'
+            parts.append("\n".join(esc))
+        else:
+            parts.append(item)
+    return "\n".join(parts)
+
+
+def parse_items_text(raw: str) -> list[str]:
+    """テキストをパースして項目リストを返す。
+
+    書式:
+      - 通常行: 各行が 1 項目
+      - クォートブロック: 行頭 `"` で開始 → 行末 `"` で 1 項目に確定
+      - `""` エスケープ: ブロック内で行末 `"` を含めたいとき
+    （v0.4.4 `item_list._parse_items` を移植）
+    """
+    items: list[str] = []
+    buf: list[str] | None = None
+
+    def _flush_pending():
+        if buf:
+            items.append('"' + buf[0])
+            for ln in buf[1:]:
+                if ln.strip():
+                    items.append(ln.strip())
+
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if buf is not None:
+            if s == '"':
+                item = '\n'.join(buf).strip('\n').replace('""', '"')
+                if item:
+                    items.append(item)
+                buf = None
+            elif s[0] == '"':
+                _flush_pending()
+                rest = s[1:]
+                if rest and rest[-1] == '"' and not rest.endswith('""'):
+                    item = rest[:-1].replace('""', '"')
+                    if item:
+                        items.append(item)
+                    buf = None
+                else:
+                    buf = [rest] if rest else []
+            elif s[-1] == '"' and not s.endswith('""'):
+                buf.append(s[:-1])
+                item = '\n'.join(buf).strip('\n').replace('""', '"')
+                if item:
+                    items.append(item)
+                buf = None
+            else:
+                buf.append(s)
+        else:
+            if s[0] == '"':
+                rest = s[1:]
+                if rest and rest[-1] == '"' and not rest.endswith('""'):
+                    item = rest[:-1].replace('""', '"')
+                    if item:
+                        items.append(item)
+                elif rest:
+                    buf = [rest]
+                else:
+                    items.append('"')
+            else:
+                items.append(s)
+    _flush_pending()
+    return items
+
+
+def enforce_item_limits(items: list[str]) -> tuple[list[str], bool, str]:
+    """項目数 / 行数 / 文字数の上限を強制する。
+
+    Returns: (trimmed_items, was_changed, warn_message)
+    （v0.4.4 `item_list._enforce_limits` を移植）
+    """
+    warnings: list[str] = []
+    changed = False
+    if len(items) > ITEM_MAX_COUNT:
+        items = items[:ITEM_MAX_COUNT]
+        warnings.append(f"項目数を上限（{ITEM_MAX_COUNT}）に制限")
+        changed = True
+    trimmed: list[str] = []
+    for item in items:
+        lines = item.split("\n")
+        if len(lines) > ITEM_MAX_LINES:
+            lines = lines[:ITEM_MAX_LINES]
+            warnings.append(f"1項目{ITEM_MAX_LINES}行に制限")
+            changed = True
+        new_lines: list[str] = []
+        for ln in lines:
+            if len(ln) > ITEM_MAX_LINE_CHARS:
+                new_lines.append(ln[:ITEM_MAX_LINE_CHARS])
+                warnings.append(f"1行{ITEM_MAX_LINE_CHARS}文字に制限")
+                changed = True
+            else:
+                new_lines.append(ln)
+        trimmed.append("\n".join(new_lines))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for w in warnings:
+        if w not in seen:
+            seen.add(w)
+            unique.append(w)
+    return trimmed, changed, " / ".join(unique)
 from app_settings import AppSettings
 from item_entry import ItemEntry
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
@@ -85,15 +218,26 @@ class CollapsibleSection(QWidget):
         self._theme_mode = theme_mode
         self._animating = False
 
+        # ヘッダー上の click/drag 状態
+        self._header_press_pos: QPoint | None = None
+        self._header_pressed = False
+        self._header_dragging = False
+        self._drag_target: QWidget | None = None
+        self._drag_start_pos: QPoint = QPoint()
+        self._DRAG_THRESHOLD = 6  # px (manhattan)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # クリック可能なヘッダー
+        # クリック / ドラッグ両対応のヘッダー
         self._header = QLabel(self._format_title(expanded))
         self._header.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
         self._header.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._header.mousePressEvent = lambda _ev: self.toggle()
+        # mousePress は記録だけ。toggle はリリース時にドラッグ判定とあわせて行う。
+        self._header.mousePressEvent = self._header_mouse_press
+        self._header.mouseMoveEvent = self._header_mouse_move
+        self._header.mouseReleaseEvent = self._header_mouse_release
         self._apply_header_style(design)
         layout.addWidget(self._header)
 
@@ -117,6 +261,110 @@ class CollapsibleSection(QWidget):
     def _format_title(self, expanded: bool) -> str:
         arrow = "\u25bc" if expanded else "\u25b6"
         return f"{arrow} {self._title}"
+
+    # ----------------------------------------------------------------
+    #  ヘッダー click / drag 分離ハンドラ
+    # ----------------------------------------------------------------
+
+    def _header_mouse_press(self, ev):
+        """ヘッダー上のマウス押下: 記録のみ。トグルはリリース時に判定。"""
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        self._header_press_pos = ev.globalPosition().toPoint()
+        self._header_pressed = True
+        self._header_dragging = False
+        # 親 (SettingsPanel など) のうち、ドラッグハンドルを備えた最初の祖先を探す
+        self._drag_target = self._find_drag_target()
+        if self._drag_target is not None:
+            parent = self._drag_target.parentWidget()
+            if parent is None:
+                self._drag_start_pos = (
+                    self._drag_target.frameGeometry().topLeft()
+                )
+            else:
+                self._drag_start_pos = self._drag_target.pos()
+            # クリックした祖先パネルを最前面へ
+            self._drag_target.raise_()
+        ev.accept()
+
+    def _header_mouse_move(self, ev):
+        """ヘッダー上のマウス移動: しきい値を超えたらパネルドラッグへ昇格。"""
+        if not self._header_pressed:
+            ev.ignore()
+            return
+        if self._header_press_pos is None or self._drag_target is None:
+            ev.accept()
+            return
+        delta = ev.globalPosition().toPoint() - self._header_press_pos
+        if not self._header_dragging:
+            if (abs(delta.x()) + abs(delta.y())) > self._DRAG_THRESHOLD:
+                self._header_dragging = True
+        if self._header_dragging:
+            target = self._drag_target
+            new_pos = self._drag_start_pos + delta
+            parent = target.parentWidget()
+            if parent is not None:
+                # 埋め込み: 親内クランプ
+                new_x = max(0, min(new_pos.x(),
+                                   parent.width() - target.width()))
+                new_y = max(0, min(new_pos.y(),
+                                   parent.height() - target.height()))
+                target.move(new_x, new_y)
+            else:
+                # フローティング: 利用可能スクリーンでクランプ
+                from PySide6.QtWidgets import QApplication
+                screen = QApplication.primaryScreen()
+                if screen:
+                    sg = screen.availableGeometry()
+                    min_vis = 60
+                    new_x = max(sg.x() - target.width() + min_vis,
+                                min(new_pos.x(),
+                                    sg.x() + sg.width() - min_vis))
+                    new_y = max(sg.y(),
+                                min(new_pos.y(),
+                                    sg.y() + sg.height() - 30))
+                    target.move(new_x, new_y)
+                else:
+                    target.move(new_pos)
+        ev.accept()
+
+    def _header_mouse_release(self, ev):
+        """ヘッダー上のマウスリリース: ドラッグしていなければクリック扱いで toggle。
+
+        i278: release の position がヘッダー領域外なら toggle しない。
+        これは「グローバルドラッグフィルタが drag 検出時に画面外位置の
+        合成 release を送ってヘッダーの press 状態をキャンセルする」
+        パターンに対応するための判定。通常クリック時は内側で release
+        されるので従来通り toggle する。
+        """
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        was_dragging = self._header_dragging
+        self._header_pressed = False
+        self._header_dragging = False
+        self._header_press_pos = None
+        self._drag_target = None
+        # release 位置が header 内かをチェック
+        try:
+            pos = ev.position().toPoint()
+        except Exception:
+            pos = None
+        inside = (pos is not None
+                  and self._header.rect().contains(pos))
+        if not was_dragging and inside:
+            self.toggle()
+        ev.accept()
+
+    def _find_drag_target(self) -> QWidget | None:
+        """ヘッダーから上を辿って、ドラッグ対象となる祖先パネルを返す。"""
+        w = self.parentWidget()
+        while w is not None:
+            if hasattr(w, "_drag_bar"):
+                return w
+            w = w.parentWidget()
+        return None
 
     @property
     def content_layout(self) -> QVBoxLayout:
@@ -308,6 +556,32 @@ class _PanelGrip(QWidget):
             self.raise_()
 
 
+def install_panel_context_menu(panel: QWidget, drag_bar: QWidget,
+                                title: str = "パネル設定"):
+    """パネル用の右クリックコンテキストメニューをインストールする。
+
+    含まれるアイテム:
+      - 「移動バーを表示」チェック (drag_bar.setVisible)
+    """
+    panel.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def _show_menu(pos):
+        menu = QMenu(panel)
+        toggle_text = (
+            "✔ 移動バーを表示"
+            if drag_bar.isVisible()
+            else "  移動バーを表示"
+        )
+        action = menu.addAction(toggle_text)
+        action.triggered.connect(
+            lambda: drag_bar.setVisible(not drag_bar.isVisible())
+        )
+        global_pos = panel.mapToGlobal(pos)
+        menu.exec(global_pos)
+
+    panel.customContextMenuRequested.connect(_show_menu)
+
+
 class _PanelDragBar(QWidget):
     """パネル上部のドラッグバー。ドラッグでパネルを親ウィジェット内で移動する。"""
 
@@ -339,6 +613,8 @@ class _PanelDragBar(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # クリックしたパネルを最前面へ
+            self._target.raise_()
             self._dragging = True
             self._drag_start = event.globalPosition().toPoint()
             self._start_pos = self._target.pos()
@@ -349,13 +625,17 @@ class _PanelDragBar(QWidget):
             return
         delta = event.globalPosition().toPoint() - self._drag_start
         new_pos = self._start_pos + delta
+        # i277: パネルは centralWidget の child widget。pos() / move() は
+        # 親内 (client) 座標。親領域内に完全に収まるようクランプする。
         parent = self._target.parentWidget()
         if parent:
-            min_visible = 60
-            new_x = max(-self._target.width() + min_visible,
-                        min(new_pos.x(), parent.width() - min_visible))
-            new_y = max(0, min(new_pos.y(), parent.height() - self._BAR_HEIGHT))
+            tw = self._target.width()
+            th = self._target.height()
+            new_x = max(0, min(new_pos.x(), max(0, parent.width() - tw)))
+            new_y = max(0, min(new_pos.y(), max(0, parent.height() - th)))
             self._target.move(new_x, new_y)
+        else:
+            self._target.move(new_pos)
         event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -366,6 +646,479 @@ class _PanelDragBar(QWidget):
     def update_design(self, design: DesignSettings):
         self._design = design
         self.update()
+
+
+class ItemPanel(QFrame):
+    """項目編集専用パネル。
+
+    SettingsPanel から取り外したパターン (グループ) セクションと項目セクションを
+    載せ替え、v0.4.4 と同じ「項目編集の主役パネル」として扱う。
+
+    構成:
+      - 上部ドラッグバー（パネル移動の唯一の起点）
+      - パターン (グループ) 行
+      - テキスト編集トグルバー
+      - 項目リスト本体（折りたたみヘッダーは隠して常時表示）
+      - 右下リサイズグリップ
+
+    SettingsPanel 側のロジック (`_item_rows` / `set_active_entries` /
+    `replace_entries_from_texts`) は変更なくそのまま流用する。
+    """
+
+    geometry_changed = Signal()
+
+    def __init__(self, design: DesignSettings, items_widget: QWidget,
+                 pattern_widget: QWidget,
+                 settings_panel: "SettingsPanel",
+                 *, parent=None):
+        super().__init__(parent)
+        self._design = design
+        self._floating = False
+        self.pinned_front = False
+        self._settings_panel = settings_panel
+        self._items_widget = items_widget
+        self._pattern_widget = pattern_widget
+        self._text_edit_mode = False
+        self.setStyleSheet(f"background-color: {design.panel};")
+        # 子クライアント領域からのクリックを QMainWindow まで伝播させない
+        # （ItemPanel 上を掴んだつもりがメインウィンドウのドラッグになる事故防止）
+        self.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # 上部ドラッグバー（唯一の移動起点）
+        self._drag_bar = _PanelDragBar(self, design, parent=self)
+        outer.addWidget(self._drag_bar)
+        # 右クリック → 移動バー表示/非表示
+        install_panel_context_menu(self, self._drag_bar)
+
+        # パターン (グループ) セクションを隠さず常設表示する
+        if pattern_widget is not None:
+            # CollapsibleSection を渡された場合はヘッダーを隠して常時展開
+            if hasattr(pattern_widget, "_header"):
+                try:
+                    pattern_widget._header.setVisible(False)
+                except Exception:
+                    pass
+                try:
+                    pattern_widget.set_expanded(True)
+                except Exception:
+                    pass
+            outer.addWidget(pattern_widget)
+
+        # テキスト編集トグル行
+        edit_bar = QFrame()
+        edit_bar.setStyleSheet(
+            f"QFrame {{"
+            f"  background-color: {design.panel};"
+            f"  border-bottom: 1px solid {design.separator};"
+            f"}}"
+        )
+        edit_bar_layout = QHBoxLayout(edit_bar)
+        edit_bar_layout.setContentsMargins(8, 4, 8, 4)
+        edit_bar_layout.setSpacing(6)
+
+        title_lbl = QLabel("項目")
+        title_lbl.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color: {design.text};")
+        edit_bar_layout.addWidget(title_lbl)
+
+        edit_bar_layout.addStretch(1)
+
+        self._text_edit_btn = QPushButton("テキスト編集")
+        self._text_edit_btn.setFont(QFont("Meiryo", 8))
+        self._text_edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._text_edit_btn.setCheckable(True)
+        self._text_edit_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 3px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+            f"QPushButton:checked {{ background-color: {design.accent}; }}"
+        )
+        self._text_edit_btn.toggled.connect(self._on_text_edit_toggled)
+        self._text_edit_btn.setToolTip(
+            "1 行 1 項目のテキストとしてまとめて編集する\n"
+            "改行を含めたい項目は \" でブロックを囲む"
+        )
+        edit_bar_layout.addWidget(self._text_edit_btn)
+
+        outer.addWidget(edit_bar)
+        self._edit_bar = edit_bar
+
+        # 中央: 行 UI と テキスト編集 UI を切り替えるスタック
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet(
+            f"QStackedWidget {{ background-color: {design.panel}; }}"
+        )
+        outer.addWidget(self._stack, stretch=1)
+
+        # ── 行 UI 側（既存の items_widget をスクロールに包む）──
+        self._rows_scroll = QScrollArea()
+        self._rows_scroll.setWidgetResizable(True)
+        self._rows_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._apply_scroll_style(self._rows_scroll, design)
+        self._rows_content = QWidget()
+        self._rows_content.setStyleSheet(
+            f"background-color: {design.panel};"
+        )
+        self._rows_layout = QVBoxLayout(self._rows_content)
+        self._rows_layout.setContentsMargins(8, 4, 8, 8)
+        self._rows_layout.setSpacing(4)
+
+        if items_widget is not None:
+            # CollapsibleSection を渡された場合はヘッダーを隠して常時表示
+            if hasattr(items_widget, "_header"):
+                try:
+                    items_widget._header.setVisible(False)
+                except Exception:
+                    pass
+                try:
+                    items_widget.set_expanded(True)
+                except Exception:
+                    pass
+            self._rows_layout.addWidget(items_widget)
+
+        self._rows_layout.addStretch()
+        self._rows_scroll.setWidget(self._rows_content)
+        self._stack.addWidget(self._rows_scroll)
+
+        # ── テキスト編集 UI 側 ──
+        self._text_container = QWidget()
+        text_v = QVBoxLayout(self._text_container)
+        text_v.setContentsMargins(8, 4, 8, 8)
+        text_v.setSpacing(4)
+
+        self._text_edit = QPlainTextEdit()
+        self._text_edit.setFont(QFont("Meiryo", 9))
+        self._text_edit.setStyleSheet(
+            f"QPlainTextEdit {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 4px;"
+            f"}}"
+        )
+        self._text_edit.setPlaceholderText(
+            "1 行 1 項目で入力。改行を含む項目は \"…\" のように \" で囲む"
+        )
+        # i284: テキスト編集モードでも入力途中でルーレットへ即時反映
+        self._text_edit.textChanged.connect(self._on_text_edit_changed_live)
+        text_v.addWidget(self._text_edit, stretch=1)
+
+        # ヘルパー: 警告ラベル
+        self._text_warn_lbl = QLabel("")
+        self._text_warn_lbl.setFont(QFont("Meiryo", 8))
+        self._text_warn_lbl.setStyleSheet(
+            f"color: {design.gold}; padding: 2px 0;"
+        )
+        self._text_warn_lbl.setWordWrap(True)
+        self._text_warn_lbl.setVisible(False)
+        text_v.addWidget(self._text_warn_lbl)
+
+        # 操作ボタン行
+        text_btn_row = QHBoxLayout()
+        text_btn_row.setSpacing(6)
+        text_btn_row.addStretch(1)
+
+        self._text_cancel_btn = QPushButton("キャンセル")
+        self._text_cancel_btn.setFont(QFont("Meiryo", 8))
+        self._text_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._text_cancel_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; }}"
+        )
+        self._text_cancel_btn.clicked.connect(self._on_text_cancel)
+        text_btn_row.addWidget(self._text_cancel_btn)
+
+        self._text_save_btn = QPushButton("保存")
+        self._text_save_btn.setFont(QFont("Meiryo", 8, QFont.Weight.Bold))
+        self._text_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._text_save_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.accent}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.separator}; }}"
+        )
+        self._text_save_btn.clicked.connect(self._on_text_save)
+        text_btn_row.addWidget(self._text_save_btn)
+
+        text_v.addLayout(text_btn_row)
+        self._stack.addWidget(self._text_container)
+        self._stack.setCurrentIndex(0)  # 行 UI を初期表示
+
+        # 最小サイズ
+        self.setMinimumWidth(260)
+        self.setMinimumHeight(220)
+
+        # 右下リサイズグリップ
+        self._resize_grip = _PanelGrip(
+            self, design, mode="panel",
+            min_w=260, min_h=220, parent=self,
+        )
+
+    # ----------------------------------------------------------------
+    #  テキスト編集モード
+    # ----------------------------------------------------------------
+
+    def _on_text_edit_toggled(self, on: bool):
+        if on:
+            # 行 UI → テキスト編集
+            entries = self._settings_panel._item_entries
+            text = serialize_items_text([e.text for e in entries])
+            self._text_edit.blockSignals(True)
+            self._text_edit.setPlainText(text)
+            self._text_edit.blockSignals(False)
+            self._text_warn_lbl.setVisible(False)
+            self._stack.setCurrentIndex(1)
+            self._text_edit.setFocus()
+        else:
+            # テキスト編集 → 行 UI（保存せずに戻る）
+            self._stack.setCurrentIndex(0)
+
+    def _on_text_save(self):
+        raw = self._text_edit.toPlainText()
+        parsed = parse_items_text(raw)
+        if not parsed:
+            # 全削除はしない（v0.4.4 互換）
+            self._text_warn_lbl.setText("項目が 0 件になるため保存しません")
+            self._text_warn_lbl.setVisible(True)
+            return
+        changed, warn = self._settings_panel.replace_entries_from_texts(parsed)
+        if changed and warn:
+            self._text_warn_lbl.setText(warn)
+            self._text_warn_lbl.setVisible(True)
+            # 上限切り詰め後の正規化テキストを再表示
+            new_entries = self._settings_panel._item_entries
+            self._text_edit.blockSignals(True)
+            self._text_edit.setPlainText(
+                serialize_items_text([e.text for e in new_entries])
+            )
+            self._text_edit.blockSignals(False)
+        else:
+            self._text_warn_lbl.setVisible(False)
+        # 行 UI へ戻る
+        self._text_edit_btn.blockSignals(True)
+        self._text_edit_btn.setChecked(False)
+        self._text_edit_btn.blockSignals(False)
+        self._stack.setCurrentIndex(0)
+
+    def _on_text_cancel(self):
+        # 編集破棄して行 UI へ戻る
+        self._text_edit_btn.blockSignals(True)
+        self._text_edit_btn.setChecked(False)
+        self._text_edit_btn.blockSignals(False)
+        self._stack.setCurrentIndex(0)
+
+    def _on_text_edit_changed_live(self):
+        """i284: テキスト編集モードでの入力途中即時反映。
+
+        - QPlainTextEdit の textChanged を受け、parse_items_text で解析した
+          一覧をそのまま SettingsPanel の item_entries へ反映する。
+        - enforce_item_limits で上限超過は黙ってカット（プレビュー中は警告
+          ラベルを出さず、保存時にのみ警告する）。
+        - 0 件は反映しない（v0.4.4 互換: 全削除はしない）。
+        - 行 UI は再構築しない（テキスト編集モード中はスタックが切り替わって
+          いるため、行 UI は隠れたまま）。
+        """
+        raw = self._text_edit.toPlainText()
+        parsed = parse_items_text(raw)
+        if not parsed:
+            return
+        trimmed, _changed, _warn = enforce_item_limits(list(parsed))
+        if not trimmed:
+            return
+        self._settings_panel._live_update_from_text_entries(trimmed)
+
+    # ----------------------------------------------------------------
+    #  ドラッグ吸収（パネル外への伝播を防ぐ）
+    # ----------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        # クリックしたパネルを最前面へ。ドラッグはバーからのみ。
+        self.raise_()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    # ----------------------------------------------------------------
+    #  共通
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def _apply_scroll_style(scroll: QScrollArea,
+                            design: DesignSettings):
+        scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background-color: {design.panel}; }}"
+            f"QScrollBar:vertical {{ width: 6px; background: {design.panel}; }}"
+            f"QScrollBar::handle:vertical {{ background: {design.separator}; border-radius: 3px; }}"
+            f"QScrollBar:horizontal {{ height: 6px; background: {design.panel}; }}"
+            f"QScrollBar::handle:horizontal {{ background: {design.separator}; border-radius: 3px; }}"
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_grip.reposition()
+        self.geometry_changed.emit()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self.geometry_changed.emit()
+
+    def update_design(self, design: DesignSettings):
+        """デザイン変更時に配色を更新する。"""
+        self._design = design
+        self.setStyleSheet(f"background-color: {design.panel};")
+        self._rows_content.setStyleSheet(
+            f"background-color: {design.panel};"
+        )
+        self._apply_scroll_style(self._rows_scroll, design)
+        self._resize_grip.update_design(design)
+        self._drag_bar.update_design(design)
+
+
+class ManagePanel(QFrame):
+    """全体管理パネル (F1)。
+
+    各パネルを見失わずに管理するための最小ハブ。トップレベル Tool window として
+    生成し、メインウィンドウ最小化時にも独立して位置が保たれる。
+
+    機能:
+      - 項目パネル表示 / 非表示 (チェックボックス)
+      - 設定パネル表示 / 非表示 (チェックボックス)
+      - パネル位置初期化ボタン
+      - F1/F2/F3 ショートカット案内
+    """
+
+    items_panel_toggled = Signal(bool)
+    settings_panel_toggled = Signal(bool)
+    reset_positions_requested = Signal()
+    geometry_changed = Signal()
+
+    def __init__(self, design: DesignSettings, *,
+                 items_visible: bool = True,
+                 settings_visible: bool = False,
+                 parent=None):
+        super().__init__(parent)
+        self._design = design
+        self.pinned_front = True
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # 上部ドラッグバー (パネル移動の起点)
+        self._drag_bar = _PanelDragBar(self, design, parent=self)
+        outer.addWidget(self._drag_bar)
+        # 右クリック → 移動バー表示/非表示
+        install_panel_context_menu(self, self._drag_bar)
+
+        # コンテンツ
+        body = QFrame()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(10, 10, 10, 10)
+        body_layout.setSpacing(8)
+
+        title = QLabel("パネル管理")
+        title.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {design.text};")
+        body_layout.addWidget(title)
+
+        self._items_cb = QCheckBox("項目パネルを表示 (F2)")
+        self._items_cb.setFont(QFont("Meiryo", 9))
+        self._items_cb.setStyleSheet(f"color: {design.text};")
+        self._items_cb.setChecked(items_visible)
+        self._items_cb.toggled.connect(self.items_panel_toggled.emit)
+        body_layout.addWidget(self._items_cb)
+
+        self._settings_cb = QCheckBox("設定パネルを表示 (F3)")
+        self._settings_cb.setFont(QFont("Meiryo", 9))
+        self._settings_cb.setStyleSheet(f"color: {design.text};")
+        self._settings_cb.setChecked(settings_visible)
+        self._settings_cb.toggled.connect(self.settings_panel_toggled.emit)
+        body_layout.addWidget(self._settings_cb)
+
+        body_layout.addSpacing(4)
+
+        self._reset_btn = QPushButton("パネル位置を初期化")
+        self._reset_btn.setFont(QFont("Meiryo", 9))
+        self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reset_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 4px; padding: 6px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._reset_btn.clicked.connect(self.reset_positions_requested.emit)
+        body_layout.addWidget(self._reset_btn)
+
+        # i276: ショートカット説明はユーザー要請により削除。
+        # 将来ヘルプを追加する余地を残してあるが、本セッションでは追加しない。
+
+        body_layout.addStretch(1)
+
+        body.setStyleSheet(f"background-color: {design.panel};")
+        outer.addWidget(body, stretch=1)
+
+        self.setStyleSheet(f"background-color: {design.panel};")
+        self.setMinimumSize(220, 160)
+
+    # ----------------------------------------------------------------
+    #  公開 API
+    # ----------------------------------------------------------------
+
+    def set_items_visible(self, visible: bool):
+        """項目パネルチェック状態を外部から同期する (シグナルなし)。"""
+        self._items_cb.blockSignals(True)
+        self._items_cb.setChecked(visible)
+        self._items_cb.blockSignals(False)
+
+    def set_settings_visible(self, visible: bool):
+        """設定パネルチェック状態を外部から同期する (シグナルなし)。"""
+        self._settings_cb.blockSignals(True)
+        self._settings_cb.setChecked(visible)
+        self._settings_cb.blockSignals(False)
+
+    def update_design(self, design: DesignSettings):
+        self._design = design
+        self.setStyleSheet(f"background-color: {design.panel};")
+        self._drag_bar.update_design(design)
+
+    # ----------------------------------------------------------------
+    #  イベント
+    # ----------------------------------------------------------------
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self.geometry_changed.emit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.geometry_changed.emit()
+
+    def mousePressEvent(self, event):
+        # クリックは吸収。ドラッグはドラッグバーからのみ。
+        self.raise_()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
 
 
 class _PlaceholderSection(QFrame):
@@ -428,6 +1181,8 @@ class SettingsPanel(QFrame):
     log_clear_requested = Signal()     # 履歴クリア
     log_export_requested = Signal()    # ログエクスポート
     shuffle_once_requested = Signal()  # 単発ランダム再配置
+    arrangement_reset_requested = Signal()  # i284: 並びリセット (v0.4.4 標準配置)
+    items_reset_requested = Signal()        # i284: 項目一括リセット (v0.4.4 一括リセット)
     pattern_export_requested = Signal()  # パターンエクスポート
     pattern_import_requested = Signal()  # パターンインポート
     custom_tick_file_changed = Signal(str)  # カスタムtick音ファイル変更
@@ -464,6 +1219,20 @@ class SettingsPanel(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # ── 上部ドラッグバー（パネルを掴んで移動するための常時有効ハンドル）──
+        # 折りたたみセクション展開中はクライアント領域全面が widgets で
+        # 埋まりドラッグ起点が無くなるため、常時表示のドラッグバーを置く。
+        self._drag_bar = _PanelDragBar(self, design, parent=self)
+        outer.addWidget(self._drag_bar)
+        # 右クリック → 移動バー表示/非表示
+        install_panel_context_menu(self, self._drag_bar)
+
+        # ── 常設クイック設定行（透過 / 常に最前面）──
+        # v0.4.4 cfg_panel の「ウィンドウ表示」グループ相当。
+        # 折りたたみセクションの中ではなく、常時見える場所に置くことで
+        # 「OBS透過モード」がユーザーから辿りやすい状態にする。
+        self._build_quick_settings_bar(outer, settings, design)
 
         # ── 1つのスクロール領域にアプリ設定 + 項目リストを縦並び ──
         self._scroll = QScrollArea()
@@ -565,6 +1334,12 @@ class SettingsPanel(QFrame):
         self._panel_drag_start = QPoint()
         self._panel_start_pos = QPoint()
 
+        # ── 項目 / パターンセクションの外部化フラグ ──
+        # ItemPanel に reparent されたあと、settings 側の排他開閉などで
+        # これらのセクションを誤って閉じないようスキップする目印。
+        self._items_external = False
+        self._pattern_external = False
+
     # ================================================================
     #  折りたたみ状態の保存
     # ================================================================
@@ -577,14 +1352,124 @@ class SettingsPanel(QFrame):
         }
         self.setting_changed.emit("collapsed_sections", state)
 
+    def _build_quick_settings_bar(self, outer_layout: QVBoxLayout,
+                                   settings: AppSettings,
+                                   design: DesignSettings):
+        """常設のクイック設定行を組み立てる。
+
+        v0.4.4 cfg_panel の「ウィンドウ表示」グループに相当。
+        透過 (ウィンドウ / ルーレット個別) と常に最前面を、折りたたみ
+        セクションの外に常設で配置する。
+        """
+        bar = QFrame()
+        bar.setStyleSheet(
+            f"QFrame {{"
+            f"  background-color: {design.panel};"
+            f"  border-bottom: 1px solid {design.separator};"
+            f"}}"
+        )
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(8, 4, 8, 4)
+        bar_layout.setSpacing(10)
+
+        # ウィンドウ透過 (メインウィンドウ自体)
+        self._window_transparent_cb = QCheckBox("ウィンドウ透過")
+        self._window_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._window_transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._window_transparent_cb.setChecked(settings.window_transparent)
+        self._window_transparent_cb.setToolTip(
+            "メインウィンドウ自体の背景を透過する"
+        )
+        self._window_transparent_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("window_transparent", v)
+        )
+        bar_layout.addWidget(self._window_transparent_cb)
+
+        # ルーレット透過 (ルーレットパネル単独)
+        self._roulette_transparent_cb = QCheckBox("ルーレット透過")
+        self._roulette_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._roulette_transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._roulette_transparent_cb.setChecked(settings.roulette_transparent)
+        self._roulette_transparent_cb.setToolTip(
+            "ルーレットパネル (ホイール領域) の背景を透過する"
+        )
+        self._roulette_transparent_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("roulette_transparent", v)
+        )
+        bar_layout.addWidget(self._roulette_transparent_cb)
+
+        # 常に最前面
+        self._aot_cb = QCheckBox("最前面")
+        self._aot_cb.setFont(QFont("Meiryo", 8))
+        self._aot_cb.setStyleSheet(f"color: {design.text};")
+        self._aot_cb.setChecked(settings.always_on_top)
+        self._aot_cb.setToolTip("メインウィンドウを常に最前面に表示")
+        self._aot_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("always_on_top", v)
+        )
+        bar_layout.addWidget(self._aot_cb)
+
+        bar_layout.addStretch(1)
+
+        outer_layout.addWidget(bar)
+        self._quick_bar = bar
+
     def _on_section_toggled(self, toggled_name: str, collapsed: bool):
         """いずれかのセクションが開閉されたとき、排他開閉＋状態保存を行う。"""
         if not collapsed:
             # 開いた場合: 他の展開中セクションを閉じる
             for name, cs in self._collapsible_map.items():
                 if name != toggled_name and not cs.is_collapsed:
+                    # 外部化された項目 / パターンセクションは閉じない
+                    if name == "items" and self._items_external:
+                        continue
+                    if name == "pattern" and self._pattern_external:
+                        continue
                     cs.set_expanded(False)
         self._emit_collapsed_state()
+
+    def pop_pattern_section(self) -> QWidget:
+        """パターン (グループ) セクションを SettingsPanel から取り外して返す。
+
+        ItemPanel など別フレームへ載せ替えるためのフック。
+        - 親レイアウトから取り外す
+        - 外部化フラグを立てて、排他開閉の対象から除外する
+        - toggled シグナルを切断
+        """
+        if self._pattern_external:
+            return self._pattern_collapsible
+
+        self._layout.removeWidget(self._pattern_collapsible)
+        self._pattern_collapsible.setParent(None)
+        try:
+            self._pattern_collapsible.toggled.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._pattern_external = True
+        return self._pattern_collapsible
+
+    def pop_items_section(self) -> QWidget:
+        """項目セクションを SettingsPanel から取り外して返す。
+
+        ItemPanel など別フレームへ載せ替えるためのフック。
+        - 親レイアウトから取り外す
+        - 外部化フラグを立てて、排他開閉の対象から除外する
+        - toggled シグナルを切断し、別パネル内での開閉が SettingsPanel
+          の他セクションを誤って閉じないようにする
+        - 戻り値は `_items_collapsible` (CollapsibleSection)。
+          呼び出し側で新しい親へ addWidget することを想定する。
+        """
+        if self._items_external:
+            return self._items_collapsible
+
+        self._layout.removeWidget(self._items_collapsible)
+        self._items_collapsible.setParent(None)
+        try:
+            self._items_collapsible.toggled.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._items_external = True
+        return self._items_collapsible
 
     # ================================================================
     #  セクション 1: スピン操作（実装済み）
@@ -834,15 +1719,8 @@ class SettingsPanel(QFrame):
         )
         sec.addWidget(self._donut_cb)
 
-        # OBS透過モード
-        self._transparent_cb = QCheckBox("OBS透過モード")
-        self._transparent_cb.setFont(QFont("Meiryo", 8))
-        self._transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._transparent_cb.setChecked(settings.transparent)
-        self._transparent_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("transparent", v)
-        )
-        sec.addWidget(self._transparent_cb)
+        # 透過モード はクイック設定バー（パネル上部）に常設化したため
+        # ここには配置しない。
 
         # リサイズグリップ表示
         self._grip_visible_cb = QCheckBox("リサイズグリップ表示")
@@ -1409,15 +2287,8 @@ class SettingsPanel(QFrame):
         sec = self._log_collapsible.content_layout
         self._layout.addWidget(self._log_collapsible)
 
-        self._log_show_cb = QCheckBox("ログオーバーレイ表示")
-        self._log_show_cb.setFont(QFont("Meiryo", 8))
-        self._log_show_cb.setStyleSheet(f"color: {design.text};")
-        self._log_show_cb.setChecked(settings.log_overlay_show)
-        self._log_show_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("log_overlay_show", v)
-        )
-        sec.addWidget(self._log_show_cb)
-
+        # i274: 「ログオーバーレイ表示」は廃止。残すのは「ログ前面表示」のみ。
+        # ここではタイムスタンプ表示を最初の項目として配置する。
         self._log_ts_cb = QCheckBox("タイムスタンプ表示")
         self._log_ts_cb.setFont(QFont("Meiryo", 8))
         self._log_ts_cb.setStyleSheet(f"color: {design.text};")
@@ -1818,6 +2689,9 @@ class SettingsPanel(QFrame):
         for entry in entries:
             self._add_item_row(entry, design)
 
+        # i284: 初期構築時の確率ラベル反映
+        self._refresh_prob_labels()
+
         # 追加ボタン
         self._add_item_btn = QPushButton("＋ 追加")
         self._add_item_btn.setFont(QFont("Meiryo", 8))
@@ -1879,7 +2753,11 @@ class SettingsPanel(QFrame):
         top_row.addWidget(cb)
 
         # テキスト入力
-        edit = QLineEdit(entry.text)
+        # i283: QLineEdit は改行を保持できないため、改行を含む項目テキストは
+        # 表示用にスペースへ畳んで表示し、original_text として保持する。
+        # ユーザーが触らないかぎり、保存時に元の改行入りテキストへ復元する。
+        display_text = entry.text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        edit = QLineEdit()
         edit.setFont(QFont("Meiryo", 8))
         edit.setStyleSheet(
             f"QLineEdit {{"
@@ -1888,8 +2766,23 @@ class SettingsPanel(QFrame):
             f"  padding: 2px 4px;"
             f"}}"
         )
-        edit.editingFinished.connect(self._on_item_text_edited)
+        edit.setText(display_text)  # connect 前に setText して signal を発火させない
+        # i283: 即時反映 — 入力途中で textChanged → 行ベースの反映へ
+        edit.textChanged.connect(
+            lambda _t, r=row: self._on_item_text_changed_live(r)
+        )
         top_row.addWidget(edit, stretch=1)
+
+        # i284: 計算済み当選確率ラベル（全項目向けトグルで表示／非表示）
+        prob_pct_lbl = QLabel("")
+        prob_pct_lbl.setFont(QFont("Meiryo", 7))
+        prob_pct_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prob_pct_lbl.setMinimumWidth(40)
+        prob_pct_lbl.setStyleSheet(
+            f"color: {design.text_sub}; background-color: transparent;"
+        )
+        prob_pct_lbl.setToolTip("当選確率（％）")
+        top_row.addWidget(prob_pct_lbl)
 
         # 勝利数ラベル
         win_lbl = QLabel("0")
@@ -2044,12 +2937,20 @@ class SettingsPanel(QFrame):
         row._cb = cb
         row._edit = edit
         row._win_lbl = win_lbl
+        row._prob_pct_lbl = prob_pct_lbl  # i284
         row._mode_combo = mode_combo
         row._value_stack = value_stack
         row._weight_combo = weight_combo
         row._fixed_spin = fixed_spin
         row._split_lbl = split_lbl
         row._split_spin = split_spin
+        # i283: 改行入りテキストの保持と、ユーザー編集判定
+        row._original_text = entry.text
+        row._user_edited = False
+        # i284: 表示トグルは prob_pct_lbl と win_lbl だけを対象にする
+        # （i283 で誤って確率編集 UI を隠していたのを取り消し）
+        # 現在の表示設定を反映
+        self._apply_item_row_visibility(row)
 
         # 既存データから確率モード/値を復元
         self._restore_prob_ui(row, entry)
@@ -2080,25 +2981,39 @@ class SettingsPanel(QFrame):
         combo.blockSignals(False)
 
     def _restore_prob_ui(self, row: QWidget, entry: ItemEntry):
-        """ItemEntry の prob_mode/prob_value から UI を復元する。"""
-        if entry.prob_mode == "weight":
-            row._mode_combo.setCurrentIndex(1)  # 重み係数
-            row._value_stack.setCurrentIndex(1)
-            # 値を weight_combo から探す
-            val = entry.prob_value if entry.prob_value is not None else 1.0
-            for i in range(row._weight_combo.count()):
-                if abs(row._weight_combo.itemData(i) - val) < 0.001:
-                    row._weight_combo.setCurrentIndex(i)
-                    break
-        elif entry.prob_mode == "fixed":
-            row._mode_combo.setCurrentIndex(2)  # 固定確率
-            row._value_stack.setCurrentIndex(2)
-            val = entry.prob_value if entry.prob_value is not None else 10.0
-            val = max(0.1, min(99.9, val))
-            row._fixed_spin.setValue(val)
-        else:
-            row._mode_combo.setCurrentIndex(0)  # 変更なし
-            row._value_stack.setCurrentIndex(0)
+        """ItemEntry の prob_mode/prob_value から UI を復元する。
+
+        i285: mode_combo / weight_combo のシグナルを遮断してから setCurrentIndex を
+        呼ぶ。これにより、_add_item_row 内（行が _item_rows に追加される前）で
+        _on_prob_mode_changed → _emit_entries_changed → item_entries_changed が
+        空リスト / 不完全リストで発火するのを防ぐ。
+        value_stack の切替は _restore_prob_ui 内で明示的に行うため、
+        _on_prob_mode_changed を経由しなくても正しく反映される。
+        """
+        row._mode_combo.blockSignals(True)
+        row._weight_combo.blockSignals(True)
+        try:
+            if entry.prob_mode == "weight":
+                row._mode_combo.setCurrentIndex(1)  # 重み係数
+                row._value_stack.setCurrentIndex(1)
+                # 値を weight_combo から探す
+                val = entry.prob_value if entry.prob_value is not None else 1.0
+                for i in range(row._weight_combo.count()):
+                    if abs(row._weight_combo.itemData(i) - val) < 0.001:
+                        row._weight_combo.setCurrentIndex(i)
+                        break
+            elif entry.prob_mode == "fixed":
+                row._mode_combo.setCurrentIndex(2)  # 固定確率
+                row._value_stack.setCurrentIndex(2)
+                val = entry.prob_value if entry.prob_value is not None else 10.0
+                val = max(0.1, min(99.9, val))
+                row._fixed_spin.setValue(val)
+            else:
+                row._mode_combo.setCurrentIndex(0)  # 変更なし
+                row._value_stack.setCurrentIndex(0)
+        finally:
+            row._mode_combo.blockSignals(False)
+            row._weight_combo.blockSignals(False)
 
     def _on_prob_mode_changed(self, row: QWidget, idx: int):
         """確率モード切替時: 表示切替 + 通知。"""
@@ -2134,7 +3049,12 @@ class SettingsPanel(QFrame):
         """現在の UI 行から ItemEntry リストを収集する。"""
         entries = []
         for row in self._item_rows:
-            text = row._edit.text().strip()
+            # i283: ユーザーがこの行のテキストに触れていない場合、改行を含む
+            # 元テキストをそのまま保持する。触れた場合は QLineEdit の値を採用。
+            if getattr(row, "_user_edited", False):
+                text = row._edit.text().strip()
+            else:
+                text = getattr(row, "_original_text", row._edit.text()).strip()
             if not text:
                 continue
             mode_idx = row._mode_combo.currentIndex()
@@ -2158,6 +3078,8 @@ class SettingsPanel(QFrame):
     def _emit_entries_changed(self):
         """項目変更を通知する。"""
         self._item_entries = self._collect_entries()
+        # i284: 計算済み確率ラベルを更新（表示中なら反映、非表示なら次回 ON 時に効く）
+        self._refresh_prob_labels()
         self.item_entries_changed.emit(list(self._item_entries))
 
     def _on_add_item(self):
@@ -2169,20 +3091,65 @@ class SettingsPanel(QFrame):
         self._apply_item_filter()
 
     def _on_delete_item(self, row: QWidget):
-        """削除ボタン押下: 指定行を削除する。confirm_reset=ON なら確認ダイアログ。"""
+        """削除ボタン押下: 指定行を削除する。
+
+        i286: confirm_item_delete=ON のとき確認ダイアログを表示する。
+        ダイアログ内に「今後この確認を表示しない」チェックを持つ。
+        チェックを ON にして「削除」を選んだ場合のみ設定を変更する
+        （キャンセルした場合はチェック状態に関わらず設定を変えない）。
+        """
         if row not in self._item_rows:
             return
-        if self._settings.confirm_reset:
-            from PySide6.QtWidgets import QMessageBox
-            text = row._edit.text().strip() or "（空）"
-            reply = QMessageBox.question(
-                self, "確認",
-                f"項目「{text}」を削除しますか？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+        if getattr(self._settings, "confirm_item_delete", True):
+            from PySide6.QtWidgets import (
+                QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                QPushButton, QCheckBox as _QCB,
             )
-            if reply != QMessageBox.StandardButton.Yes:
+            item_text = row._edit.text().strip() or "（空）"
+            dlg = QDialog(self)
+            dlg.setWindowTitle("項目の削除")
+            dlg.setModal(True)
+            vlay = QVBoxLayout(dlg)
+            vlay.setSpacing(8)
+            vlay.setContentsMargins(16, 16, 16, 12)
+
+            msg_lbl = QLabel(f"項目「{item_text}」を削除しますか？")
+            msg_lbl.setFont(QFont("Meiryo", 9))
+            vlay.addWidget(msg_lbl)
+
+            no_confirm_cb = _QCB("今後この確認を表示しない")
+            no_confirm_cb.setFont(QFont("Meiryo", 8))
+            no_confirm_cb.setChecked(False)
+            vlay.addWidget(no_confirm_cb)
+
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(6)
+            btn_row.addStretch(1)
+
+            cancel_btn = QPushButton("キャンセル")
+            cancel_btn.setFont(QFont("Meiryo", 8))
+            cancel_btn.clicked.connect(dlg.reject)
+            btn_row.addWidget(cancel_btn)
+
+            ok_btn = QPushButton("削除")
+            ok_btn.setFont(QFont("Meiryo", 8))
+            ok_btn.setDefault(True)
+            ok_btn.clicked.connect(dlg.accept)
+            btn_row.addWidget(ok_btn)
+
+            vlay.addLayout(btn_row)
+
+            accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+            if not accepted:
                 return
+            # 削除確定時のみ「今後表示しない」チェックを反映する
+            if no_confirm_cb.isChecked():
+                self._settings.confirm_item_delete = False
+                self.setting_changed.emit("confirm_item_delete", False)
+                if hasattr(self, "_confirm_item_delete_cb"):
+                    self._confirm_item_delete_cb.blockSignals(True)
+                    self._confirm_item_delete_cb.setChecked(False)
+                    self._confirm_item_delete_cb.blockSignals(False)
         if row in self._item_rows:
             self._item_rows.remove(row)
             self._item_rows_layout.removeWidget(row)
@@ -2236,8 +3203,113 @@ class SettingsPanel(QFrame):
             row.setVisible(match_search and match_filter)
 
     def _on_item_text_edited(self):
-        """テキスト編集完了（editingFinished）時。"""
+        """テキスト編集完了（editingFinished）時。
+
+        i283 以降は textChanged で即時反映するため呼び出し元はないが、
+        外部から呼ばれる可能性に備えて互換のため残す。
+        """
         self._emit_entries_changed()
+
+    def _on_item_text_changed_live(self, row: QWidget):
+        """i283: 入力途中のテキスト変更を即時通知する。
+
+        - 該当行のユーザー編集フラグを立てる（保持していた改行を破棄して、
+          以後は QLineEdit の値を採用するようにする）
+        - 検索フィルター・項目変更通知を即時発火する
+        """
+        if row in self._item_rows:
+            row._user_edited = True
+        self._emit_entries_changed()
+        self._apply_item_filter()
+
+    def _apply_item_row_visibility(self, row: QWidget):
+        """i284: 項目行内の当選確率ラベル / 当選回数ラベルを表示設定に従って ON/OFF する。
+
+        i283 では確率の編集 UI（mode_combo / split_spin 等）を隠していたが、
+        ユーザーフィードバックで「項目の設定が消えてしまう」となったため、
+        i284 では表示用ラベル（_prob_pct_lbl / _win_lbl）だけを対象にする。
+        """
+        show_prob = bool(getattr(self._settings, "show_item_prob", True))
+        show_win = bool(getattr(self._settings, "show_item_win_count", True))
+        if hasattr(row, "_prob_pct_lbl"):
+            row._prob_pct_lbl.setVisible(show_prob)
+        if hasattr(row, "_win_lbl"):
+            row._win_lbl.setVisible(show_win)
+
+    def _refresh_item_rows_visibility(self):
+        """全行に表示 ON/OFF を反映する。"""
+        for row in self._item_rows:
+            self._apply_item_row_visibility(row)
+
+    @staticmethod
+    def _calc_item_probs(entries: list[ItemEntry]) -> list[float | None]:
+        """i284: 各項目の当選確率（%）を計算する。
+
+        v0.4.4 `_calc_all_probs` 相当のロジックを ItemEntry に合わせて移植。
+        無効項目は None。
+        重み係数 / 固定確率 / split_count を考慮する必要はない（split は
+        セグメント分割のためのもので、項目の総当選確率には影響しない）。
+        """
+        if not entries:
+            return []
+        enabled_idx = [i for i, e in enumerate(entries) if e.enabled]
+        if not enabled_idx:
+            return [None] * len(entries)
+        n = len(enabled_idx)
+        fixed_idx_loc: list[int] = []
+        nonfixed_idx_loc: list[int] = []
+        for k, gi in enumerate(enabled_idx):
+            if entries[gi].prob_mode == "fixed":
+                fixed_idx_loc.append(k)
+            else:
+                nonfixed_idx_loc.append(k)
+
+        sum_fixed = 0.0
+        for k in fixed_idx_loc:
+            v = entries[enabled_idx[k]].prob_value or 0.0
+            sum_fixed += float(v)
+        if sum_fixed > 99.999:
+            sum_fixed = 99.999
+        remaining = 100.0 - sum_fixed
+
+        weights: list[float] = []
+        for k in nonfixed_idx_loc:
+            e = entries[enabled_idx[k]]
+            if e.prob_mode == "weight" and e.prob_value is not None:
+                weights.append(max(0.0001, float(e.prob_value)))
+            else:
+                weights.append(1.0)
+        total_w = sum(weights) or 1.0
+
+        probs_local = [0.0] * n
+        for k in fixed_idx_loc:
+            probs_local[k] = float(entries[enabled_idx[k]].prob_value or 0.0)
+        for j, k in enumerate(nonfixed_idx_loc):
+            probs_local[k] = remaining * weights[j] / total_w
+
+        out: list[float | None] = [None] * len(entries)
+        for k, gi in enumerate(enabled_idx):
+            out[gi] = probs_local[k]
+        return out
+
+    def _refresh_prob_labels(self):
+        """i284: 全行の当選確率ラベルを再計算して反映する。
+
+        _add_item_row 中の _restore_prob_ui で部分的に collect が走るタイミングが
+        あるため、ここでは self._item_entries に頼らず必ず collect_entries で
+        その時点の行 UI から再構築する。
+        """
+        if not self._item_rows:
+            return
+        entries = self._collect_entries()
+        probs = self._calc_item_probs(entries)
+        for i, row in enumerate(self._item_rows):
+            if not hasattr(row, "_prob_pct_lbl"):
+                continue
+            if i < len(probs) and probs[i] is not None:
+                row._prob_pct_lbl.setText(f"{probs[i]:.1f}%")
+            else:
+                row._prob_pct_lbl.setText("—")
 
     @staticmethod
     def _apply_add_btn_style(btn: QPushButton, design):
@@ -2345,23 +3417,89 @@ class SettingsPanel(QFrame):
     # ================================================================
 
     def _build_item_edit_sections(self, design: DesignSettings):
-        """項目データに関する将来の編集セクション。
+        """項目データに関する編集系セクション。
 
         確率変更・分割数は各項目行に統合済み。
-        常時ランダムはチェックボックスで実装済み。
+        常時ランダム / ランダム配置 / 並びリセット / 一括リセット は
+        ここでまとめて配置する（i284 統一）。
         """
         self._item_edit_sections: list[_PlaceholderSection] = []
         sec = self._items_collapsible.content_layout
 
-        # 常時ランダム
-        self._shuffle_cb = QCheckBox("常時ランダム（スピンごとに配置をランダム化）")
+        # i284: 全項目向け表示トグル（個別設定ではなく全項目一括）
+        self._show_item_prob_cb = QCheckBox("全項目に当選確率（％）を表示")
+        self._show_item_prob_cb.setFont(QFont("Meiryo", 8))
+        self._show_item_prob_cb.setStyleSheet(f"color: {design.text};")
+        self._show_item_prob_cb.setChecked(self._settings.show_item_prob)
+        self._show_item_prob_cb.setToolTip(
+            "各項目に現在の当選確率（％）を一括で表示／非表示する"
+        )
+        self._show_item_prob_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("show_item_prob", v)
+        )
+        sec.addWidget(self._show_item_prob_cb)
+
+        self._show_item_win_cb = QCheckBox("全項目に当選回数を表示")
+        self._show_item_win_cb.setFont(QFont("Meiryo", 8))
+        self._show_item_win_cb.setStyleSheet(f"color: {design.text};")
+        self._show_item_win_cb.setChecked(self._settings.show_item_win_count)
+        self._show_item_win_cb.setToolTip(
+            "各項目に当選回数を一括で表示／非表示する"
+        )
+        self._show_item_win_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("show_item_win_count", v)
+        )
+        sec.addWidget(self._show_item_win_cb)
+
+        # i287: 項目削除確認（ログセクションから項目リストセクションへ移動）
+        # 項目操作の設定として自然な位置に配置する
+        self._confirm_item_delete_cb = QCheckBox("項目削除時に確認する")
+        self._confirm_item_delete_cb.setFont(QFont("Meiryo", 8))
+        self._confirm_item_delete_cb.setStyleSheet(f"color: {design.text};")
+        self._confirm_item_delete_cb.setChecked(self._settings.confirm_item_delete)
+        self._confirm_item_delete_cb.setToolTip(
+            "ON: 項目削除前に確認ダイアログを表示する\n"
+            "OFF: 確認なしで即時削除する"
+        )
+        self._confirm_item_delete_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("confirm_item_delete", v)
+        )
+        sec.addWidget(self._confirm_item_delete_cb)
+
+        # i284: 「常時ランダム」と「ランダム配置（単発）」を同じ行にまとめて
+        # 関連機能としての一体感を出す。
+        rand_row = QHBoxLayout()
+        rand_row.setSpacing(6)
+
+        self._shuffle_cb = QCheckBox("常時ランダム")
         self._shuffle_cb.setFont(QFont("Meiryo", 8))
         self._shuffle_cb.setStyleSheet(f"color: {design.text};")
         self._shuffle_cb.setChecked(self._settings.auto_shuffle)
+        self._shuffle_cb.setToolTip("スピン開始ごとに項目順をランダム配置する")
         self._shuffle_cb.toggled.connect(
             lambda v: self.setting_changed.emit("auto_shuffle", v)
         )
-        sec.addWidget(self._shuffle_cb)
+        rand_row.addWidget(self._shuffle_cb)
+
+        rand_row.addStretch(1)
+
+        self._shuffle_once_btn = QPushButton("🔀 今すぐランダム配置")
+        self._shuffle_once_btn.setFont(QFont("Meiryo", 8))
+        self._shuffle_once_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._shuffle_once_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._shuffle_once_btn.setToolTip(
+            "今すぐ項目の並び順をランダムに入れ替える（1回のみ）"
+        )
+        self._shuffle_once_btn.clicked.connect(self.shuffle_once_requested.emit)
+        rand_row.addWidget(self._shuffle_once_btn)
+
+        sec.addLayout(rand_row)
 
         # 配置方向
         arr_row = QHBoxLayout()
@@ -2375,7 +3513,9 @@ class SettingsPanel(QFrame):
         self._arr_combo = QComboBox()
         self._arr_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._arr_combo, design)
-        for name in ["逆順 (CW)", "順 (CCW)"]:
+        # i284: CW/CCW の略語と「順/逆順」表記をやめ、日本語の直感表記に統一。
+        # index 0 = 時計回り, index 1 = 反時計回り（実際の回転方向と一致）
+        for name in ["時計回り", "反時計回り"]:
             self._arr_combo.addItem(name)
         self._arr_combo.setCurrentIndex(self._settings.arrangement_direction)
         self._arr_combo.currentIndexChanged.connect(
@@ -2383,22 +3523,48 @@ class SettingsPanel(QFrame):
         )
         arr_row.addWidget(self._arr_combo, stretch=1)
 
-        self._shuffle_once_btn = QPushButton("🔀")
-        self._shuffle_once_btn.setFont(QFont("Meiryo", 8))
-        self._shuffle_once_btn.setStyleSheet(
+        sec.addLayout(arr_row)
+
+        # i284: 並びリセット / 一括リセット（v0.4.4 相当の復元）
+        reset_row = QHBoxLayout()
+        reset_row.setSpacing(6)
+
+        reset_btn_style = (
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: none; border-radius: 3px; padding: 2px 6px;"
-            f"  min-width: 24px; max-width: 24px;"
+            f"  border: none; border-radius: 3px; padding: 2px 8px;"
             f"}}"
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
         )
-        self._shuffle_once_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._shuffle_once_btn.setToolTip("1回だけランダム再配置")
-        self._shuffle_once_btn.clicked.connect(self.shuffle_once_requested.emit)
-        arr_row.addWidget(self._shuffle_once_btn)
 
-        sec.addLayout(arr_row)
+        self._arrangement_reset_btn = QPushButton("↺ 並びリセット")
+        self._arrangement_reset_btn.setFont(QFont("Meiryo", 8))
+        self._arrangement_reset_btn.setStyleSheet(reset_btn_style)
+        self._arrangement_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._arrangement_reset_btn.setToolTip(
+            "ランダム配置前の並び順に戻す（v0.4.4 の「標準配置に戻す」相当）"
+        )
+        self._arrangement_reset_btn.clicked.connect(
+            self.arrangement_reset_requested.emit
+        )
+        reset_row.addWidget(self._arrangement_reset_btn)
+
+        self._items_reset_btn = QPushButton("⟲ 項目全リセット")
+        self._items_reset_btn.setFont(QFont("Meiryo", 8))
+        self._items_reset_btn.setStyleSheet(reset_btn_style)
+        self._items_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._items_reset_btn.setToolTip(
+            "全項目の確率・分割設定をデフォルトに戻す\n"
+            "（項目名・有効/無効はそのまま。v0.4.4 の「一括リセット」相当）"
+        )
+        self._items_reset_btn.clicked.connect(
+            self.items_reset_requested.emit
+        )
+        reset_row.addWidget(self._items_reset_btn)
+
+        reset_row.addStretch(1)
+
+        sec.addLayout(reset_row)
 
     # ================================================================
     #  内部ヘルパー
@@ -2455,45 +3621,24 @@ class SettingsPanel(QFrame):
     # ================================================================
 
     def mousePressEvent(self, event):
-        """空きクライアント領域ドラッグでパネル移動。クリックで最前面へ。"""
-        self.raise_()
+        """i277: 空きクライアント領域でのクリックは「前面化のみ」扱い。
+
+        - 背面パネルを前面化する (raise_)
+        - パネル本体のドラッグはここでは始めない (上部の `_drag_bar` か
+          各セクションヘッダのドラッグ拡張で行う)
+        - 本来動作 (たとえばボタン押下) もここでは発火しない
+        """
         if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging_panel = True
-            self._panel_drag_start = event.globalPosition().toPoint()
-            # フローティング時はスクリーン座標、埋め込み時は親内座標
-            self._panel_start_pos = self.pos() if not self._floating else self.frameGeometry().topLeft()
+            self.raise_()
+            self._dragging_panel = False
         event.accept()
 
     def mouseMoveEvent(self, event):
-        if getattr(self, '_dragging_panel', False):
-            delta = event.globalPosition().toPoint() - self._panel_drag_start
-            new_pos = self._panel_start_pos + delta
-            if self._floating:
-                # フローティング時: スクリーン座標でクランプ
-                from PySide6.QtWidgets import QApplication
-                screen = QApplication.primaryScreen()
-                if screen:
-                    sg = screen.availableGeometry()
-                    min_vis = 60
-                    new_x = max(sg.x() - self.width() + min_vis,
-                                min(new_pos.x(), sg.x() + sg.width() - min_vis))
-                    new_y = max(sg.y(),
-                                min(new_pos.y(), sg.y() + sg.height() - 30))
-                    self.move(new_x, new_y)
-            else:
-                # 埋め込み時: 親ウィジェット内クランプ
-                parent = self.parentWidget()
-                if parent:
-                    new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
-                    new_y = max(0, min(new_pos.y(), parent.height() - self.height()))
-                    self.move(new_x, new_y)
-            event.accept()
-            return
+        # i277: 空きクライアント領域からのドラッグ移動は禁止 (前面化のみ)。
+        # 移動はドラッグバーまたは折りたたみヘッダから行う。
         event.accept()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging_panel = False
         event.accept()
 
     def moveEvent(self, event):
@@ -2505,18 +3650,85 @@ class SettingsPanel(QFrame):
         """リサイズグリップを右下に追従させる。"""
         super().resizeEvent(event)
         self._resize_grip.reposition()
-        self._clamp_to_parent()
+        # i275: top-level Tool window 化に伴い、_clamp_to_parent は使わない。
+        # 親内クランプは自身の geometry をリサイズのたびに動かしてしまい、
+        # メインウィンドウ最小化や resize で位置が崩れる原因になっていた。
         self.geometry_changed.emit()
 
-    def _clamp_to_parent(self):
-        """パネルをメインウィンドウ内にクランプする。"""
-        parent = self.parentWidget()
-        if not parent:
-            return
-        x = max(0, min(self.x(), parent.width() - self.width()))
-        y = max(0, min(self.y(), parent.height() - self.height()))
-        if x != self.x() or y != self.y():
-            self.move(x, y)
+    def replace_entries_from_texts(self, texts: list[str]) -> tuple[bool, str]:
+        """テキスト直接編集モードからの結果を反映する。
+
+        - 既存 entries とテキストを順位ごとに突き合わせ、enabled / 確率設定 等は
+          可能な範囲で引き継ぐ
+        - 上限超過は enforce_item_limits でカット
+        - 新しい行を `set_active_entries` で再構築
+        - `item_entries_changed` シグナルで MainWindow へ通知
+
+        Returns:
+            (changed_by_limit, warn_message): 上限により切り詰められたかどうかと
+            ユーザーへのメッセージ。
+        """
+        trimmed, changed, warn = enforce_item_limits(list(texts))
+        old_entries = list(self._item_entries)
+        new_entries: list[ItemEntry] = []
+        for j, text in enumerate(trimmed):
+            if j < len(old_entries) and old_entries[j].text == text:
+                new_entries.append(old_entries[j])
+            else:
+                # 既存の enabled 状態は同じ位置から引き継ぐ
+                if j < len(old_entries):
+                    base = old_entries[j]
+                    entry = ItemEntry(
+                        text=text,
+                        enabled=base.enabled,
+                        prob_mode=base.prob_mode,
+                        prob_value=base.prob_value,
+                        split_count=base.split_count,
+                    )
+                else:
+                    entry = ItemEntry(
+                        text=text, enabled=True,
+                        prob_mode=None, prob_value=None,
+                        split_count=1,
+                    )
+                new_entries.append(entry)
+        self.set_active_entries(new_entries)
+        self.item_entries_changed.emit(new_entries)
+        return changed, warn
+
+    def _live_update_from_text_entries(self, texts: list[str]) -> None:
+        """i284: テキスト編集モードからの即時プレビュー反映。
+
+        `replace_entries_from_texts` は行 UI を再構築するためフォーカスや
+        スクロール位置を壊してしまう（テキスト編集モード中であっても
+        裏側で QLineEdit 群が作り直される）。
+        ここでは ItemEntry のリストだけを更新し、シグナルだけ発火する。
+        既存の prob_mode / prob_value / split_count / enabled は同位置の
+        旧エントリから引き継ぎ、新規行はデフォルトを与える。
+        """
+        old_entries = list(self._item_entries)
+        new_entries: list[ItemEntry] = []
+        for j, text in enumerate(texts):
+            if j < len(old_entries) and old_entries[j].text == text:
+                new_entries.append(old_entries[j])
+                continue
+            if j < len(old_entries):
+                base = old_entries[j]
+                new_entries.append(ItemEntry(
+                    text=text,
+                    enabled=base.enabled,
+                    prob_mode=base.prob_mode,
+                    prob_value=base.prob_value,
+                    split_count=base.split_count,
+                ))
+            else:
+                new_entries.append(ItemEntry(
+                    text=text, enabled=True,
+                    prob_mode=None, prob_value=None,
+                    split_count=1,
+                ))
+        self._item_entries = new_entries
+        self.item_entries_changed.emit(list(new_entries))
 
     def set_active_entries(self, entries: list[ItemEntry]):
         """アクティブなルーレットの項目データを差し替える。
@@ -2537,6 +3749,8 @@ class SettingsPanel(QFrame):
             self._add_item_row(entry, self._design)
 
         self._refresh_all_weight_combos()
+        # i284: 確率ラベルを反映
+        self._refresh_prob_labels()
 
         # 検索・フィルターをリセット
         self._search_edit.clear()
@@ -2625,9 +3839,8 @@ class SettingsPanel(QFrame):
             self._sound_result_cb.setChecked(value)
             self._sound_result_cb.blockSignals(False)
         elif key == "log_overlay_show":
-            self._log_show_cb.blockSignals(True)
-            self._log_show_cb.setChecked(value)
-            self._log_show_cb.blockSignals(False)
+            # i274: 廃止された設定。互換のため受け流すだけで何もしない。
+            pass
         elif key == "spin_duration":
             self._dur_spin.blockSignals(True)
             self._dur_spin.setValue(value)
@@ -2653,10 +3866,14 @@ class SettingsPanel(QFrame):
             self._arr_combo.blockSignals(True)
             self._arr_combo.setCurrentIndex(value)
             self._arr_combo.blockSignals(False)
-        elif key == "transparent":
-            self._transparent_cb.blockSignals(True)
-            self._transparent_cb.setChecked(value)
-            self._transparent_cb.blockSignals(False)
+        elif key == "window_transparent":
+            self._window_transparent_cb.blockSignals(True)
+            self._window_transparent_cb.setChecked(value)
+            self._window_transparent_cb.blockSignals(False)
+        elif key == "roulette_transparent":
+            self._roulette_transparent_cb.blockSignals(True)
+            self._roulette_transparent_cb.setChecked(value)
+            self._roulette_transparent_cb.blockSignals(False)
         elif key == "tick_volume":
             self._tick_vol_slider.blockSignals(True)
             self._tick_vol_slider.setValue(value)
@@ -2691,6 +3908,13 @@ class SettingsPanel(QFrame):
             self._confirm_reset_cb.blockSignals(True)
             self._confirm_reset_cb.setChecked(value)
             self._confirm_reset_cb.blockSignals(False)
+        elif key == "confirm_item_delete":
+            # i286: 項目削除確認設定の外部変更反映
+            self._settings.confirm_item_delete = bool(value)
+            if hasattr(self, "_confirm_item_delete_cb"):
+                self._confirm_item_delete_cb.blockSignals(True)
+                self._confirm_item_delete_cb.setChecked(bool(value))
+                self._confirm_item_delete_cb.blockSignals(False)
         elif key == "replay_max_count":
             self._replay_max_spin.blockSignals(True)
             self._replay_max_spin.setValue(value)
@@ -2715,6 +3939,26 @@ class SettingsPanel(QFrame):
             self._float_panel_cb.blockSignals(True)
             self._float_panel_cb.setChecked(value)
             self._float_panel_cb.blockSignals(False)
+        elif key == "always_on_top":
+            self._aot_cb.blockSignals(True)
+            self._aot_cb.setChecked(value)
+            self._aot_cb.blockSignals(False)
+        elif key == "show_item_prob":
+            # i283: 確率/分割 UI の表示 ON/OFF
+            self._settings.show_item_prob = bool(value)
+            if hasattr(self, "_show_item_prob_cb"):
+                self._show_item_prob_cb.blockSignals(True)
+                self._show_item_prob_cb.setChecked(bool(value))
+                self._show_item_prob_cb.blockSignals(False)
+            self._refresh_item_rows_visibility()
+        elif key == "show_item_win_count":
+            # i283: 当選回数ラベルの表示 ON/OFF
+            self._settings.show_item_win_count = bool(value)
+            if hasattr(self, "_show_item_win_cb"):
+                self._show_item_win_cb.blockSignals(True)
+                self._show_item_win_cb.setChecked(bool(value))
+                self._show_item_win_cb.blockSignals(False)
+            self._refresh_item_rows_visibility()
 
     def set_panel_theme_mode(self, theme_mode: str):
         """テーマモード変更時に全折りたたみセクションのヘッダーを更新する。"""
@@ -2728,6 +3972,7 @@ class SettingsPanel(QFrame):
         self._content.setStyleSheet(f"background-color: {design.panel};")
         self._apply_scroll_style(self._scroll, design)
         self._resize_grip.update_design(design)
+        self._drag_bar.update_design(design)
         self._apply_combo_style(self._preset_combo, design)
         self._apply_combo_style(self._text_mode_combo, design)
         self._apply_combo_style(self._prof_combo, design)
@@ -2803,7 +4048,9 @@ class SettingsPanel(QFrame):
         self._anim_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._anim_spin.setStyleSheet(sb_style)
         self._donut_cb.setStyleSheet(cb_style)
-        self._transparent_cb.setStyleSheet(cb_style)
+        self._window_transparent_cb.setStyleSheet(cb_style)
+        self._roulette_transparent_cb.setStyleSheet(cb_style)
+        self._aot_cb.setStyleSheet(cb_style)
         self._grip_visible_cb.setStyleSheet(cb_style)
         self._ctrl_box_visible_cb.setStyleSheet(cb_style)
         self._instance_label_cb.setStyleSheet(cb_style)
@@ -2841,11 +4088,13 @@ class SettingsPanel(QFrame):
         self._tick_test_btn.setStyleSheet(small_btn_style)
         self._win_file_btn.setStyleSheet(small_btn_style)
         self._win_test_btn.setStyleSheet(small_btn_style)
-        self._log_show_cb.setStyleSheet(cb_style)
+        # log_show_cb は i274 で廃止されたため、ここでは更新しない
         self._log_ts_cb.setStyleSheet(cb_style)
         self._log_border_cb.setStyleSheet(cb_style)
         self._log_on_top_cb.setStyleSheet(cb_style)
         self._confirm_reset_cb.setStyleSheet(cb_style)
+        if hasattr(self, "_confirm_item_delete_cb"):
+            self._confirm_item_delete_cb.setStyleSheet(cb_style)
         self._log_export_btn.setStyleSheet(
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"

@@ -52,6 +52,8 @@ class SpinController(QObject):
         self._spin_sign: int = 1
         self._cruise_decel: float = 1.0
         self._prev_seg_idx: int = -1   # tick 音用: 前フレームのセグメント番号
+        # 短時間モード (固定フェーズを使わず v0.4.4 互換の単段減衰で動く)
+        self._single_phase_mode: bool = False
 
         # --- 音設定 ---
         self._sound_tick_enabled: bool = True
@@ -177,24 +179,14 @@ class SpinController(QObject):
         # --- 固定フェーズの合計フレーム・距離を事前計算 ---
         fixed_frames, fixed_dist = preset.fixed_phases_stats()
 
-        # CRUISE フェーズのフレーム予算
-        cruise_frames = max(1, target_frames - fixed_frames)
-
-        # CRUISE -> 最初の固定フェーズの入口速度
-        if preset.fixed_phases:
-            v_cruise_exit = preset.fixed_phases[0].v_threshold
-        else:
-            v_cruise_exit = V_STOP
-
-        # 回転数の基準を計算
-        v_ref = preset.v_ref
-        d_ref = (v_cruise_exit / v_ref) ** (1.0 / cruise_frames)
-        if d_ref < 1.0:
-            ref_cruise_dist = v_ref * (1.0 - d_ref ** cruise_frames) / (1.0 - d_ref)
-        else:
-            ref_cruise_dist = v_ref * cruise_frames
-        ref_total = ref_cruise_dist + fixed_dist
-        base_rots = max(3, int(ref_total / 360))
+        # 短時間モード判定: 指定 duration が固定フェーズの合計時間よりも
+        # 短い (= 余裕を持って CRUISE が回せない) ときは v0.4.4 互換の
+        # 単段減衰モードに切り替える。これによりユーザーが「1秒スピン」
+        # と指定した時に LINGER フェーズが支配して 3 秒近く回ってしまう
+        # 問題を回避する。
+        # しきい値は「target_frames < fixed_frames + 30」(約 0.5 秒の
+        # 余白を持って CRUISE が回せるか) で判定する。
+        self._single_phase_mode = target_frames < fixed_frames + 30
 
         # 時計回り(1) → angle 増加 → 視覚的 CW、反時計回り(0) → angle 減少
         spin_sign = 1 if self._wheel._spin_direction == 1 else -1
@@ -203,27 +195,78 @@ class SpinController(QObject):
             needed_residual = (target_angle - current_angle) % 360
         else:
             needed_residual = (current_angle - target_angle) % 360
-        adjusted_total = base_rots * 360 + needed_residual
 
-        # CRUISE フェーズで必要な距離
-        cruise_dist_needed = adjusted_total - fixed_dist
-
-        # v0 を二分探索（CRUISE 距離を合わせる）
-        def cruise_total_for_v(v0):
-            d = (v_cruise_exit / v0) ** (1.0 / cruise_frames)
-            if d >= 1.0:
-                return v0 * cruise_frames
-            return v0 * (1.0 - d ** cruise_frames) / (1.0 - d)
-
-        lo, hi = v_cruise_exit + 0.01, 300.0
-        for _ in range(60):
-            mid = (lo + hi) / 2
-            if cruise_total_for_v(mid) < cruise_dist_needed:
-                lo = mid
+        if self._single_phase_mode:
+            # === v0.4.4 互換: 単段指数減衰（高速立ち上がり → 1段減速 → 停止）===
+            # base_rots は target_frames から逆算（v0.4.4 と同じロジック）
+            v_ref = 25.0
+            d_ref = (V_STOP / v_ref) ** (1.0 / target_frames)
+            if d_ref < 1.0:
+                ref_total = (v_ref - V_STOP) / (1.0 - d_ref)
             else:
-                hi = mid
-        self._velocity = (lo + hi) / 2
-        self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
+                ref_total = v_ref * target_frames
+            base_rots = max(3, int(ref_total / 360))
+            adjusted_total = base_rots * 360 + needed_residual
+
+            def total_for_v(v):
+                d = (V_STOP / v) ** (1.0 / target_frames)
+                if d >= 1.0:
+                    return v * target_frames
+                return (v - V_STOP) / (1.0 - d)
+
+            lo, hi = 1.0, 300.0
+            for _ in range(60):
+                mid = (lo + hi) / 2
+                if total_for_v(mid) < adjusted_total:
+                    lo = mid
+                else:
+                    hi = mid
+            self._velocity = (lo + hi) / 2
+            # 単段減衰: target_frames 全体で V_STOP に到達するように
+            self._cruise_decel = (V_STOP / self._velocity) ** (1.0 / target_frames)
+        else:
+            # === 通常モード: プリセットの多段階フェーズを使う ===
+            # CRUISE フェーズのフレーム予算
+            cruise_frames = max(1, target_frames - fixed_frames)
+
+            # CRUISE -> 最初の固定フェーズの入口速度
+            if preset.fixed_phases:
+                v_cruise_exit = preset.fixed_phases[0].v_threshold
+            else:
+                v_cruise_exit = V_STOP
+
+            # 回転数の基準を計算
+            v_ref = preset.v_ref
+            d_ref = (v_cruise_exit / v_ref) ** (1.0 / cruise_frames)
+            if d_ref < 1.0:
+                ref_cruise_dist = v_ref * (1.0 - d_ref ** cruise_frames) / (1.0 - d_ref)
+            else:
+                ref_cruise_dist = v_ref * cruise_frames
+            ref_total = ref_cruise_dist + fixed_dist
+            base_rots = max(3, int(ref_total / 360))
+
+            adjusted_total = base_rots * 360 + needed_residual
+
+            # CRUISE フェーズで必要な距離
+            cruise_dist_needed = adjusted_total - fixed_dist
+
+            # v0 を二分探索（CRUISE 距離を合わせる）
+            def cruise_total_for_v(v0):
+                d = (v_cruise_exit / v0) ** (1.0 / cruise_frames)
+                if d >= 1.0:
+                    return v0 * cruise_frames
+                return v0 * (1.0 - d ** cruise_frames) / (1.0 - d)
+
+            lo, hi = v_cruise_exit + 0.01, 300.0
+            for _ in range(60):
+                mid = (lo + hi) / 2
+                if cruise_total_for_v(mid) < cruise_dist_needed:
+                    lo = mid
+                else:
+                    hi = mid
+            self._velocity = (lo + hi) / 2
+            self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
+
         self._spin_sign = spin_sign
 
         self._prev_seg_idx = self._wheel.seg_at_pointer()
@@ -252,9 +295,13 @@ class SpinController(QObject):
                 if self._replay_mgr is not None:
                     self._replay_mgr.record_sound("tick")
 
-        decel = self._spin_preset.decel_for_velocity(
-            self._velocity, self._cruise_decel
-        )
+        if self._single_phase_mode:
+            # 短時間モード: 固定フェーズを介さず常に同じ減衰率で減速する
+            decel = self._cruise_decel
+        else:
+            decel = self._spin_preset.decel_for_velocity(
+                self._velocity, self._cruise_decel
+            )
         self._velocity *= decel
 
         if self._velocity < V_STOP:

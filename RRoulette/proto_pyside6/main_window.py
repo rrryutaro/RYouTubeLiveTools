@@ -23,10 +23,12 @@ PySide6 プロトタイプ — メインウィンドウ
 
 import re
 
-from PySide6.QtCore import Qt, QTimer, QPoint, QRect
-from PySide6.QtGui import QScreen
+from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRect, QObject, QEvent
+from PySide6.QtGui import QScreen, QMouseEvent, QCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QMenu, QApplication,
+    QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox,
+    QSlider, QScrollBar, QAbstractItemView,
 )
 
 import os
@@ -42,7 +44,7 @@ from bridge import (
     get_pattern_names, get_current_pattern_name,
     set_current_pattern, add_pattern, delete_pattern,
 )
-from config_utils import BASE_DIR
+from config_utils import BASE_DIR, INSTANCE_NUM
 from app_settings import AppSettings
 from win_history import WinHistory
 from replay_manager_pyside6 import ReplayManager
@@ -57,10 +59,496 @@ from roulette_actions import (
 )
 from roulette_action_recorder import ActionRecorder
 from roulette_macro_session import MacroPlaybackSession
-from settings_panel import SettingsPanel
+from settings_panel import SettingsPanel, ItemPanel, ManagePanel, _PanelGrip
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from sound_manager import SoundManager
 from dark_theme import get_app_stylesheet, resolve_theme_mode
+
+
+class _PanelInputFilter(QObject):
+    """i278/i279/i280: メインウィンドウ内パネル用の統一マウスフィルタ。
+
+    QApplication 全体に install され、対象パネル (settings / item / manage)
+    およびその子ウィジェットへ届く左マウス操作を以下のルールで扱う。
+
+    i280 改訂のポイント:
+    - **非アクティブパネル上の UI クリックを 1 回で通す**: press を吸収せず、
+      focus を立てた上で素通しする。これによりインアクティブパネル上の
+      ボタン/チェック/コンボ等が初回クリックでそのまま動作する。
+    - **リサイズ判定をドラッグより優先**: panel の右端 / 下端 / 右下角の
+      RESIZE_EDGE 内で press された場合、ドラッグ昇格判定に入る前に
+      リサイズトラッキングを開始する。
+    - **カーソルプレビュー**: press されていない状態で対象パネルの
+      右端 / 下端 / 角にホバーしたら resize cursor を表示する。
+    - **ルーレットパネルはフィルタ非対象**: ルーレットパネルは自前の
+      mousePressEvent に内蔵のドラッグ/クリック判定があるため、フィルタは
+      触らない (focus_only 登録もしない)。
+
+    各イベントの扱い:
+
+    1. **MouseMove (no button)**: press 中でない時は、対象パネル背景上に
+       いる場合のみ resize cursor のプレビューを行う。
+
+    2. **MouseButtonPress**:
+       a. 対象パネルでなければ素通し。
+       b. _PanelGrip 上ならフィルタは触らない (grip 自身が処理)。
+       c. 入力系 (QLineEdit/QSpinBox 等) なら focus だけ立てて素通し。
+       d. 右端 / 下端 / 角にいたら、focus を立ててリサイズトラッキング開始
+          (press は吸収して return True)。
+       e. それ以外は focus を立てて、ドラッグ追跡を開始しつつ press を
+          素通し (return False)。
+
+    3. **MouseMove (button held)**:
+       - リサイズ中: 開始時の geometry + delta から resize() を適用。
+       - ドラッグ追跡中: 移動量が DRAG_THRESHOLD を超えたら、
+         元 target へ画面外 release を sendEvent して press 状態をキャンセル
+         し、popup を hide してパネル移動へ昇格する。
+
+    4. **MouseButtonRelease**:
+       - リサイズ中: トラッキング終了。
+       - ドラッグ済: 吸収してクリックを発火させない。
+       - ドラッグ未昇格: 素通し → 元のウィジェットの通常クリック動作。
+
+    5. **テキスト入力系**: QLineEdit / QPlainTextEdit / QSpinBox 等は
+       「press + 移動」を本来動作で使うため、ドラッグ追跡対象外。
+       focus は更新するが、press はそのまま素通しする。
+
+    6. **_PanelGrip**: パネル右下の corner グリップ。自前のドラッグ resize
+       を持つため、フィルタは press / move / release のいずれも触らない。
+    """
+
+    DRAG_THRESHOLD = 6  # manhattan px
+    RESIZE_EDGE = 6     # px from right/bottom for resize hit zone
+
+    # ドラッグ追跡から除外する widget 型
+    EXEMPT_TYPES = (
+        QLineEdit, QPlainTextEdit, QTextEdit,
+        QSpinBox, QDoubleSpinBox,
+        QSlider, QScrollBar,
+        QAbstractItemView,
+    )
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._mw = main_window
+        self._drag_panels: list[QWidget] = []
+        self._focus_only_panels: list[QWidget] = []
+        # press 追跡状態
+        self._press_panel: QWidget | None = None
+        self._press_global = QPoint()
+        self._press_panel_pos = QPoint()
+        self._press_target: QWidget | None = None
+        self._dragging = False
+        self._cancelling = False  # 同期 sendEvent の再入防止
+        # i280: リサイズトラッキング状態
+        self._resize_panel: QWidget | None = None
+        self._resize_edge = ""  # 'right' / 'bottom' / 'corner' / ''
+        self._resize_start_global = QPoint()
+        self._resize_start_geom = None  # QRect
+        # i282: 現在 push 中の override cursor の種類
+        self._active_override_edge = ""
+
+    def set_panels(self, drag_panels, focus_only_panels=()):
+        """監視対象パネルを設定する。
+
+        Args:
+            drag_panels: drag-from-anywhere + focus-first-click 対象。
+            focus_only_panels: focus-first-click のみ対象 (i280 では空でよい)。
+        """
+        self._drag_panels = list(drag_panels)
+        self._focus_only_panels = list(focus_only_panels)
+        # i280/i281: 対象パネル+全子ウィジェットで mouseTracking を有効化。
+        # これによりボタン/コンボ/スクロール等の上にホバーしている時も
+        # MouseMove (no button) が発火し、フィルタが resize cursor を
+        # プレビューできる (非アクティブパネルでも有効)。
+        for p in self._drag_panels:
+            self._enable_tracking_recursive(p)
+
+    @staticmethod
+    def _enable_tracking_recursive(widget):
+        """widget とその全子孫 QWidget で setMouseTracking(True) を呼ぶ。"""
+        try:
+            widget.setMouseTracking(True)
+        except Exception:
+            pass
+        try:
+            for child in widget.findChildren(QWidget):
+                try:
+                    child.setMouseTracking(True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _find_panel(self, obj) -> tuple[QWidget | None, bool]:
+        """obj が監視対象パネルか祖先かを判定。
+
+        Returns:
+            (panel, has_drag) — panel が見つからなければ (None, False)。
+            has_drag は drag-from-anywhere を許可するかどうか。
+        """
+        if not isinstance(obj, QWidget):
+            return None, False
+        w = obj
+        depth = 0
+        while w is not None and depth < 64:
+            if w in self._drag_panels:
+                return w, True
+            if w in self._focus_only_panels:
+                return w, False
+            w = w.parentWidget()
+            depth += 1
+        return None, False
+
+    def _is_exempt(self, obj) -> bool:
+        """obj が drag 追跡から除外されるべき型か判定する。
+
+        obj 自身またはその直近の祖先 (3 段) のいずれかが除外型なら True。
+        QComboBox の中の QLineEdit などもケアする。
+        """
+        if isinstance(obj, self.EXEMPT_TYPES):
+            return True
+        p = obj
+        for _ in range(3):
+            if p is None:
+                break
+            if isinstance(p, self.EXEMPT_TYPES):
+                return True
+            p = p.parentWidget()
+        return False
+
+    def _is_grip(self, obj) -> bool:
+        """obj 自身またはその祖先に _PanelGrip があるか判定する。
+
+        i280: パネル右下の grip 上での press はフィルタを介さず grip 自身の
+        mousePressEvent に処理させたい (corner サイズ変更用)。
+        """
+        p = obj
+        for _ in range(3):
+            if p is None:
+                break
+            if isinstance(p, _PanelGrip):
+                return True
+            p = p.parentWidget()
+        return False
+
+    def _hit_resize_edge(self, panel, global_pos) -> str:
+        """global_pos が panel の右端 / 下端 / 角の resize 領域にいるか判定。
+
+        Returns:
+            'right' / 'bottom' / 'corner' / '' (none)
+        """
+        try:
+            local = panel.mapFromGlobal(global_pos)
+        except Exception:
+            return ""
+        x = local.x()
+        y = local.y()
+        w = panel.width()
+        h = panel.height()
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return ""
+        in_right = x >= w - self.RESIZE_EDGE
+        in_bottom = y >= h - self.RESIZE_EDGE
+        if in_right and in_bottom:
+            return "corner"
+        if in_right:
+            return "right"
+        if in_bottom:
+            return "bottom"
+        return ""
+
+    def _update_override_cursor(self, edge: str):
+        """edge に応じて QApplication の override cursor を push/pop する。
+
+        i282: panel.setCursor() は子ウィジェット (QScrollBar, QPushButton 等)
+        が自前で setCursor 済みの場合に上書きできず、非アクティブパネルの
+        外枠ホバー時にカーソルがアロー表示のままになる不具合の原因だった。
+        QApplication.setOverrideCursor は全ウィジェットのカーソルを強制的に
+        上書きするため、子ウィジェットの上でも resize cursor が確実に出る。
+
+        edge:
+            'right' / 'bottom' / 'corner' / '' (空 = 解除)
+        """
+        current = getattr(self, "_active_override_edge", "")
+        if edge == current:
+            return  # 変化なし
+        # 直前の override を解除
+        if current:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+            self._active_override_edge = ""
+        # 新しい override を push
+        if edge:
+            shape_map = {
+                "right": Qt.CursorShape.SizeHorCursor,
+                "bottom": Qt.CursorShape.SizeVerCursor,
+                "corner": Qt.CursorShape.SizeFDiagCursor,
+            }
+            try:
+                QApplication.setOverrideCursor(QCursor(shape_map[edge]))
+                self._active_override_edge = edge
+            except Exception:
+                pass
+
+    def _apply_resize(self, global_pos):
+        """進行中の resize に対し、現在マウス位置から panel をリサイズする。"""
+        panel = self._resize_panel
+        edge = self._resize_edge
+        geom = self._resize_start_geom
+        if panel is None or geom is None:
+            return
+        delta = global_pos - self._resize_start_global
+        new_w = geom.width()
+        new_h = geom.height()
+        min_w = panel.minimumWidth() or 200
+        min_h = panel.minimumHeight() or 200
+        if edge in ("right", "corner"):
+            new_w = max(min_w, geom.width() + delta.x())
+        if edge in ("bottom", "corner"):
+            new_h = max(min_h, geom.height() + delta.y())
+        # 親領域内にクランプ
+        parent = panel.parentWidget()
+        if parent is not None:
+            max_w = max(min_w, parent.width() - geom.x())
+            max_h = max(min_h, parent.height() - geom.y())
+            new_w = min(new_w, max_w)
+            new_h = min(new_h, max_h)
+        panel.resize(new_w, new_h)
+
+    def _close_active_popup(self):
+        """直前 press でコントロールが開いた popup (combobox 等) を閉じる。
+
+        i279: アクティブパネル上のコンボボックスからドラッグ開始した時、
+        ドラッグ移行直後にもポップアップが浮いたまま残る不具合を防ぐ。
+        QApplication.activePopupWidget() で取得できれば hide する。
+        加えて、target 自体が QComboBox 系なら hidePopup() も呼ぶ。
+        """
+        try:
+            popup = QApplication.activePopupWidget()
+            if popup is not None:
+                popup.hide()
+        except Exception:
+            pass
+        try:
+            target = self._press_target
+            if target is not None:
+                # target 自身またはその祖先で hidePopup を持つものを閉じる
+                w = target
+                for _ in range(4):
+                    if w is None:
+                        break
+                    if hasattr(w, "hidePopup"):
+                        try:
+                            w.hidePopup()
+                        except Exception:
+                            pass
+                        break
+                    w = w.parentWidget()
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        if self._cancelling:
+            return False
+
+        et = event.type()
+        # マウス系 3 種以外は早期 return
+        if et not in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonRelease,
+        ):
+            return False
+
+        # ============================================================
+        # MouseMove (no button) — i280/i282: resize cursor のホバープレビュー
+        # ============================================================
+        if (et == QEvent.Type.MouseMove
+                and self._press_panel is None
+                and self._resize_panel is None):
+            try:
+                if event.buttons() != Qt.MouseButton.NoButton:
+                    return False
+            except Exception:
+                return False
+            panel, has_drag = self._find_panel(obj)
+            if panel is None or not has_drag:
+                # 対象パネル外: 直前の override があれば解除
+                self._update_override_cursor("")
+                return False
+            # i282: grip 上は grip 自身の cursor (SizeFDiagCursor) に任せる
+            if self._is_grip(obj):
+                self._update_override_cursor("")
+                return False
+            try:
+                global_pos = event.globalPosition().toPoint()
+            except Exception:
+                return False
+            # i282: exempt (QScrollBar / QLineEdit / QSpinBox 等) の上でも
+            # resize edge にいるなら override cursor を出す。これがないと
+            # スクロールバーが右端に貼り付いている設定パネルで非アクティブ時
+            # の resize cursor が表示されない。
+            edge = self._hit_resize_edge(panel, global_pos)
+            self._update_override_cursor(edge)
+            return False
+
+        # press 状態が無いときは Press 以外は全部スルー
+        if (self._press_panel is None
+                and self._resize_panel is None
+                and et != QEvent.Type.MouseButtonPress):
+            return False
+
+        # ============================================================
+        # MouseButtonPress
+        # ============================================================
+        if et == QEvent.Type.MouseButtonPress:
+            try:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return False
+            except Exception:
+                return False
+
+            panel, has_drag = self._find_panel(obj)
+            if panel is None:
+                return False
+
+            # i280: _PanelGrip 上は完全にフィルタを抜ける (grip 自身が処理)
+            if self._is_grip(obj):
+                return False
+
+            is_focused = self._mw._is_panel_focused(panel)
+
+            # focus-only パネルは focus だけ更新して素通し
+            if not has_drag:
+                if not is_focused:
+                    self._mw._set_panel_focused(panel)
+                return False
+
+            # i280: リサイズ判定 (ドラッグより優先)
+            try:
+                global_pos = event.globalPosition().toPoint()
+            except Exception:
+                global_pos = None
+            if global_pos is not None:
+                edge = self._hit_resize_edge(panel, global_pos)
+                if edge:
+                    if not is_focused:
+                        self._mw._set_panel_focused(panel)
+                    self._resize_panel = panel
+                    self._resize_edge = edge
+                    self._resize_start_global = global_pos
+                    self._resize_start_geom = panel.geometry()
+                    return True  # press を吸収
+
+            # 入力系: focus を立てて素通し (press は本来動作)
+            if self._is_exempt(obj):
+                if not is_focused:
+                    self._mw._set_panel_focused(panel)
+                return False
+
+            # i280: drag tracking — focus + press 素通し
+            # 非アクティブでも press は吸収しない。これにより、ボタンや
+            # コンボ等の UI コントロールが「単純クリック」で初回から
+            # 通常動作する。ドラッグへ昇格した際は別途 press キャンセルを送る。
+            if not is_focused:
+                self._mw._set_panel_focused(panel)
+            self._press_panel = panel
+            self._press_global = event.globalPosition().toPoint()
+            self._press_panel_pos = panel.pos()
+            self._press_target = obj
+            self._dragging = False
+            return False  # press を素通し
+
+        # ============================================================
+        # MouseMove (button held) — resize / drag
+        # ============================================================
+        if et == QEvent.Type.MouseMove:
+            # i280: リサイズ進行中
+            if self._resize_panel is not None:
+                try:
+                    global_pos = event.globalPosition().toPoint()
+                except Exception:
+                    return True
+                self._apply_resize(global_pos)
+                return True
+
+            if self._press_panel is None:
+                return False
+            try:
+                cur_global = event.globalPosition().toPoint()
+            except Exception:
+                return False
+            delta = cur_global - self._press_global
+            if not self._dragging:
+                if (abs(delta.x()) + abs(delta.y())) > self.DRAG_THRESHOLD:
+                    self._dragging = True
+                    # 元 press をキャンセルし、popup を閉じる
+                    target = self._press_target
+                    if target is not None:
+                        self._cancelling = True
+                        try:
+                            cancel_ev = QMouseEvent(
+                                QEvent.Type.MouseButtonRelease,
+                                QPointF(-1000.0, -1000.0),
+                                event.globalPosition(),
+                                Qt.MouseButton.LeftButton,
+                                Qt.MouseButton.NoButton,
+                                Qt.KeyboardModifier.NoModifier,
+                            )
+                            QApplication.sendEvent(target, cancel_ev)
+                        except Exception:
+                            pass
+                        finally:
+                            self._cancelling = False
+                    self._close_active_popup()
+            if self._dragging:
+                panel = self._press_panel
+                new_x = self._press_panel_pos.x() + delta.x()
+                new_y = self._press_panel_pos.y() + delta.y()
+                parent = panel.parentWidget()
+                if parent is not None:
+                    pw = panel.width()
+                    ph = panel.height()
+                    new_x = max(0, min(new_x, max(0, parent.width() - pw)))
+                    new_y = max(0, min(new_y, max(0, parent.height() - ph)))
+                panel.move(new_x, new_y)
+                return True
+            return False
+
+        # ============================================================
+        # MouseButtonRelease
+        # ============================================================
+        if et == QEvent.Type.MouseButtonRelease:
+            try:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return False
+            except Exception:
+                return False
+
+            # i280: リサイズ終了
+            if self._resize_panel is not None:
+                self._resize_panel = None
+                self._resize_edge = ""
+                self._resize_start_geom = None
+                return True
+
+            if self._press_panel is None:
+                return False
+            was_dragging = self._dragging
+            self._press_panel = None
+            self._press_global = QPoint()
+            self._press_panel_pos = QPoint()
+            self._press_target = None
+            self._dragging = False
+            if was_dragging:
+                # ドラッグ後の release はクリックを発火させない
+                return True
+            return False  # 素通し → 通常クリックとして発火
+
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -82,6 +570,8 @@ class MainWindow(QMainWindow):
 
         # --- frameless ウィンドウ（フラグは _apply_window_flags で設定） ---
         self.setMouseTracking(True)
+        # 初期化中のフラグ（debounce save 等を init 中に発火させない）
+        self._init_complete = False
 
         # --- 既存設定の読み込み ---
         self._config = load_config()
@@ -101,15 +591,30 @@ class MainWindow(QMainWindow):
         self._manager.active_changed.connect(self._on_active_changed)
         self._panels: list[QWidget] = []
 
-        self.setWindowTitle(f"RRoulette (PySide6 Proto) v{VERSION}")
-        self.setMinimumSize(MIN_W, MIN_H)
+        self.setWindowTitle(self._base_window_title())
+        # メインウィンドウ最小サイズ:
+        # ルーレットパネル最小描画領域 (約 272x272) ＋ ポインター描画余白を
+        # 確保するため 320x320 に設定する。これより小さくすると描画破綻が
+        # 発生する。v0.4.4 とほぼ同等で、過剰に大きくはしていない。
+        self.setMinimumSize(320, 320)
 
         # frameless + always_on_top
         self._apply_window_flags()
 
-        # OBS透過モード（初期適用）
-        if self._settings.transparent:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 透過モード基盤を常時有効化する。
+        # WA_TranslucentBackground は **show 前に必ず立てておく** のが
+        # Windows 上で安定動作する条件で、show 後に setAttribute だけで
+        # 切り替えるのは native window 再生成を伴うため不安定になる。
+        # 実際の見た目の透過/不透明は centralWidget の背景塗りで切り替える。
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground, True
+        )
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_NoSystemBackground, True
+        )
+        self.setStyleSheet(
+            "QMainWindow { background: transparent; }"
+        )
 
         # サイズプロファイル（保存値が無い場合のデフォルト）
         prof_idx = min(self._settings.profile_idx, len(SIZE_PROFILES) - 1)
@@ -121,13 +626,16 @@ class MainWindow(QMainWindow):
         self._restore_window_geometry(default_w, default_h)
 
         # --- 中央ウィジェット（レイアウトなし — パネルを手動配置） ---
+        # 注意: centralWidget には WA_TranslucentBackground を立てない。
+        # 立てると stylesheet の background-color が描画されなくなり、
+        # 「不透明モード」のときに solid bg が出なくなる。
+        # QMainWindow 側だけ WA_TranslucentBackground=True にしてあるので、
+        # centralWidget の bg を transparent にすればウィンドウ全体が透ける。
         central = QWidget()
-        if self._settings.transparent:
-            central.setStyleSheet("background-color: transparent;")
-        else:
-            central.setStyleSheet(f"background-color: {self._design.bg};")
+        central.setAutoFillBackground(False)
         central.setMouseTracking(True)
         self.setCentralWidget(central)
+        self._apply_central_background(self._settings.window_transparent)
 
         # --- ダークテーマ適用 ---
         self._apply_app_theme(self._design)
@@ -187,15 +695,19 @@ class MainWindow(QMainWindow):
         self._roulette_panel.wheel.load_log(self._log_autosave_path)
 
         # ============================================================
-        #  項目設定パネル（独立パネル）
+        #  項目設定パネル（メインウィンドウ内の内部パネル / i277）
         # ============================================================
 
+        # i277: SettingsPanel は centralWidget の child widget。
+        # OBS が取り込めるようにするには別ウィンドウではなく
+        # メインウィンドウの内部要素である必要がある。
         self._settings_panel = SettingsPanel(
             self._active_context.item_entries, self._settings, self._design,
             pattern_names=get_pattern_names(self._config),
             current_pattern=get_current_pattern_name(self._config),
             parent=central,
         )
+        self._settings_panel._floating = False
         self._settings_panel_visible = False
         self._settings_panel.hide()
 
@@ -214,6 +726,13 @@ class MainWindow(QMainWindow):
         self._settings_panel.custom_win_file_changed.connect(self._on_custom_win_file)
         self._settings_panel.log_clear_requested.connect(self._on_log_clear)
         self._settings_panel.shuffle_once_requested.connect(self._on_shuffle_once)
+        # i284: 並びリセット / 項目一括リセット
+        self._settings_panel.arrangement_reset_requested.connect(
+            self._on_arrangement_reset
+        )
+        self._settings_panel.items_reset_requested.connect(
+            self._on_items_reset
+        )
         self._settings_panel.pattern_export_requested.connect(self._on_pattern_export)
         self._settings_panel.pattern_import_requested.connect(self._on_pattern_import)
         self._settings_panel.log_export_requested.connect(self._on_log_export)
@@ -229,11 +748,9 @@ class MainWindow(QMainWindow):
             self._open_replay_manager
         )
 
-        # --- フローティング初期状態適用（復元前に設定） ---
-        if self._settings.settings_panel_float:
-            self._apply_settings_panel_float(True)
-
-        self._restore_settings_panel_visibility()
+        # i277: SettingsPanel は内部パネルへ戻したため、ここでは事前 restore
+        # を行わない (`_restore_all_panel_geometries` で 3 パネルまとめて
+        # 復元する)。
 
         # --- grip / ctrl_box の初期状態適用 ---
         if not self._settings.grip_visible:
@@ -241,11 +758,93 @@ class MainWindow(QMainWindow):
         if not self._settings.ctrl_box_visible:
             self._apply_ctrl_box_visible(False)
 
+        # --- パネル位置の保存を間引くためのデバウンスタイマー ---
+        # geometry_changed が連続発火しても、最後の値だけを 500ms 後に書き出す
+        self._panel_save_timer = QTimer(self)
+        self._panel_save_timer.setSingleShot(True)
+        self._panel_save_timer.setInterval(500)
+        self._panel_save_timer.timeout.connect(self._persist_panel_positions)
+
         # --- パネル一覧（Z オーダー管理対象）に SettingsPanel を追加 ---
         self._panels.append(self._settings_panel)
         self._settings_panel.geometry_changed.connect(
             lambda: self._bring_panel_to_front(self._settings_panel)
         )
+        self._settings_panel.geometry_changed.connect(
+            self._panel_save_timer.start
+        )
+
+        # --- 項目パネル（メインウィンドウ内の内部パネル / i277）---
+        # SettingsPanel から項目セクションとパターン (グループ) セクションを
+        # 取り外し、ItemPanel に載せ替える。**centralWidget の child widget**。
+        items_widget = self._settings_panel.pop_items_section()
+        pattern_widget = self._settings_panel.pop_pattern_section()
+        self._item_panel = ItemPanel(
+            self._design,
+            items_widget=items_widget,
+            pattern_widget=pattern_widget,
+            settings_panel=self._settings_panel,
+            parent=central,
+        )
+        self._item_panel.hide()  # restore で表示判定する
+        self._panels.append(self._item_panel)
+        self._item_panel.geometry_changed.connect(
+            lambda: self._bring_panel_to_front(self._item_panel)
+        )
+        self._item_panel.geometry_changed.connect(
+            self._panel_save_timer.start
+        )
+
+        # --- 全体管理パネル (F1) — 内部パネル ---
+        self._manage_panel = ManagePanel(
+            self._design,
+            items_visible=self._settings.items_panel_visible,
+            settings_visible=self._settings.settings_panel_visible,
+            parent=central,
+        )
+        self._manage_panel.items_panel_toggled.connect(
+            self._on_manage_items_toggled
+        )
+        self._manage_panel.settings_panel_toggled.connect(
+            self._on_manage_settings_toggled
+        )
+        self._manage_panel.reset_positions_requested.connect(
+            self._reset_panel_positions
+        )
+        self._manage_panel.geometry_changed.connect(
+            self._panel_save_timer.start
+        )
+        # i279: 親 (centralWidget) が show されると child は既定で
+        # visible になるため、ここで明示的に hide しておく。表示は
+        # `_restore_all_panel_geometries` で manage_panel_visible に
+        # 従って判断する。これを忘れると、保存値が False でも起動時に
+        # 管理パネルだけが表示される不具合になる。
+        self._manage_panel.hide()
+        self._manage_panel_visible = False
+
+        # i278/i280: 統一マウスフィルタ (focus + drag + resize) を
+        # QApplication 全体にインストール。
+        # i280: ルーレットパネルは自前の mousePressEvent に内蔵の
+        # ドラッグ/クリック判定があるため、フィルタの drag/focus 対象には
+        # 含めない (focus_only_panels も空)。
+        self._focused_panel = self._active_panel
+        self._panel_input_filter = _PanelInputFilter(self)
+        self._panel_input_filter.set_panels(
+            drag_panels=[
+                self._settings_panel,
+                self._item_panel,
+                self._manage_panel,
+            ],
+            focus_only_panels=[],
+        )
+        QApplication.instance().installEventFilter(self._panel_input_filter)
+
+        # i279: 復元は showEvent (初回) で行う。
+        # __init__ 時点では centralWidget の layout が未活性で、stale な
+        # 既定サイズ (640x480) を返すため、ユーザー保存値が小さく
+        # クランプされる事故が起きていた。
+        # ここでは復元せず、各パネルは hide() のままにしておく。
+        self._panels_restored = False
 
         # --- 初期勝利数表示 ---
         self._update_win_counts()
@@ -270,6 +869,10 @@ class MainWindow(QMainWindow):
         self._os_theme_timer.timeout.connect(self._check_os_theme_change)
         if self._settings.theme_mode in ("system", "auto"):
             self._os_theme_timer.start()
+
+        # 初期化完了フラグを立て、以後の geometry_changed で
+        # _persist_panel_positions が走るようにする。
+        self._init_complete = True
 
     # ================================================================
     #  アクティブルーレット参照（manager 経由）
@@ -402,13 +1005,27 @@ class MainWindow(QMainWindow):
         # 開発確認用: ウィンドウタイトルに active ID を反映
         self._update_title_active_id()
 
+    def _base_window_title(self) -> str:
+        """インスタンス番号を考慮した基本ウィンドウタイトルを返す。
+
+        旧 v0.4.4 の `window_manager.py` と同じ規則:
+          1個目          → "RRoulette"
+          2個目以降      → "RRoulette #N"
+        """
+        if INSTANCE_NUM == 1:
+            return "RRoulette"
+        return f"RRoulette #{INSTANCE_NUM}"
+
     def _update_title_active_id(self):
-        """開発確認用: ウィンドウタイトル末尾に active ID と recording 状態を反映する。"""
-        base = f"RRoulette (PySide6 Proto) v{VERSION}"
+        """ウィンドウタイトルに recording / playback 状態のみを反映する。
+
+        v0.4.4 と同じく、通常時は `RRoulette` (または `RRoulette #N`) のみを
+        表示する。開発確認用の active ID は冗長なので含めない。
+        REC / PLAY は実操作で意味のある情報なので、状態がある場合だけ
+        末尾に付加する。
+        """
+        base = self._base_window_title()
         parts = []
-        active_id = self._manager.active_id
-        if active_id:
-            parts.append(active_id)
         if self._recorder.is_recording:
             parts.append(f"REC:{self._recorder.count}")
         if self._macro_session.total_count > 0:
@@ -833,7 +1450,9 @@ class MainWindow(QMainWindow):
             panel.spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
         panel.result_overlay.set_close_mode(self._settings.result_close_mode)
         panel.result_overlay.set_hold_sec(self._settings.result_hold_sec)
-        panel.wheel.set_log_visible(self._settings.log_overlay_show)
+        # i274: ログオーバーレイは「ログ前面表示 (log_on_top)」のみで制御。
+        # 旧 log_visible は内部的に常時 True にしておく（描画条件は log_on_top）。
+        panel.wheel.set_log_visible(True)
         panel.wheel.set_log_timestamp(self._settings.log_timestamp)
         panel.wheel.set_log_box_border(self._settings.log_box_border)
         panel.wheel.set_log_on_top(self._settings.log_on_top)
@@ -842,7 +1461,7 @@ class MainWindow(QMainWindow):
         panel.spin_ctrl.set_spin_mode(self._settings.spin_mode)
         panel.spin_ctrl.set_double_duration(self._settings.double_duration)
         panel.spin_ctrl.set_triple_duration(self._settings.triple_duration)
-        panel.wheel.set_transparent(self._settings.transparent)
+        panel.set_transparent(self._settings.roulette_transparent)
 
         # manager 登録
         self._manager.register(RouletteContext(
@@ -1004,7 +1623,16 @@ class MainWindow(QMainWindow):
             self._settings_panel.set_panel_theme_mode(self._settings.theme_mode)
 
     def _save_config(self):
-        """アプリ設定・デザイン設定を config に書き戻して保存する。"""
+        """アプリ設定・デザイン設定を config に書き戻して保存する。
+
+        i281: offscreen QPA では (smoke test 等) ディスク書き込みを抑止する。
+        本物の Windows / Linux / Mac セッションでは通常通り保存する。
+        """
+        try:
+            if QApplication.platformName() == "offscreen":
+                return
+        except Exception:
+            pass
         self._config.update(self._settings.to_config_patch())
         if self._design:
             self._config["design"] = self._design.to_dict()
@@ -1026,27 +1654,53 @@ class MainWindow(QMainWindow):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
-    def _apply_transparent(self, enabled: bool):
-        """OBS透過モードを適用する。"""
-        self._settings.transparent = enabled
+    def _apply_central_background(self, transparent: bool):
+        """centralWidget の塗りつぶしのみを切り替える。
+
+        QMainWindow 自身は常時 WA_TranslucentBackground 状態。実際の
+        透過/不透明は centralWidget の stylesheet の background-color で
+        切り替える。これなら native window 再生成が不要なので、
+        実行時トグルが安定して反映される。
+        """
         central = self.centralWidget()
-        rp = self._active_panel
-        if enabled:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if central:
-                central.setStyleSheet("background-color: transparent;")
+        if not central:
+            return
+        if transparent:
+            central.setStyleSheet("background-color: transparent;")
         else:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            central.setStyleSheet(
+                f"background-color: {self._design.bg};"
+            )
+
+    def _apply_window_transparent(self, enabled: bool):
+        """メインウィンドウ自体の透過モードを適用する。
+
+        QMainWindow / centralWidget は init 時から常に
+        WA_TranslucentBackground 構成にしてあるので、実行時切替では
+        centralWidget の背景塗り (transparent / design.bg) だけを
+        差し替える。`hide → setWindowFlags → show` のような重い処理は
+        不要で、即時反映される。
+        """
+        self._settings.window_transparent = enabled
+        self._apply_central_background(enabled)
+        # 念のため再描画
+        if self.isVisible():
+            self.update()
+            central = self.centralWidget()
             if central:
-                central.setStyleSheet(
-                    f"background-color: {self._design.bg};"
-                )
-        rp.wheel.set_transparent(enabled)
-        # ウィンドウフラグの再適用が必要（WA_TranslucentBackground の変更を反映）
-        was_visible = self.isVisible()
-        self._apply_window_flags()
-        if was_visible:
-            self.show()
+                central.update()
+
+    def _apply_roulette_transparent(self, enabled: bool):
+        """ルーレットパネル側の透過モードを適用する。
+
+        メインウィンドウ自体は触らない。各 RoulettePanel 自身の背景塗り
+        (`set_transparent`) と内部 WheelWidget の塗りを切り替える。
+        """
+        self._settings.roulette_transparent = enabled
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx and ctx.panel:
+                ctx.panel.set_transparent(enabled)
 
     def _toggle_always_on_top(self):
         """常に最前面の ON/OFF を切り替える。"""
@@ -1055,6 +1709,10 @@ class MainWindow(QMainWindow):
         self._apply_window_flags()
         if was_visible:
             self.show()  # setWindowFlags 後に再表示が必要
+        # クイック設定バーのチェックボックスを同期
+        self._settings_panel.update_setting(
+            "always_on_top", self._settings.always_on_top
+        )
         self._save_config()
 
     def _toggle_grip_visible(self):
@@ -1224,10 +1882,23 @@ class MainWindow(QMainWindow):
 
         self.resize(w, h)
 
+        # i281: 復元時の追跡フラグ初期化
+        # - _window_pos_was_fallback: 保存位置がどの画面にも乗っていなくて
+        #   _clamp_position がセンタリングへ落ちた印
+        # - _window_pos_user_moved: ユーザー操作 (run 中の move) で位置が
+        #   変わった印
+        # 両方が立っていない状態 (= load 時 fallback、ユーザー未操作) では、
+        # 終了時に元の保存値を上書きせず温存する。これにより一時的に画面
+        # 構成が変わっても、後で同じ画面が復活したときに元の位置へ戻る。
+        self._window_pos_was_fallback = False
+        self._window_pos_user_moved = False
+
         if s.window_x is not None and s.window_y is not None:
             x, y = s.window_x, s.window_y
-            x, y = self._clamp_position(x, y, w, h)
-            self.move(x, y)
+            cx, cy = self._clamp_position(x, y, w, h)
+            if (cx, cy) != (x, y):
+                self._window_pos_was_fallback = True
+            self.move(cx, cy)
 
     def _restore_roulette_panel(self, panel: RoulettePanel | None = None):
         """ルーレットパネルの位置・サイズを復元する。"""
@@ -1251,20 +1922,368 @@ class MainWindow(QMainWindow):
 
         panel.setGeometry(rp_x, rp_y, rp_w, rp_h)
 
+    # ================================================================
+    #  i277: パネル管理 (centralWidget 内の内部パネル) + 前面化フォーカス
+    # ================================================================
+
+    def _is_panel_focused(self, panel: QWidget) -> bool:
+        """指定パネルが現在 focused (最前面) かどうか。"""
+        return getattr(self, "_focused_panel", None) is panel
+
+    def _set_panel_focused(self, panel: QWidget):
+        """指定パネルを focused (最前面) にする。"""
+        self._focused_panel = panel
+        panel.raise_()
+
+
+    def _default_panel_positions(self) -> dict:
+        """各パネルのデフォルト初期位置を計算する (client = centralWidget 座標)。
+
+        i277: top-level 方式から内部パネル方式へ戻したため、座標は
+        centralWidget 内の (x, y, w, h)。
+        """
+        central = self.centralWidget()
+        # i279: centralWidget は init 直後 (show 前) は既定 640x480 を返すので、
+        # `self.width()/height()` (resize 済み) を併用して大きい方を採用する。
+        if central:
+            cw = max(central.width(), self.width(), 1)
+            ch = max(central.height(), self.height(), 1)
+        else:
+            cw = max(self.width(), 1)
+            ch = max(self.height(), 1)
+        if cw < 100:
+            cw = max(self.width(), 320)
+        if ch < 100:
+            ch = max(self.height(), 320)
+
+        # ManagePanel: 左上 (小さい)
+        mp_w, mp_h = 240, 180
+        mp_x = 12
+        mp_y = 12
+
+        # ItemPanel: 左寄り、ManagePanel の下
+        ip_w = min(360, max(260, cw - 24))
+        ip_h = min(460, max(220, ch - mp_h - 36))
+        ip_x = 12
+        ip_y = mp_h + 24
+
+        # SettingsPanel: 右寄り
+        sp_w = min(320, max(260, cw - 24))
+        sp_h = min(480, max(220, ch - 24))
+        sp_x = max(0, cw - sp_w - 12)
+        sp_y = 12
+
+        return {
+            "items": (ip_x, ip_y, ip_w, ip_h),
+            "settings": (sp_x, sp_y, sp_w, sp_h),
+            "manage": (mp_x, mp_y, mp_w, mp_h),
+        }
+
+    def _clamp_to_client(self, x: int, y: int, w: int, h: int) -> tuple[int, int]:
+        """指定 geometry を centralWidget 内にクランプする (client 座標)。
+
+        パネルが完全にクライアント領域外へ消えるのを防ぐ。
+
+        i279: centralWidget は QMainWindow のレイアウト活性化が走るまで
+        既定値 (640x480 など) を返すため、`self.width()/height()` (`resize()`
+        済みの値) を併用して大きい方を採用する。これにより init 直後
+        (show 前) でも、ユーザーが指定したウィンドウサイズに対して正しく
+        クランプできる。
+        """
+        central = self.centralWidget()
+        if central:
+            cw = max(central.width(), self.width(), 1)
+            ch = max(central.height(), self.height(), 1)
+        else:
+            cw = max(self.width(), 1)
+            ch = max(self.height(), 1)
+        if cw < 100:
+            cw = max(self.width(), 320)
+        if ch < 100:
+            ch = max(self.height(), 320)
+        # パネルがクライアント領域内に完全に収まるようにクランプ
+        x = max(0, min(x, max(0, cw - w)))
+        y = max(0, min(y, max(0, ch - h)))
+        return x, y
+
+    def _apply_panel_geometry(self, panel: QWidget,
+                              x: int, y: int, w: int, h: int,
+                              min_w: int = 200, min_h: int = 200):
+        """パネルに geometry を適用 (client 座標、クライアント領域内クランプ込み)。"""
+        w = max(min_w, w)
+        h = max(min_h, h)
+        x, y = self._clamp_to_client(x, y, w, h)
+        panel.setGeometry(x, y, w, h)
+
+    def _restore_all_panel_geometries(self):
+        """全パネルの位置・表示状態を AppSettings から復元する。"""
+        s = self._settings
+        defaults = self._default_panel_positions()
+
+        # ItemPanel
+        ip_x = s.items_panel_x if s.items_panel_x is not None else defaults["items"][0]
+        ip_y = s.items_panel_y if s.items_panel_y is not None else defaults["items"][1]
+        ip_w = s.items_panel_width if s.items_panel_width is not None else defaults["items"][2]
+        ip_h = s.items_panel_height if s.items_panel_height is not None else defaults["items"][3]
+        self._apply_panel_geometry(self._item_panel, ip_x, ip_y, ip_w, ip_h, 260, 220)
+        if s.items_panel_visible:
+            self._item_panel.show()
+            self._item_panel.raise_()
+
+        # SettingsPanel
+        sp_x = s.settings_panel_x if s.settings_panel_x is not None else defaults["settings"][0]
+        sp_y = s.settings_panel_y if s.settings_panel_y is not None else defaults["settings"][1]
+        sp_w = s.settings_panel_width if s.settings_panel_width is not None else defaults["settings"][2]
+        sp_h = s.settings_panel_height if s.settings_panel_height is not None else defaults["settings"][3]
+        sp_min = self._settings_panel._panel_min_w
+        self._apply_panel_geometry(self._settings_panel, sp_x, sp_y, sp_w, sp_h, sp_min, 200)
+        if s.settings_panel_visible:
+            self._settings_panel.show()
+            self._settings_panel.raise_()
+            self._settings_panel_visible = True
+
+        # ManagePanel
+        mp_x = s.manage_panel_x if s.manage_panel_x is not None else defaults["manage"][0]
+        mp_y = s.manage_panel_y if s.manage_panel_y is not None else defaults["manage"][1]
+        mp_w = s.manage_panel_width if s.manage_panel_width is not None else defaults["manage"][2]
+        mp_h = s.manage_panel_height if s.manage_panel_height is not None else defaults["manage"][3]
+        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 220, 220)
+        if s.manage_panel_visible:
+            self._manage_panel.show()
+            self._manage_panel.raise_()
+            self._manage_panel_visible = True
+
+        # ManagePanel のチェックボックスを実状態と同期
+        self._sync_manage_panel_checks()
+
+    def _refresh_panel_tracking(self):
+        """各パネルの全子孫に mouseTracking を再適用する。
+
+        i281: 項目行などが動的に追加されると、新しい QWidget は
+        mouseTracking が False のため、その上では filter のホバー型
+        cursor preview が効かない。エントリ更新などのタイミングで
+        この helper を呼んで全体に行き渡らせる。
+        """
+        f = getattr(self, "_panel_input_filter", None)
+        if f is None:
+            return
+        for p in (
+            getattr(self, "_settings_panel", None),
+            getattr(self, "_item_panel", None),
+            getattr(self, "_manage_panel", None),
+        ):
+            if p is None:
+                continue
+            try:
+                f._enable_tracking_recursive(p)
+            except Exception:
+                pass
+
+    def _sync_manage_panel_checks(self):
+        """ManagePanel の表示チェックを実際のパネル表示状態と一致させる。
+
+        i279: 起動直後・F2/F3・ManagePanel 自身のクリック・コードによる
+        表示切替のいずれの経路でも、UI チェックと実状態を必ず合わせる。
+        """
+        if not hasattr(self, "_manage_panel"):
+            return
+        try:
+            self._manage_panel.set_items_visible(
+                self._item_panel.isVisible()
+                if hasattr(self, "_item_panel") else False
+            )
+            self._manage_panel.set_settings_visible(
+                self._settings_panel.isVisible()
+                if hasattr(self, "_settings_panel") else False
+            )
+        except Exception:
+            pass
+
+    def _on_manage_items_toggled(self, visible: bool):
+        """ManagePanel から: 項目パネルの表示状態を切り替える。"""
+        if visible:
+            self._item_panel.show()
+            self._item_panel.raise_()
+        else:
+            self._item_panel.hide()
+        self._settings.items_panel_visible = visible
+        self._sync_manage_panel_checks()
+        self._save_config()
+
+    def _on_manage_settings_toggled(self, visible: bool):
+        """ManagePanel から: 設定パネルの表示状態を切り替える。"""
+        if visible:
+            self._settings_panel.show()
+            self._settings_panel.raise_()
+            self._settings_panel_visible = True
+        else:
+            self._settings_panel.hide()
+            self._settings_panel_visible = False
+        self._settings.settings_panel_visible = visible
+        self._sync_manage_panel_checks()
+        self._save_config()
+
+    def _toggle_manage_panel(self):
+        """F1: 全体管理パネルの表示 / 非表示。"""
+        if self._manage_panel.isVisible():
+            self._manage_panel.hide()
+            self._manage_panel_visible = False
+            self._settings.manage_panel_visible = False
+        else:
+            self._manage_panel.show()
+            self._manage_panel.raise_()
+            self._manage_panel_visible = True
+            self._settings.manage_panel_visible = True
+        self._save_config()
+
+    def _toggle_item_panel(self):
+        """F2: 項目パネルの表示 / 非表示。"""
+        new_visible = not self._item_panel.isVisible()
+        if new_visible:
+            self._item_panel.show()
+            self._item_panel.raise_()
+        else:
+            self._item_panel.hide()
+        self._settings.items_panel_visible = new_visible
+        self._sync_manage_panel_checks()
+        self._save_config()
+
+    def _toggle_settings_panel_v2(self):
+        """F3: 設定パネルの表示 / 非表示。"""
+        new_visible = not self._settings_panel.isVisible()
+        if new_visible:
+            self._settings_panel.show()
+            self._settings_panel.raise_()
+            self._settings_panel_visible = True
+        else:
+            self._settings_panel.hide()
+            self._settings_panel_visible = False
+        self._settings.settings_panel_visible = new_visible
+        self._sync_manage_panel_checks()
+        self._save_config()
+
+    def _reset_panel_positions(self):
+        """全パネルの位置を初期値に戻す (見失い時の復旧手段)。"""
+        defaults = self._default_panel_positions()
+        # ItemPanel
+        ip_x, ip_y, ip_w, ip_h = defaults["items"]
+        self._apply_panel_geometry(self._item_panel, ip_x, ip_y, ip_w, ip_h, 260, 220)
+        # SettingsPanel
+        sp_x, sp_y, sp_w, sp_h = defaults["settings"]
+        sp_min = self._settings_panel._panel_min_w
+        self._apply_panel_geometry(self._settings_panel, sp_x, sp_y, sp_w, sp_h, sp_min, 200)
+        # ManagePanel
+        mp_x, mp_y, mp_w, mp_h = defaults["manage"]
+        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 220, 220)
+        # 全部を表示してユーザーが見つけられるようにする
+        self._item_panel.show()
+        self._item_panel.raise_()
+        self._settings_panel.show()
+        self._settings_panel.raise_()
+        self._settings_panel_visible = True
+        self._manage_panel.show()
+        self._manage_panel.raise_()
+        self._manage_panel_visible = True
+        # チェックボックスと AppSettings を同期
+        self._sync_manage_panel_checks()
+        self._settings.items_panel_visible = True
+        self._settings.settings_panel_visible = True
+        self._settings.manage_panel_visible = True
+        # 即座に保存
+        self._panel_save_timer.stop()
+        self._persist_panel_positions()
+
+    # 旧名 (互換のため残す)
+    def _restore_item_panel_geometry(self):
+        """新 ItemPanel の保存位置を復元する。
+
+        重要: 初回 show() より前は centralWidget の geometry がまだ最終
+        サイズではない（Qt の遅延レイアウトで stale な値を返す）。そのため
+        クランプには **QMainWindow 自身の width/height** を基準にする。
+        QMainWindow は `_restore_window_geometry` で既にユーザー設定値に
+        合わせてあるので、frameless 構成の central widget は最終的にこの
+        サイズへ広がる前提で安全。
+        """
+        s = self._settings
+        pw = max(self.width(), 1)
+        ph = max(self.height(), 1)
+        ip = self._item_panel
+        min_w = ip.minimumWidth() or 260
+        min_h = ip.minimumHeight() or 220
+
+        ip_w = s.items_panel_width if s.items_panel_width is not None else 360
+        ip_h = s.items_panel_height if s.items_panel_height is not None else 420
+        ip_x = s.items_panel_x if s.items_panel_x is not None else 20
+        ip_y = s.items_panel_y if s.items_panel_y is not None else 60
+
+        ip_w = max(min_w, min(ip_w, max(min_w, pw)))
+        ip_h = max(min_h, min(ip_h, max(min_h, ph)))
+        ip_x = max(0, min(ip_x, max(0, pw - ip_w)))
+        ip_y = max(0, min(ip_y, max(0, ph - ip_h)))
+        ip.setGeometry(ip_x, ip_y, ip_w, ip_h)
+
+    def _persist_panel_positions(self):
+        """全パネルの現在位置を AppSettings に書き戻して保存する。
+
+        debounce タイマー (`_panel_save_timer`) または明示呼び出しから利用。
+        i275 以降、各パネルは top-level Tool window のため、`pos()` は
+        screen 座標を返す。
+
+        初期化中 (`_init_complete=False`) は何もしない。これは復元中の
+        setGeometry が geometry_changed を発火させて未調整の位置を
+        書き戻してしまうのを防ぐためのガード。
+        i281: offscreen QPA (smoke test 等) ではディスク書き込みを抑止する。
+        """
+        if not getattr(self, "_init_complete", False):
+            return
+        try:
+            if QApplication.platformName() == "offscreen":
+                return
+        except Exception:
+            pass
+        s = self._settings
+        # ItemPanel — 表示中のときだけ最新位置を保存する。
+        # 非表示中はパネル自身の geometry が無効なので保存しない。
+        if hasattr(self, "_item_panel") and self._item_panel.isVisible():
+            ip = self._item_panel
+            s.items_panel_x = ip.x()
+            s.items_panel_y = ip.y()
+            s.items_panel_width = ip.width()
+            s.items_panel_height = ip.height()
+        # SettingsPanel — 表示中のときだけ
+        if hasattr(self, "_settings_panel") and self._settings_panel.isVisible():
+            sp = self._settings_panel
+            s.settings_panel_x = sp.x()
+            s.settings_panel_y = sp.y()
+            s.settings_panel_width = sp.width()
+            s.settings_panel_height = sp.height()
+            self._last_sp_x = sp.x()
+            self._last_sp_y = sp.y()
+            self._last_sp_w = sp.width()
+            self._last_sp_h = sp.height()
+        # ManagePanel — 表示中のときだけ
+        if hasattr(self, "_manage_panel") and self._manage_panel.isVisible():
+            mp = self._manage_panel
+            s.manage_panel_x = mp.x()
+            s.manage_panel_y = mp.y()
+            s.manage_panel_width = mp.width()
+            s.manage_panel_height = mp.height()
+        self._save_config()
+
     def _restore_settings_panel_visibility(self):
         """項目設定パネルの表示状態と位置を復元する。"""
         s = self._settings
 
-        if s.item_panel_width is not None:
-            self._last_sp_w = max(self._settings_panel._panel_min_w, s.item_panel_width)
-        if s.item_panel_height is not None:
-            self._last_sp_h = s.item_panel_height
-        if s.item_panel_x is not None:
-            self._last_sp_x = s.item_panel_x
-        if s.item_panel_y is not None:
-            self._last_sp_y = s.item_panel_y
+        if s.settings_panel_width is not None:
+            self._last_sp_w = max(self._settings_panel._panel_min_w, s.settings_panel_width)
+        if s.settings_panel_height is not None:
+            self._last_sp_h = s.settings_panel_height
+        if s.settings_panel_x is not None:
+            self._last_sp_x = s.settings_panel_x
+        if s.settings_panel_y is not None:
+            self._last_sp_y = s.settings_panel_y
 
-        if s.item_panel_visible:
+        if s.settings_panel_visible:
             self._show_settings_panel_at_saved_or_default()
 
     def _show_settings_panel_at_saved_or_default(self):
@@ -1291,9 +2310,10 @@ class MainWindow(QMainWindow):
             sp.setGeometry(sp_x, sp_y, sp_w, sp_h)
         else:
             # 埋め込み時: 親内座標で配置
-            parent = self.centralWidget()
-            pw = parent.width() if parent else self.width()
-            ph = parent.height() if parent else self.height()
+            # 注意: 初回 show 前は centralWidget の geometry が stale な
+            # ため、クランプには QMainWindow 自身のサイズを使う。
+            pw = max(self.width(), 1)
+            ph = max(self.height(), 1)
             m = 2
 
             sp_w = getattr(self, '_last_sp_w', panel_min)
@@ -1313,19 +2333,34 @@ class MainWindow(QMainWindow):
         self._settings_panel_visible = True
 
     def _clamp_position(self, x: int, y: int, w: int, h: int) -> tuple[int, int]:
-        """ウィンドウ位置を画面内に収まるよう補正する。"""
+        """ウィンドウ位置を画面内に補正する。
+
+        i281: いずれかの画面に対して十分な可視矩形 (>=100x30 px) があるなら、
+        保存値をそのまま尊重する。すべての画面と一切重ならない場合のみ
+        プライマリ画面の中央へリセットする。
+
+        以前の実装は `x + 100 > sg.x()` という辺ベース判定で、ユーザーが
+        境界の僅か手前 (例: secondary 開始 3840 に対し x=3739) に置いていた
+        場合に near-miss でセンタリングへ落ちる不具合があった。
+        矩形交差ベースに変更したことで、保存位置がほぼ画面上に乗っている
+        限りそのまま復元される。
+        """
         min_visible_w = 100
-        min_visible_top = 30
+        min_visible_h = 30
 
         screens = QApplication.screens()
         for screen in screens:
             sg = screen.availableGeometry()
-            if (x + min_visible_w > sg.x() and x < sg.x() + sg.width() and
-                    y + min_visible_top > sg.y() and y < sg.y() + sg.height()):
-                x = max(sg.x() - w + min_visible_w, min(x, sg.x() + sg.width() - min_visible_w))
-                y = max(sg.y(), min(y, sg.y() + sg.height() - min_visible_top))
+            visible_left = max(x, sg.x())
+            visible_right = min(x + w, sg.x() + sg.width())
+            visible_top = max(y, sg.y())
+            visible_bottom = min(y + h, sg.y() + sg.height())
+            vw = max(0, visible_right - visible_left)
+            vh = max(0, visible_bottom - visible_top)
+            if vw >= min_visible_w and vh >= min_visible_h:
                 return x, y
 
+        # どの画面とも交差なし: プライマリ中央へフォールバック
         avail = self._get_available_geometry()
         if avail is not None:
             x = avail.x() + (avail.width() - w) // 2
@@ -1337,13 +2372,41 @@ class MainWindow(QMainWindow):
         return screen.availableGeometry() if screen else None
 
     def _save_window_state(self):
-        """現在のウィンドウ・パネル状態を保存する。"""
-        pos = self.pos()
+        """現在のウィンドウ・パネル状態を保存する。
+
+        i275: 最小化中は window geometry を保存しない (Windows 上で
+        -32000 のような sentinel 値が pos() から返ってくることがあり、
+        次回起動でレイアウトが破綻する)。
+
+        i281: 加えて以下を守る:
+        - offscreen QPA (smoke test 等) ではディスクへの保存自体を抑止する
+        - load 時に画面外で fallback されたまま、ユーザーが手動で動かして
+          いない場合は window_x / window_y を上書きしない (元の保存値を温存)
+        """
+        # i281: offscreen platform は smoke test 用なので保存しない
+        try:
+            if QApplication.platformName() == "offscreen":
+                return
+        except Exception:
+            pass
+
         s = self._settings
-        s.window_x = pos.x()
-        s.window_y = pos.y()
-        s.window_width = self.width()
-        s.window_height = self.height()
+        # 最小化中は window 位置は保存しない (古い値を維持)
+        if not self.isMinimized():
+            pos = self.pos()
+            # 念のため -32000 系の sentinel もガード
+            if pos.x() > -10000 and pos.y() > -10000:
+                # i281: load 時 fallback されていて、かつユーザーが
+                # 動かしていない場合は元の保存値を上書きしない
+                preserve_pos = (
+                    getattr(self, "_window_pos_was_fallback", False)
+                    and not getattr(self, "_window_pos_user_moved", False)
+                )
+                if not preserve_pos:
+                    s.window_x = pos.x()
+                    s.window_y = pos.y()
+                s.window_width = self.width()
+                s.window_height = self.height()
 
         # ルーレットパネル
         rp = self._active_panel
@@ -1352,23 +2415,34 @@ class MainWindow(QMainWindow):
         s.roulette_panel_width = rp.width()
         s.roulette_panel_height = rp.height()
 
-        # 項目設定パネル
-        if self._settings_panel_visible:
+        # SettingsPanel: 表示中のとき位置を更新、非表示なら最後の値を維持。
+        # visible フラグは現在状態を尊重する。
+        if self._settings_panel.isVisible():
             sp = self._settings_panel
-            s.item_panel_width = sp.width()
-            s.item_panel_height = sp.height()
-            s.item_panel_x = sp.x()
-            s.item_panel_y = sp.y()
-        else:
-            for attr, key in [('_last_sp_w', 'item_panel_width'),
-                              ('_last_sp_h', 'item_panel_height'),
-                              ('_last_sp_x', 'item_panel_x'),
-                              ('_last_sp_y', 'item_panel_y')]:
-                val = getattr(self, attr, None)
-                if val is not None:
-                    setattr(s, key, val)
+            s.settings_panel_width = sp.width()
+            s.settings_panel_height = sp.height()
+            s.settings_panel_x = sp.x()
+            s.settings_panel_y = sp.y()
+        s.settings_panel_visible = self._settings_panel.isVisible()
 
-        s.item_panel_visible = self._settings_panel_visible
+        # ItemPanel
+        if self._item_panel.isVisible():
+            ip = self._item_panel
+            s.items_panel_x = ip.x()
+            s.items_panel_y = ip.y()
+            s.items_panel_width = ip.width()
+            s.items_panel_height = ip.height()
+        s.items_panel_visible = self._item_panel.isVisible()
+
+        # ManagePanel
+        if self._manage_panel.isVisible():
+            mp = self._manage_panel
+            s.manage_panel_x = mp.x()
+            s.manage_panel_y = mp.y()
+            s.manage_panel_width = mp.width()
+            s.manage_panel_height = mp.height()
+        s.manage_panel_visible = self._manage_panel.isVisible()
+
         self._save_config()
 
     def closeEvent(self, event):
@@ -1381,6 +2455,62 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        # i279: 初回 show のときに各パネルの位置・サイズ・表示状態を復元する。
+        # super().showEvent() の後では centralWidget が QMainWindow と同じ
+        # サイズに layout 済みなので、保存値を正しいクライアント領域内へ
+        # クランプできる。
+        if not getattr(self, "_panels_restored", False):
+            self._panels_restored = True
+            # singleShot(0) でイベントループの次サイクルへ後回しすることで、
+            # 初回 paint 後の最終 layout を待つ。これにより centralWidget
+            # の width/height が確実に最終値になる。
+            QTimer.singleShot(0, self._do_initial_panel_restore)
+
+    def _do_initial_panel_restore(self):
+        """初回 show 後のパネル位置・表示状態の遅延復元。
+
+        i279: __init__ 時に行っていた `_restore_all_panel_geometries()` を
+        ここへ移した。central が確実に最終サイズになっている時点で
+        実行することで、保存位置が小さくクランプされる事故を回避する。
+        """
+        try:
+            self._restore_all_panel_geometries()
+        finally:
+            # 復元後の checkbox 同期と保存対象再開
+            self._sync_manage_panel_checks()
+            # i281: 復元時点で内部 layout が確定した子ウィジェットにも
+            # mouseTracking を行き渡らせる。これがないと、項目行などの
+            # 動的に追加された QWidget 上で resize cursor のホバーが
+            # プレビューされない。
+            try:
+                f = getattr(self, "_panel_input_filter", None)
+                if f is not None:
+                    for p in (
+                        self._settings_panel,
+                        self._item_panel,
+                        self._manage_panel,
+                    ):
+                        f._enable_tracking_recursive(p)
+            except Exception:
+                pass
+
+    def moveEvent(self, event):
+        """ウィンドウ移動時に位置を保存対象にする (最小化中はスキップ)。"""
+        super().moveEvent(event)
+        if not getattr(self, "_init_complete", False):
+            return
+        if self.isMinimized():
+            return
+        pos = self.pos()
+        if pos.x() <= -10000 or pos.y() <= -10000:
+            return
+        s = self._settings
+        s.window_x = pos.x()
+        s.window_y = pos.y()
+        # i281: ユーザー操作 (またはウィンドウマネージャ) で移動した印
+        self._window_pos_user_moved = True
+        # ディスク書き込みは debounce
+        self._panel_save_timer.start()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1390,6 +2520,15 @@ class MainWindow(QMainWindow):
             self.blockSignals(True)
             self.resize(size, size)
             self.blockSignals(False)
+        # 通常リサイズ時もサイズを保存対象にする
+        if not getattr(self, "_init_complete", False):
+            return
+        if self.isMinimized():
+            return
+        s = self._settings
+        s.window_width = self.width()
+        s.window_height = self.height()
+        self._panel_save_timer.start()
 
     # ================================================================
     #  Spin
@@ -1555,15 +2694,75 @@ class MainWindow(QMainWindow):
         )
 
     def _on_shuffle_once(self):
-        """単発ランダム再配置。item_entries をシャッフルしてセグメント再構築。"""
+        """単発ランダム再配置。item_entries をシャッフルしてセグメント再構築。
+
+        i284: シャッフル直前のエントリ並びをスナップショットとして
+        ctx に保持し、`_on_arrangement_reset` から復元できるようにする。
+        既にスナップショットがある場合は上書きしない（複数回シャッフルしても
+        最初の標準並びを記憶しておくため）。
+        """
         import random
         ctx = self._active_context
+        # i284: 並びリセット用スナップショット
+        if getattr(ctx, "_pre_shuffle_entries", None) is None:
+            ctx._pre_shuffle_entries = list(ctx.item_entries)
         entries = list(ctx.item_entries)
         random.shuffle(entries)
         ctx.item_entries = entries
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        self._save_item_entries()
+
+    def _on_arrangement_reset(self):
+        """i284: 並びリセット。
+
+        v0.4.4 の「標準配置に戻す」相当。直前のシャッフル前 snapshot へ
+        並び順を戻す。snapshot が無い（一度もシャッフルしていない）場合は何もしない。
+        """
+        ctx = self._active_context
+        snap = getattr(ctx, "_pre_shuffle_entries", None)
+        if snap is None:
+            return
+        ctx.item_entries = list(snap)
+        ctx._pre_shuffle_entries = None
+        ctx.segments, _ = build_segments_from_entries(
+            ctx.item_entries, self._config
+        )
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(ctx.item_entries)
+        self._save_item_entries()
+
+    def _on_items_reset(self):
+        """i284: 項目一括リセット（v0.4.4 「一括リセット」相当）。
+
+        全項目の prob_mode / prob_value / split_count をデフォルトに戻す。
+        項目名・enabled は維持する。`confirm_reset` ON 時は確認ダイアログ。
+        """
+        if self._settings.confirm_reset:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, "項目一括リセット",
+                "全項目の確率・分割設定をデフォルトに戻します。\n"
+                "（項目名・有効/無効はそのまま）\nよろしいですか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        ctx = self._active_context
+        from item_entry import ItemEntry as _IE
+        new_entries = [
+            _IE(text=e.text, enabled=e.enabled,
+                prob_mode=None, prob_value=None, split_count=1)
+            for e in ctx.item_entries
+        ]
+        ctx.item_entries = new_entries
+        ctx.segments, _ = build_segments_from_entries(
+            new_entries, self._config
+        )
+        ctx.panel.set_segments(ctx.segments)
+        self._settings_panel.set_active_entries(new_entries)
         self._save_item_entries()
 
     def _update_win_counts(self):
@@ -1683,7 +2882,8 @@ class MainWindow(QMainWindow):
         elif key == "win_pattern":
             self._sound.set_win_pattern(value)
         elif key == "log_overlay_show":
-            rp.wheel.set_log_visible(value)
+            # i274: 廃止された設定。互換のため受け流す。
+            pass
         elif key == "log_timestamp":
             rp.wheel.set_log_timestamp(value)
         elif key == "log_box_border":
@@ -1703,8 +2903,13 @@ class MainWindow(QMainWindow):
             self._settings_panel.set_replay_count(self._replay_mgr.count())
         elif key == "replay_show_indicator":
             pass  # 値は AppSettings に保存済み。再生開始時に参照
-        elif key == "transparent":
-            self._apply_transparent(value)
+        elif key == "window_transparent":
+            self._apply_window_transparent(value)
+        elif key == "roulette_transparent":
+            self._apply_roulette_transparent(value)
+        elif key == "always_on_top":
+            if value != self._settings.always_on_top:
+                self._toggle_always_on_top()
         elif key == "arrangement_direction":
             # 配置方向変更: config 更新 → セグメント再構築
             self._config["arrangement_direction"] = value
@@ -1721,6 +2926,15 @@ class MainWindow(QMainWindow):
             self._update_instance_labels()
         elif key == "settings_panel_float":
             self._apply_settings_panel_float(value)
+        elif key == "show_item_prob":
+            # i283: 項目行の確率行表示 ON/OFF。AppSettings に保存し、
+            # SettingsPanel 側にも反映を依頼する。
+            self._settings.show_item_prob = bool(value)
+            self._settings_panel.update_setting("show_item_prob", value)
+        elif key == "show_item_win_count":
+            # i283: 項目行の当選回数表示 ON/OFF。
+            self._settings.show_item_win_count = bool(value)
+            self._settings_panel.update_setting("show_item_win_count", value)
         elif key == "theme_mode":
             self._apply_app_theme(self._design)
             self._settings_panel.set_panel_theme_mode(value)
@@ -1765,6 +2979,9 @@ class MainWindow(QMainWindow):
         )
         ctx.panel.set_segments(ctx.segments)
         self._save_item_entries()
+        # i281: エントリ更新で項目行 (子ウィジェット) が新規追加された場合に
+        # 備えて mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         return True
 
     # ================================================================
@@ -2012,8 +3229,10 @@ class MainWindow(QMainWindow):
 
         self._apply_app_theme(self._design)
         self._active_panel.update_design(self._design)
-        self.centralWidget().setStyleSheet(f"background-color: {self._design.bg};")
+        self._apply_central_background(self._settings.window_transparent)
         self._settings_panel.update_design(self._design)
+        if hasattr(self, "_item_panel") and self._item_panel:
+            self._item_panel.update_design(self._design)
         self._save_config()
 
     def _open_design_editor(self):
@@ -2039,10 +3258,10 @@ class MainWindow(QMainWindow):
         self._settings.design_preset_name = design.preset_name
         self._apply_app_theme(self._design)
         self._active_panel.update_design(self._design)
-        self.centralWidget().setStyleSheet(
-            f"background-color: {self._design.bg};"
-        )
+        self._apply_central_background(self._settings.window_transparent)
         self._settings_panel.update_design(self._design)
+        if hasattr(self, "_item_panel") and self._item_panel:
+            self._item_panel.update_design(self._design)
         self._save_config()
 
     def _on_design_editor_closed(self):
@@ -2374,7 +3593,11 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
         elif event.key() == Qt.Key.Key_F1:
-            self._toggle_settings_panel()
+            self._toggle_manage_panel()
+        elif event.key() == Qt.Key.Key_F2:
+            self._toggle_item_panel()
+        elif event.key() == Qt.Key.Key_F3:
+            self._toggle_settings_panel_v2()
         elif event.key() == Qt.Key.Key_Space:
             self._start_spin()
         # --- 開発用ショートカット（アクション経由） ---

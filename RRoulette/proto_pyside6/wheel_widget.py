@@ -348,7 +348,15 @@ class WheelWidget(QWidget):
 
         d = self._design
         if self._transparent:
+            # 透過モード: CompositionMode_Source で実際にピクセルを α=0 にする
+            # (default の SourceOver では透明色を上書きしても下のピクセルが
+            # 残るため、確実にクリアするには Source モードが必要)
+            painter.save()
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_Source
+            )
             painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+            painter.restore()
         else:
             painter.fillRect(self.rect(), QColor(d.bg))
 
@@ -393,9 +401,8 @@ class WheelWidget(QWidget):
 
             self._draw_sector_text(painter, i, seg_start, seg.arc, cx, cy)
 
-        # --- ログオーバーレイ（背面モード: ホイール装飾の後ろ） ---
-        if self._log_visible and self._log_entries and not self._log_on_top:
-            self._draw_log_overlay(painter, d)
+        # --- ログオーバーレイ (背面モード) は廃止。
+        #     i274 以降は「ログ前面表示」のみが残り、ON のときだけ前面に描画する。
 
         # --- 外周線 ---
         painter.setPen(QPen(QColor(d.wheel.outline_color), d.wheel.outline_width))
@@ -403,20 +410,48 @@ class WheelWidget(QWidget):
         painter.drawEllipse(bbox)
 
         # --- ドーナツ穴 ---
+        # i276: ルーレットパネル透過設定 (= self._transparent) と完全連動。
+        # 透過 ON: 中央穴を α=0 にクリア (CompositionMode_Clear)
+        # 透過 OFF: 中央穴を背景色 d.bg で塗りつぶす (v0.4.4 と同じ挙動)
         if self._donut_hole:
             hole_r = DONUT_DRAW_RADIUS
-            painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
-                                d.wheel.hole_outline_width))
-            hole_fill = QColor(0, 0, 0, 0) if self._transparent else QColor(d.bg)
-            painter.setBrush(QBrush(hole_fill))
-            painter.drawEllipse(QRectF(cx - hole_r, cy - hole_r,
-                                       hole_r * 2, hole_r * 2))
+            hole_rect = QRectF(cx - hole_r, cy - hole_r,
+                               hole_r * 2, hole_r * 2)
+            if self._transparent:
+                # 透過モード: 中央穴を実ピクセルとして消す
+                painter.save()
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_Clear
+                )
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor(0, 0, 0, 0)))
+                painter.drawEllipse(hole_rect)
+                painter.restore()
+                # 縁取りは通常合成で別途
+                painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
+                                    d.wheel.hole_outline_width))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(hole_rect)
+            else:
+                # 不透明モード: 背景色で穴を塗りつぶす (CompositionMode_Source
+                # を明示し、上の段で transparent モードから戻ってきた直後でも
+                # 確実に bg ピクセルが書き込まれるようにする)
+                painter.save()
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_Source
+                )
+                painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
+                                    d.wheel.hole_outline_width))
+                painter.setBrush(QBrush(QColor(d.bg)))
+                painter.drawEllipse(hole_rect)
+                painter.restore()
 
         # --- ポインター ---
         self._draw_pointer(painter, cx, cy, r, d)
 
-        # --- ログオーバーレイ（前面モード: ポインターの上） ---
-        if self._log_visible and self._log_entries and self._log_on_top:
+        # --- ログオーバーレイ（前面モードのみ: ポインターの上）---
+        # i274: 「ログ前面表示」が ON の時だけ描画する。デフォルトは OFF。
+        if self._log_on_top and self._log_entries:
             self._draw_log_overlay(painter, d)
 
         # --- リプレイ中表示 ---
@@ -537,7 +572,14 @@ class WheelWidget(QWidget):
         painter.drawPolygon(pointer)
 
     def _draw_log_overlay(self, painter: QPainter, d: DesignSettings):
-        """ログオーバーレイを左下に描画する。"""
+        """ログオーバーレイを左上に描画する (v0.4.4 互換)。
+
+        - 配置: 左上 (margin, margin)
+        - 順序: 新しいログが上、古いログが下 (`_log_entries` は新しい順なので
+          そのまま i 順に描画する)
+        - 番号付け無し (v0.4.4 と同じ素のフォーマット)
+        - 新しいログが追加されると下方向にボックスが伸びる
+        """
         log_font = QFont(d.fonts.log_family or "Meiryo", d.log.font_size)
         fm = QFontMetrics(log_font)
         line_h = fm.height() + 2
@@ -549,15 +591,14 @@ class WheelWidget(QWidget):
         if n == 0:
             return
 
-        # 表示文字列を構築
+        # 表示文字列を構築 (番号無し / オプションでタイムスタンプ)
         show_ts = self._log_timestamp
         lines = []
-        for i, (ts, text) in enumerate(entries):
-            num = f"{n - i}."
+        for ts, text in entries:
             if show_ts:
-                lines.append(f"{num} [{ts}] {text}")
+                lines.append(f"[{ts}] {text}")
             else:
-                lines.append(f"{num} {text}")
+                lines.append(text)
 
         # テキスト幅の最大値を算出
         max_text_w = 0
@@ -569,9 +610,9 @@ class WheelWidget(QWidget):
         box_w = max_text_w + padding * 2
         box_h = line_h * n + padding * 2
 
-        # 左下に配置
+        # 左上に配置 (上から下へ流れる)
         box_x = margin
-        box_y = self.height() - margin - box_h
+        box_y = margin
 
         # 背景ボックス
         bg_color = QColor(d.log.box_bg_color)

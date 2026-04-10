@@ -96,6 +96,11 @@ class AppSettings:
 
     # リセット確認:
     confirm_reset: bool = True       # リセット操作前に確認ダイアログを表示
+    confirm_item_delete: bool = True  # 項目削除前に確認ダイアログを表示 (i286)
+
+    # 項目パネル表示 (i283):
+    show_item_prob: bool = True       # 各項目行の確率/分割 UI を表示
+    show_item_win_count: bool = True  # 各項目行の当選回数ラベルを表示
 
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
@@ -115,13 +120,30 @@ class AppSettings:
     roulette_panel_y: int | None = None
     roulette_panel_width: int | None = None
     roulette_panel_height: int | None = None
-    item_panel_width: int | None = None
-    item_panel_height: int | None = None
-    item_panel_x: int | None = None
-    item_panel_y: int | None = None
-    item_panel_visible: bool = False   # 項目設定パネルの表示状態
+    # 設定パネル (右側のアプリ設定パネル) の保存位置
+    # 旧キー `item_panel_*` を保持していた値はこちらへ移行する
+    settings_panel_x: int | None = None
+    settings_panel_y: int | None = None
+    settings_panel_width: int | None = None
+    settings_panel_height: int | None = None
+    settings_panel_visible: bool = False
+    # 項目パネル (新 ItemPanel) の保存位置・表示状態
+    items_panel_x: int | None = None
+    items_panel_y: int | None = None
+    items_panel_width: int | None = None
+    items_panel_height: int | None = None
+    items_panel_visible: bool = True
+    # 全体管理パネル (i275 ManagePanel) の保存位置・表示状態
+    manage_panel_x: int | None = None
+    manage_panel_y: int | None = None
+    manage_panel_width: int | None = None
+    manage_panel_height: int | None = None
+    manage_panel_visible: bool = False
     always_on_top: bool = False        # メインウィンドウ常に最前面
-    transparent: bool = False          # OBS透過モード
+    # 透過フラグは window / roulette を独立に持つ
+    # 旧 `transparent` キーは互換のため from_config 側でフォールバック読込
+    window_transparent: bool = False   # メインウィンドウ背景透過
+    roulette_transparent: bool = False # ルーレットパネル背景透過
     grip_visible: bool = True          # リサイズグリップ表示
     ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
     float_win_show_instance: bool = True  # インスタンス番号表示
@@ -176,13 +198,41 @@ class AppSettings:
             roulette_panel_y=config.get("roulette_panel_y"),
             roulette_panel_width=config.get("roulette_panel_width"),
             roulette_panel_height=config.get("roulette_panel_height"),
-            item_panel_width=config.get("item_panel_width"),
-            item_panel_height=config.get("item_panel_height"),
-            item_panel_x=config.get("item_panel_x"),
-            item_panel_y=config.get("item_panel_y"),
-            item_panel_visible=config.get("item_panel_visible", False),
+            # 設定パネル: 新キー優先、旧 item_panel_* 互換
+            settings_panel_x=config.get(
+                "settings_panel_x", config.get("item_panel_x")
+            ),
+            settings_panel_y=config.get(
+                "settings_panel_y", config.get("item_panel_y")
+            ),
+            settings_panel_width=config.get(
+                "settings_panel_width", config.get("item_panel_width")
+            ),
+            settings_panel_height=config.get(
+                "settings_panel_height", config.get("item_panel_height")
+            ),
+            settings_panel_visible=config.get(
+                "settings_panel_visible",
+                config.get("item_panel_visible", False),
+            ),
+            items_panel_x=config.get("items_panel_x"),
+            items_panel_y=config.get("items_panel_y"),
+            items_panel_width=config.get("items_panel_width"),
+            items_panel_height=config.get("items_panel_height"),
+            items_panel_visible=config.get("items_panel_visible", True),
+            manage_panel_x=config.get("manage_panel_x"),
+            manage_panel_y=config.get("manage_panel_y"),
+            manage_panel_width=config.get("manage_panel_width"),
+            manage_panel_height=config.get("manage_panel_height"),
+            manage_panel_visible=config.get("manage_panel_visible", False),
             always_on_top=config.get("always_on_top", False),
-            transparent=config.get("transparent", False),
+            # 透過: 新キー優先、旧 transparent 互換 (両方に同じ値)
+            window_transparent=config.get(
+                "window_transparent", config.get("transparent", False)
+            ),
+            roulette_transparent=config.get(
+                "roulette_transparent", config.get("transparent", False)
+            ),
             grip_visible=config.get("grip_visible", True),
             ctrl_box_visible=config.get("ctrl_box_visible", True),
             float_win_show_instance=config.get("float_win_show_instance", True),
@@ -195,8 +245,11 @@ class AppSettings:
             log_box_border=config.get("log_box_border", False),
             log_on_top=config.get("log_on_top", False),
             confirm_reset=config.get("confirm_reset", True),
+            confirm_item_delete=config.get("confirm_item_delete", True),
             replay_max_count=config.get("replay_max_count", 5),
             replay_show_indicator=config.get("replay_show_indicator", True),
+            show_item_prob=config.get("show_item_prob", True),
+            show_item_win_count=config.get("show_item_win_count", True),
         )
 
     def to_config_patch(self) -> dict:
@@ -237,13 +290,24 @@ class AppSettings:
             "roulette_panel_y": self.roulette_panel_y,
             "roulette_panel_width": self.roulette_panel_width,
             "roulette_panel_height": self.roulette_panel_height,
-            "item_panel_width": self.item_panel_width,
-            "item_panel_height": self.item_panel_height,
-            "item_panel_x": self.item_panel_x,
-            "item_panel_y": self.item_panel_y,
-            "item_panel_visible": self.item_panel_visible,
+            "settings_panel_x": self.settings_panel_x,
+            "settings_panel_y": self.settings_panel_y,
+            "settings_panel_width": self.settings_panel_width,
+            "settings_panel_height": self.settings_panel_height,
+            "settings_panel_visible": self.settings_panel_visible,
+            "items_panel_x": self.items_panel_x,
+            "items_panel_y": self.items_panel_y,
+            "items_panel_width": self.items_panel_width,
+            "items_panel_height": self.items_panel_height,
+            "items_panel_visible": self.items_panel_visible,
+            "manage_panel_x": self.manage_panel_x,
+            "manage_panel_y": self.manage_panel_y,
+            "manage_panel_width": self.manage_panel_width,
+            "manage_panel_height": self.manage_panel_height,
+            "manage_panel_visible": self.manage_panel_visible,
             "always_on_top": self.always_on_top,
-            "transparent": self.transparent,
+            "window_transparent": self.window_transparent,
+            "roulette_transparent": self.roulette_transparent,
             "grip_visible": self.grip_visible,
             "ctrl_box_visible": self.ctrl_box_visible,
             "float_win_show_instance": self.float_win_show_instance,
@@ -256,6 +320,9 @@ class AppSettings:
             "log_box_border": self.log_box_border,
             "log_on_top": self.log_on_top,
             "confirm_reset": self.confirm_reset,
+            "confirm_item_delete": self.confirm_item_delete,
             "replay_max_count": self.replay_max_count,
             "replay_show_indicator": self.replay_show_indicator,
+            "show_item_prob": self.show_item_prob,
+            "show_item_win_count": self.show_item_win_count,
         }

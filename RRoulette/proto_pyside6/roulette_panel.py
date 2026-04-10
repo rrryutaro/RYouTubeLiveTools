@@ -67,7 +67,8 @@ class RoulettePanel(QFrame):
         super().__init__(parent)
         self._roulette_id = roulette_id
         self._design = design
-        self.setStyleSheet(f"background-color: {design.bg};")
+        self._transparent = False
+        self._apply_panel_background()
         self.setMinimumSize(self._MIN_W, self._MIN_H)
 
         # ── WheelWidget（パネル全体に配置） ──
@@ -167,7 +168,7 @@ class RoulettePanel(QFrame):
     def update_design(self, design: DesignSettings):
         """デザイン変更時にパネル全体の配色を更新する。"""
         self._design = design
-        self.setStyleSheet(f"background-color: {design.bg};")
+        self._apply_panel_background()
         self._wheel.set_design(design)
         self._result_overlay.apply_style(design)
         self._grip.update_design(design)
@@ -175,6 +176,31 @@ class RoulettePanel(QFrame):
             f"color: {design.text}; background-color: rgba(0, 0, 0, 120);"
             f" border-radius: 3px; padding: 1px 4px;"
         )
+
+    def set_transparent(self, enabled: bool):
+        """透過モードを設定する。
+
+        パネル自身の背景描画と、内部 WheelWidget の透過モードを連動させる。
+        透過 ON のときはパネル QFrame 自身の背景を transparent にし、
+        WheelWidget も背景を描かなくなるため、メインウィンドウの
+        WA_TranslucentBackground と組み合わせて OBS 透過が成立する。
+        """
+        self._transparent = enabled
+        self._apply_panel_background()
+        self._wheel.set_transparent(enabled)
+        self.update()
+
+    def _apply_panel_background(self):
+        """現在の透過状態に合わせてパネル背景の StyleSheet を設定する。"""
+        if self._transparent:
+            # QFrame 自身の塗りつぶしも透明に
+            self.setStyleSheet("QFrame { background-color: transparent; }")
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        else:
+            self.setStyleSheet(
+                f"QFrame {{ background-color: {self._design.bg}; }}"
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
 
     # ================================================================
     #  スピン
