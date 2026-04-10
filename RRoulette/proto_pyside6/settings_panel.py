@@ -695,8 +695,6 @@ class ItemPanel(QFrame):
         self._hint_map: dict = {}
         # シンプルモード用当選回数キャッシュ
         self._simple_win_counts: dict = {}
-        self._simple_item_widgets: list = []
-        self._dbl_click_set: set = set()
         # notify_entries_changed_from_simple 起因の _on_entries_changed でフルリビルドしないフラグ
         self._skip_simple_rebuild: bool = False
 
@@ -982,11 +980,6 @@ class ItemPanel(QFrame):
         elif event.type() == QEvent.Type.Leave:
             if obj in self._hint_map:
                 self._popup_hint.hide()
-        if event.type() == QEvent.Type.MouseButtonDblClick:
-            if obj in self._dbl_click_set:
-                self._simple_name_edit.setFocus()
-                self._simple_name_edit.selectAll()
-                return True
         return super().eventFilter(obj, event)
 
     # ----------------------------------------------------------------
@@ -1080,6 +1073,7 @@ class ItemPanel(QFrame):
             f"QListWidget::item:hover {{ background-color: {design.separator}; }}"
         )
         self._simple_list.currentRowChanged.connect(self._on_simple_row_changed)
+        self._simple_list.itemChanged.connect(self._on_simple_item_changed)
         self._simple_list.itemDoubleClicked.connect(self._on_simple_item_double_clicked)
         page_v.addWidget(self._simple_list, stretch=1)
 
@@ -1327,89 +1321,40 @@ class ItemPanel(QFrame):
         return page
 
     def _refresh_simple_list(self):
-        """シンプルリストを _item_entries から再構築する。"""
+        """シンプルリストを _item_entries からテキスト+チェックボックスで再構築する。
+
+        t05: setItemWidget / 独自 row QWidget を廃止し、QListWidgetItem のみで構成。
+        カスタムウィジェット生成・installEventFilter をなくすことで起動安定性を確保。
+        """
         entries = self._settings_panel._item_entries
         settings = self._settings_panel._settings
         show_prob = settings.show_item_prob
         show_win = settings.show_item_win_count
-        design = self._design
 
         probs = SettingsPanel._calc_item_probs(list(entries)) if show_prob else []
 
         self._simple_list.blockSignals(True)
         prev_row = self._simple_list.currentRow()
         self._simple_list.clear()
-        self._simple_item_widgets.clear()
-        self._dbl_click_set.clear()
-
-        btn_style = (
-            f"QPushButton {{"
-            f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: none; border-radius: 3px; padding: 2px 4px;"
-            f"  min-width: 20px; max-width: 20px;"
-            f"}}"
-            f"QPushButton:hover {{ background-color: {design.accent}; }}"
-        )
 
         for i, entry in enumerate(entries):
-            row_w = QWidget(self._simple_list)  # 親付き: OSウィンドウ化を防ぐ
-            row_w.setStyleSheet("background: transparent;")
-            row_h = QHBoxLayout(row_w)
-            row_h.setContentsMargins(3, 0, 3, 0)
-            row_h.setSpacing(4)
-
-            # チェックボックス (詳細モードと同じスタイル)
-            cb = QCheckBox()
-            cb.setChecked(entry.enabled)
-            cb.setStyleSheet(f"color: {design.text};")
-            cb.toggled.connect(lambda checked, idx=i: self._on_simple_row_cb_toggled(idx, checked))
-            row_h.addWidget(cb)
-
-            # 項目名ラベル (マウスイベント透過)
-            name_lbl = QLabel(entry.text.replace("\r\n", " ").replace("\n", " "))
-            name_lbl.setFont(QFont("Meiryo", 8))
-            name_lbl.setStyleSheet(f"color: {design.text}; background: transparent;")
-            name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            row_h.addWidget(name_lbl, stretch=1)
-
-            # 確率ラベル (text_sub 色, 詳細モードと同じスタイル)
-            prob_val = probs[i] if show_prob and i < len(probs) else None
-            prob_lbl = QLabel(f"{prob_val:.1f}%" if prob_val is not None else "")
-            prob_lbl.setFont(QFont("Meiryo", 7))
-            prob_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            prob_lbl.setMinimumWidth(40)
-            prob_lbl.setStyleSheet(f"color: {design.text_sub}; background: transparent;")
-            prob_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            prob_lbl.setVisible(show_prob)
-            row_h.addWidget(prob_lbl)
-
-            # 当選回数ラベル (gold 色, 詳細モードと同じスタイル)
-            win_count = self._simple_win_counts.get(entry.text, 0)
-            win_lbl = QLabel(str(win_count) if win_count > 0 else "")
-            win_lbl.setFont(QFont("Meiryo", 7))
-            win_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            win_lbl.setFixedWidth(28)
-            win_lbl.setStyleSheet(f"color: {design.gold}; background: transparent;")
-            win_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            win_lbl.setVisible(show_win)
-            row_h.addWidget(win_lbl)
-
-            # store refs on the widget
-            row_w._cb = cb
-            row_w._name_lbl = name_lbl
-            row_w._prob_lbl = prob_lbl
-            row_w._win_lbl = win_lbl
-
-            # ダブルクリック用にイベントフィルタ登録
-            row_w.installEventFilter(self)
-            self._dbl_click_set.add(row_w)
-
-            item = QListWidgetItem()
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            item.setSizeHint(QSize(0, 22))
+            text = entry.text.replace("\r\n", " ").replace("\n", " ")
+            if show_prob and i < len(probs) and probs[i] is not None:
+                text += f"  {probs[i]:.1f}%"
+            if show_win:
+                count = self._simple_win_counts.get(entry.text, 0)
+                if count > 0:
+                    text += f"  {count}"
+            item = QListWidgetItem(text)
+            item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
+            )
             self._simple_list.addItem(item)
-            self._simple_list.setItemWidget(item, row_w)
-            self._simple_item_widgets.append(row_w)
 
         # 選択復元
         new_count = self._simple_list.count()
@@ -1428,9 +1373,9 @@ class ItemPanel(QFrame):
             self._simple_edit_frame.setVisible(False)
 
     def _update_simple_labels(self):
-        """シンプルリスト行ウィジェット内の確率・当選数・チェック状態のみ更新する。
+        """既存の QListWidgetItem テキストとチェック状態のみ差し替える（フルリビルドなし）。
 
-        フルリビルドを避け、既存の行ウィジェットのラベル値だけを差し替える。
+        t05: setItemWidget 廃止後はテキストアイテムを直接編集する。
         項目の追加・削除・並び替え後は _refresh_simple_list() を使うこと。
         """
         entries = self._settings_panel._item_entries
@@ -1438,24 +1383,26 @@ class ItemPanel(QFrame):
         show_prob = settings.show_item_prob
         show_win = settings.show_item_win_count
         probs = SettingsPanel._calc_item_probs(list(entries)) if show_prob else []
-        for i, rw in enumerate(self._simple_item_widgets):
+
+        self._simple_list.blockSignals(True)
+        for i in range(self._simple_list.count()):
             if i >= len(entries):
                 break
+            item = self._simple_list.item(i)
             entry = entries[i]
-            if hasattr(rw, '_cb'):
-                rw._cb.blockSignals(True)
-                rw._cb.setChecked(entry.enabled)
-                rw._cb.blockSignals(False)
-            if hasattr(rw, '_name_lbl'):
-                rw._name_lbl.setText(entry.text.replace("\r\n", " ").replace("\n", " "))
-            if hasattr(rw, '_prob_lbl'):
-                pv = probs[i] if i < len(probs) else None
-                rw._prob_lbl.setText(f"{pv:.1f}%" if pv is not None else "")
-                rw._prob_lbl.setVisible(show_prob)
-            if hasattr(rw, '_win_lbl'):
-                win_count = self._simple_win_counts.get(entry.text, 0)
-                rw._win_lbl.setText(str(win_count) if win_count > 0 else "")
-                rw._win_lbl.setVisible(show_win)
+            text = entry.text.replace("\r\n", " ").replace("\n", " ")
+            if show_prob and i < len(probs) and probs[i] is not None:
+                text += f"  {probs[i]:.1f}%"
+            if show_win:
+                count = self._simple_win_counts.get(entry.text, 0)
+                if count > 0:
+                    text += f"  {count}"
+            item.setText(text)
+            item.setCheckState(
+                Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
+            )
+        self._simple_list.blockSignals(False)
+
         # 編集エリアの表示ラベルも更新
         idx = self._simple_selected_idx
         if 0 <= idx < len(entries):
@@ -1565,29 +1512,30 @@ class ItemPanel(QFrame):
         """固定確率スピン変更。"""
         self._apply_simple_entry_change()
 
-    def _on_simple_row_cb_toggled(self, idx: int, checked: bool):
-        """行ウィジェットのチェックボックス変更 → entry.enabled 更新。
+    def _on_simple_item_changed(self, item: QListWidgetItem):
+        """チェックボックス操作 → entry.enabled 更新（フルリビルドなし）。
 
-        フルリビルドを避けてラベルのみ更新する。
+        t05: setItemWidget 廃止後は itemChanged シグナルで ON/OFF を受け取る。
         """
+        row = self._simple_list.row(item)
         entries = self._settings_panel._item_entries
-        if 0 <= idx < len(entries):
-            entries[idx].enabled = checked
+        if 0 <= row < len(entries):
+            entries[row].enabled = (item.checkState() == Qt.CheckState.Checked)
             # 選択中の行なら編集エリアの CB も同期
-            if idx == self._simple_selected_idx:
+            if row == self._simple_selected_idx:
                 self._simple_enabled_cb.blockSignals(True)
-                self._simple_enabled_cb.setChecked(checked)
+                self._simple_enabled_cb.setChecked(entries[row].enabled)
                 self._simple_enabled_cb.blockSignals(False)
             # この行を選択状態にする
-            if self._simple_list.currentRow() != idx:
-                self._simple_list.setCurrentRow(idx)
+            if self._simple_list.currentRow() != row:
+                self._simple_list.setCurrentRow(row)
             # フルリビルドを防ぎつつ通知（確率再計算 + ルーレット反映）
             self._skip_simple_rebuild = True
             try:
                 self._settings_panel.notify_entries_changed_from_simple()
             finally:
                 self._skip_simple_rebuild = False
-            # 確率ラベルのみ差し替え（有効状態変化で確率が変わる）
+            # テキスト + チェック状態のみ差し替え（有効状態変化で確率が変わる）
             self._update_simple_labels()
 
     def _on_simple_split_changed(self, value: int):
@@ -1761,20 +1709,11 @@ class ItemPanel(QFrame):
         self.geometry_changed.emit()
 
     def update_win_counts(self, counts: dict):
-        """当選回数キャッシュを更新し、既存行ウィジェットのラベルのみ更新する。
-
-        フルリビルドは行わない（起動時・当選後に何十回も呼ばれても軽量）。
-        """
+        """当選回数キャッシュを更新し、テキストアイテムのみ差し替える（フルリビルドなし）。"""
         self._simple_win_counts = counts
         if self._display_mode == 1 and self._stack.currentIndex() == 1:
-            # 行ウィジェットの win_lbl だけ差し替え
-            entries = self._settings_panel._item_entries
-            for i, rw in enumerate(self._simple_item_widgets):
-                if i < len(entries):
-                    count = counts.get(entries[i].text, 0)
-                    if hasattr(rw, '_win_lbl'):
-                        rw._win_lbl.setText(str(count) if count > 0 else "")
-        # 編集エリアの当選数ラベルも更新
+            self._update_simple_labels()
+        # 編集エリアの当選数ラベルも更新（モードに関わらず）
         if self._simple_selected_idx >= 0:
             entries = self._settings_panel._item_entries
             if self._simple_selected_idx < len(entries):
