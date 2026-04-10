@@ -102,6 +102,9 @@ class AppSettings:
     show_item_prob: bool = True       # 各項目行の確率/分割 UI を表示
     show_item_win_count: bool = True  # 各項目行の当選回数ラベルを表示
 
+    # 項目パネル表示モード (i289): 0=詳細表示, 1=シンプル表示
+    item_panel_display_mode: int = 0
+
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
     replay_show_indicator: bool = True  # リプレイ中インジケーター表示
@@ -250,6 +253,7 @@ class AppSettings:
             replay_show_indicator=config.get("replay_show_indicator", True),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
+            item_panel_display_mode=config.get("item_panel_display_mode", 0),
         )
 
     def to_config_patch(self) -> dict:
@@ -325,4 +329,5 @@ class AppSettings:
             "replay_show_indicator": self.replay_show_indicator,
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
+            "item_panel_display_mode": self.item_panel_display_mode,
         }

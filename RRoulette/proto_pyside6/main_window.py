@@ -2766,10 +2766,11 @@ class MainWindow(QMainWindow):
         self._save_item_entries()
 
     def _update_win_counts(self):
-        """勝利数集計を SettingsPanel とグラフに反映する。"""
+        """勝利数集計を SettingsPanel / ItemPanel とグラフに反映する。"""
         pattern = get_current_pattern_name(self._config)
         counts = self._win_history.count_by_item(pattern)
         self._settings_panel.update_win_counts(counts)
+        self._item_panel.update_win_counts(counts)
         self._refresh_graph()
 
     def _on_log_clear(self):
@@ -2928,13 +2929,19 @@ class MainWindow(QMainWindow):
             self._apply_settings_panel_float(value)
         elif key == "show_item_prob":
             # i283: 項目行の確率行表示 ON/OFF。AppSettings に保存し、
-            # SettingsPanel 側にも反映を依頼する。
+            # SettingsPanel / ItemPanel 側にも反映を依頼する。
             self._settings.show_item_prob = bool(value)
             self._settings_panel.update_setting("show_item_prob", value)
+            self._item_panel.update_setting("show_item_prob", value)
         elif key == "show_item_win_count":
             # i283: 項目行の当選回数表示 ON/OFF。
             self._settings.show_item_win_count = bool(value)
             self._settings_panel.update_setting("show_item_win_count", value)
+            self._item_panel.update_setting("show_item_win_count", value)
+        elif key == "item_panel_display_mode":
+            # i289: 項目パネル表示モード切替。
+            self._settings.item_panel_display_mode = int(value)
+            self._item_panel.update_setting("item_panel_display_mode", value)
         elif key == "theme_mode":
             self._apply_app_theme(self._design)
             self._settings_panel.set_panel_theme_mode(value)
