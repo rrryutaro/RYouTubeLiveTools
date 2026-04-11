@@ -705,6 +705,7 @@ class MainWindow(QMainWindow):
             self._active_context.item_entries, self._settings, self._design,
             pattern_names=get_pattern_names(self._config),
             current_pattern=get_current_pattern_name(self._config),
+            on_drag_bar_changed=lambda vis: self._on_settings_panel_drag_bar_changed(vis),
             parent=central,
         )
         self._settings_panel._floating = False
@@ -758,6 +759,10 @@ class MainWindow(QMainWindow):
         if not self._settings.ctrl_box_visible:
             self._apply_ctrl_box_visible(False)
 
+        # --- 移動バー表示状態の復元 (E: i294) ---
+        if not self._settings.settings_panel_drag_bar_visible:
+            self._settings_panel._drag_bar.setVisible(False)
+
         # --- パネル位置の保存を間引くためのデバウンスタイマー ---
         # geometry_changed が連続発火しても、最後の値だけを 500ms 後に書き出す
         self._panel_save_timer = QTimer(self)
@@ -784,9 +789,13 @@ class MainWindow(QMainWindow):
             items_widget=items_widget,
             pattern_widget=pattern_widget,
             settings_panel=self._settings_panel,
+            on_drag_bar_changed=lambda vis: self._on_item_panel_drag_bar_changed(vis),
             parent=central,
         )
         self._item_panel.hide()  # restore で表示判定する
+        # 移動バー表示状態の復元 (E: i294)
+        if not self._settings.items_panel_drag_bar_visible:
+            self._item_panel._drag_bar.setVisible(False)
         self._panels.append(self._item_panel)
         self._item_panel.geometry_changed.connect(
             lambda: self._bring_panel_to_front(self._item_panel)
@@ -800,6 +809,7 @@ class MainWindow(QMainWindow):
             self._design,
             items_visible=self._settings.items_panel_visible,
             settings_visible=self._settings.settings_panel_visible,
+            on_drag_bar_changed=lambda vis: self._on_manage_panel_drag_bar_changed(vis),
             parent=central,
         )
         self._manage_panel.items_panel_toggled.connect(
@@ -820,6 +830,9 @@ class MainWindow(QMainWindow):
         # 従って判断する。これを忘れると、保存値が False でも起動時に
         # 管理パネルだけが表示される不具合になる。
         self._manage_panel.hide()
+        # 移動バー表示状態の復元 (E: i294)
+        if not self._settings.manage_panel_drag_bar_visible:
+            self._manage_panel._drag_bar.setVisible(False)
         self._manage_panel_visible = False
 
         # i278/i280: 統一マウスフィルタ (focus + drag + resize) を
@@ -1721,6 +1734,22 @@ class MainWindow(QMainWindow):
         self._settings.grip_visible = new_val
         self._apply_grip_visible(new_val)
         self._settings_panel.update_setting("grip_visible", new_val)
+        self._save_config()
+
+    # ----------------------------------------------------------------
+    #  移動バー表示状態の保存ハンドラ (E: i294)
+    # ----------------------------------------------------------------
+
+    def _on_item_panel_drag_bar_changed(self, visible: bool):
+        self._settings.items_panel_drag_bar_visible = visible
+        self._save_config()
+
+    def _on_settings_panel_drag_bar_changed(self, visible: bool):
+        self._settings.settings_panel_drag_bar_visible = visible
+        self._save_config()
+
+    def _on_manage_panel_drag_bar_changed(self, visible: bool):
+        self._settings.manage_panel_drag_bar_visible = visible
         self._save_config()
 
     def _toggle_ctrl_box_visible(self):
@@ -3609,7 +3638,12 @@ class MainWindow(QMainWindow):
         )
 
         if event.key() == Qt.Key.Key_Escape:
-            self.close()
+            # テキスト編集モード中なら先にキャンセル（アプリ終了しない）
+            if (hasattr(self, '_item_panel')
+                    and self._item_panel.is_text_edit_mode()):
+                self._item_panel.cancel_text_edit()
+            else:
+                self.close()
         elif event.key() == Qt.Key.Key_F1:
             self._toggle_manage_panel()
         elif event.key() == Qt.Key.Key_F2:

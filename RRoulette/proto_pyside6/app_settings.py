@@ -152,6 +152,11 @@ class AppSettings:
     float_win_show_instance: bool = True  # インスタンス番号表示
     settings_panel_float: bool = False   # 設定パネルフローティング独立化
 
+    # 各パネルの移動バー表示状態 (E: i294)
+    items_panel_drag_bar_visible: bool = True
+    settings_panel_drag_bar_visible: bool = True
+    manage_panel_drag_bar_visible: bool = True
+
     # 設定パネル折りたたみ状態 (セクション名 → True=折りたたみ)
     collapsed_sections: dict = field(default_factory=dict)
     collapse_anim_ms: int = 150        # 折りたたみアニメーション時間 (ms, 0=無効)
@@ -240,6 +245,9 @@ class AppSettings:
             ctrl_box_visible=config.get("ctrl_box_visible", True),
             float_win_show_instance=config.get("float_win_show_instance", True),
             settings_panel_float=config.get("settings_panel_float", False),
+            items_panel_drag_bar_visible=config.get("items_panel_drag_bar_visible", True),
+            settings_panel_drag_bar_visible=config.get("settings_panel_drag_bar_visible", True),
+            manage_panel_drag_bar_visible=config.get("manage_panel_drag_bar_visible", True),
             collapsed_sections=config.get("collapsed_sections", {}),
             collapse_anim_ms=config.get("collapse_anim_ms", 150),
             theme_mode=config.get("theme_mode", "dark"),
@@ -316,6 +324,9 @@ class AppSettings:
             "ctrl_box_visible": self.ctrl_box_visible,
             "float_win_show_instance": self.float_win_show_instance,
             "settings_panel_float": self.settings_panel_float,
+            "items_panel_drag_bar_visible": self.items_panel_drag_bar_visible,
+            "settings_panel_drag_bar_visible": self.settings_panel_drag_bar_visible,
+            "manage_panel_drag_bar_visible": self.manage_panel_drag_bar_visible,
             "collapsed_sections": self.collapsed_sections,
             "collapse_anim_ms": self.collapse_anim_ms,
             "theme_mode": self.theme_mode,

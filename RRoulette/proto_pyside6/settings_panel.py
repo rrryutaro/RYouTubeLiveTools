@@ -25,14 +25,14 @@ PySide6 プロトタイプ — 操作・設定パネル
     8. 常時ランダム — プレースホルダー（spin 前の配置制御）
 """
 
-from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QEvent, QSize
+from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QEvent, QSize, QRect
 from PySide6.QtGui import QFont, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QCheckBox, QScrollArea, QWidget,
     QDoubleSpinBox, QSpinBox, QLineEdit, QStackedWidget, QSlider,
     QFileDialog, QPlainTextEdit, QStackedLayout, QMenu, QListWidget, QListWidgetItem,
-    QMessageBox,
+    QMessageBox, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QApplication,
 )
 
 from bridge import (
@@ -558,25 +558,39 @@ class _PanelGrip(QWidget):
 
 
 def install_panel_context_menu(panel: QWidget, drag_bar: QWidget,
-                                title: str = "パネル設定"):
+                                title: str = "パネル設定",
+                                on_drag_bar_changed=None):
     """パネル用の右クリックコンテキストメニューをインストールする。
 
     含まれるアイテム:
       - 「移動バーを表示」チェック (drag_bar.setVisible)
+
+    Args:
+        on_drag_bar_changed: 移動バーの表示状態が変化したときに呼ばれる
+            callable[[bool], None]。省略時は None（E: i294）。
     """
     panel.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
     def _show_menu(pos):
         menu = QMenu(panel)
+        menu.setStyleSheet(
+            "QMenu { padding: 2px; }"
+            "QMenu::item { padding: 4px 24px 4px 20px; }"  # G: 右側余白
+        )
         toggle_text = (
             "✔ 移動バーを表示"
             if drag_bar.isVisible()
             else "  移動バーを表示"
         )
         action = menu.addAction(toggle_text)
-        action.triggered.connect(
-            lambda: drag_bar.setVisible(not drag_bar.isVisible())
-        )
+
+        def _toggle():
+            new_vis = not drag_bar.isVisible()
+            drag_bar.setVisible(new_vis)
+            if on_drag_bar_changed is not None:
+                on_drag_bar_changed(new_vis)
+
+        action.triggered.connect(_toggle)
         global_pos = panel.mapToGlobal(pos)
         menu.exec(global_pos)
 
@@ -649,6 +663,111 @@ class _PanelDragBar(QWidget):
         self.update()
 
 
+class _SimpleItemDelegate(QStyledItemDelegate):
+    """シンプルモード項目リスト用 delegate。
+
+    項目名を左に、確率（PROB_ROLE）と当選回数（WIN_ROLE）を右固定列として描画する。
+    背景・選択・チェックボックスは Qt 標準描画を再利用し、その上にテキストを追加する。
+    """
+
+    PROB_ROLE = Qt.ItemDataRole.UserRole        # str: "12.3%" or ""
+    WIN_ROLE  = Qt.ItemDataRole.UserRole + 1   # str: "3" or ""
+
+    _PROB_W   = 46   # 確率列幅 (px) — "100.0%" 相当
+    _WIN_W    = 24   # 当選回数列幅 (px) — 数字 1〜3 桁
+    _COL_GAP  = 4    # 列間余白 (px)
+    _R_MARGIN = 4    # 右端余白 (px)
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
+        prob_str = index.data(self.PROB_ROLE) or ""
+        win_str  = index.data(self.WIN_ROLE)  or ""
+
+        # 右列の総幅を計算
+        right_w = self._R_MARGIN
+        if win_str:
+            right_w += self._WIN_W + self._COL_GAP
+        if prob_str:
+            right_w += self._PROB_W + self._COL_GAP
+
+        # text を空にして標準描画（背景・選択・チェックボックス・focus rect のみ）
+        opt.text = ""
+        style = QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, self.parent())
+
+        # テキスト色（選択状態で切替）
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        color = opt.palette.highlightedText().color() if selected else opt.palette.text().color()
+
+        # 標準テキスト矩形（チェックボックス・アイコン分を除外済み）
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, opt, self.parent()
+        )
+        name_rect = QRect(
+            text_rect.left(), text_rect.top(),
+            max(0, text_rect.width() - right_w),
+            text_rect.height(),
+        )
+
+        painter.save()
+        painter.setPen(color)
+        painter.setFont(opt.font)
+
+        # 項目名（左寄せ・長い場合は省略）
+        name = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        elided = painter.fontMetrics().elidedText(
+            name, Qt.TextElideMode.ElideRight, max(0, name_rect.width())
+        )
+        painter.drawText(
+            name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided
+        )
+
+        # 右固定列（右端から逆順に配置）
+        right_x = opt.rect.right() - self._R_MARGIN
+        if win_str:
+            win_rect = QRect(right_x - self._WIN_W, opt.rect.top(), self._WIN_W, opt.rect.height())
+            painter.drawText(
+                win_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, win_str
+            )
+            right_x -= self._WIN_W + self._COL_GAP
+        if prob_str:
+            prob_rect = QRect(right_x - self._PROB_W, opt.rect.top(), self._PROB_W, opt.rect.height())
+            painter.drawText(
+                prob_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, prob_str
+            )
+
+        painter.restore()
+
+
+class _SimpleItemList(QListWidget):
+    """シンプル表示専用 QListWidget。
+
+    i301: mouseDoubleClickEvent をオーバーライドしてテキスト編集モードへ切り替える。
+    チェックボックス領域（左端 _CHECKBOX_WIDTH px 以内）でのダブルクリックは
+    通常の Qt 処理に委ねる（チェック操作を壊さない）。
+    """
+
+    # Qt デフォルトスタイルのチェックボックス幅 + 余裕 (px)
+    _CHECKBOX_WIDTH = 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dbl_click_handler = None  # () -> None
+
+    def mouseDoubleClickEvent(self, event):
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self._dbl_click_handler is not None):
+            pos = event.position().toPoint()
+            item = self.itemAt(pos)
+            # 空白領域 (item=None) または項目上でチェックボックス外ならテキスト編集へ
+            if item is None or pos.x() > self._CHECKBOX_WIDTH:
+                self._dbl_click_handler()
+                return  # super() 呼ばない → Qt の activated 等を抑制
+        super().mouseDoubleClickEvent(event)
+
+
 class ItemPanel(QFrame):
     """項目編集専用パネル。
 
@@ -678,7 +797,7 @@ class ItemPanel(QFrame):
     def __init__(self, design: DesignSettings, items_widget: QWidget,
                  pattern_widget: QWidget,
                  settings_panel: "SettingsPanel",
-                 *, parent=None):
+                 *, on_drag_bar_changed=None, parent=None):
         super().__init__(parent)
         self._design = design
         self._floating = False
@@ -697,6 +816,8 @@ class ItemPanel(QFrame):
         self._simple_win_counts: dict = {}
         # notify_entries_changed_from_simple 起因の _on_entries_changed でフルリビルドしないフラグ
         self._skip_simple_rebuild: bool = False
+        # テキスト編集モード開始時のスナップショット（キャンセル時ロールバック用）
+        self._text_edit_snapshot: list | None = None
 
         self.setStyleSheet(f"background-color: {design.panel};")
         self.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
@@ -708,7 +829,8 @@ class ItemPanel(QFrame):
         # ── 上部ドラッグバー ──
         self._drag_bar = _PanelDragBar(self, design, parent=self)
         outer.addWidget(self._drag_bar)
-        install_panel_context_menu(self, self._drag_bar)
+        install_panel_context_menu(self, self._drag_bar,
+                                   on_drag_bar_changed=on_drag_bar_changed)
 
         # ── パターン (グループ) セクション ──
         if pattern_widget is not None:
@@ -819,6 +941,12 @@ class ItemPanel(QFrame):
                             "全項目の確率・分割設定をデフォルトに戻す")
         self._register_hint(self._settings_panel._pattern_add_btn,
                             "新しいパターンを追加する")
+        self._register_hint(self._settings_panel._pattern_del_btn,
+                            "現在のパターンを削除する")
+        self._register_hint(self._settings_panel._pattern_export_btn,
+                            "現在のパターンをエクスポートする")
+        self._register_hint(self._settings_panel._pattern_import_btn,
+                            "パターンをインポートする")
 
         # ── OBS 向けヒント: レイアウト外のフローティングラベル ──
         # レイアウト内に置くと表示/非表示で項目リストがチラつくため
@@ -1025,12 +1153,14 @@ class ItemPanel(QFrame):
             self._show_prob_btn.setChecked(bool(value))
             self._show_prob_btn.blockSignals(False)
             if self._display_mode == 1:
+                self._simple_prob_disp_lbl.setVisible(bool(value))
                 self._update_simple_labels()
         elif key == "show_item_win_count":
             self._show_win_btn.blockSignals(True)
             self._show_win_btn.setChecked(bool(value))
             self._show_win_btn.blockSignals(False)
             if self._display_mode == 1:
+                self._simple_win_disp_lbl.setVisible(bool(value))
                 self._update_simple_labels()
         elif key == "item_panel_display_mode":
             self.set_display_mode(int(value))
@@ -1058,8 +1188,8 @@ class ItemPanel(QFrame):
         page_v.setContentsMargins(0, 0, 0, 0)
         page_v.setSpacing(0)
 
-        # 1 行リスト
-        self._simple_list = QListWidget()
+        # 1 行リスト（i297: _SimpleItemList サブクラスを使用してダブルクリック編集を制御）
+        self._simple_list = _SimpleItemList()
         self._simple_list.setFont(QFont("Meiryo", 9))
         self._simple_list.setStyleSheet(
             f"QListWidget {{"
@@ -1072,9 +1202,10 @@ class ItemPanel(QFrame):
             f"}}"
             f"QListWidget::item:hover {{ background-color: {design.separator}; }}"
         )
+        self._simple_list.setItemDelegate(_SimpleItemDelegate(self._simple_list))
         self._simple_list.currentRowChanged.connect(self._on_simple_row_changed)
         self._simple_list.itemChanged.connect(self._on_simple_item_changed)
-        self._simple_list.itemDoubleClicked.connect(self._on_simple_item_double_clicked)
+        self._simple_list._dbl_click_handler = self._on_simple_dbl_click
         page_v.addWidget(self._simple_list, stretch=1)
 
         # 下部アクション行 (常時ランダム / 今すぐランダム / 並びリセット / 項目リセット)
@@ -1170,6 +1301,7 @@ class ItemPanel(QFrame):
             f" border: 1px solid {design.separator}; border-radius: 3px; padding: 2px 4px; }}"
         )
         self._simple_name_edit.editingFinished.connect(self._on_simple_name_changed)
+        self._simple_name_edit.textChanged.connect(self._on_simple_name_live)  # i306: 入力途中即時反映
         top_row.addWidget(self._simple_name_edit, stretch=1)
 
         # 確率・当選数表示ラベル（read-only、詳細モードと同スタイル）
@@ -1289,7 +1421,7 @@ class ItemPanel(QFrame):
             f"  padding: 1px 4px; font-size: 8pt;"
             f"}}"
         )
-        self._simple_fixed_spin.editingFinished.connect(self._on_simple_fixed_changed)
+        self._simple_fixed_spin.valueChanged.connect(self._on_simple_fixed_changed)  # i307: editingFinished → valueChanged で即時反映
         self._simple_value_stack.addWidget(self._simple_fixed_spin)  # page 2
 
         prob_row.addWidget(self._simple_value_stack, stretch=1)
@@ -1325,27 +1457,20 @@ class ItemPanel(QFrame):
 
         t05: setItemWidget / 独自 row QWidget を廃止し、QListWidgetItem のみで構成。
         カスタムウィジェット生成・installEventFilter をなくすことで起動安定性を確保。
+        i302: 確率/当選数を UserRole データとして保持し、delegate で右固定列として描画する。
         """
         entries = self._settings_panel._item_entries
-        settings = self._settings_panel._settings
-        show_prob = settings.show_item_prob
-        show_win = settings.show_item_win_count
-
-        probs = SettingsPanel._calc_item_probs(list(entries)) if show_prob else []
+        probs = SettingsPanel._calc_item_probs(list(entries))
 
         self._simple_list.blockSignals(True)
         prev_row = self._simple_list.currentRow()
         self._simple_list.clear()
 
+        s = self._settings_panel._settings
         for i, entry in enumerate(entries):
-            text = entry.text.replace("\r\n", " ").replace("\n", " ")
-            if show_prob and i < len(probs) and probs[i] is not None:
-                text += f"  {probs[i]:.1f}%"
-            if show_win:
-                count = self._simple_win_counts.get(entry.text, 0)
-                if count > 0:
-                    text += f"  {count}"
-            item = QListWidgetItem(text)
+            prob_val = probs[i] if i < len(probs) else None
+            name = entry.text.replace("\r\n", " ").replace("\n", " ")
+            item = QListWidgetItem(name)
             item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -1354,6 +1479,11 @@ class ItemPanel(QFrame):
             item.setCheckState(
                 Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
             )
+            prob_str = f"{prob_val:.1f}%" if s.show_item_prob and prob_val is not None else ""
+            win_count = self._simple_win_counts.get(entry.text, 0)
+            win_str = str(win_count) if s.show_item_win_count and win_count > 0 else ""
+            item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
+            item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
             self._simple_list.addItem(item)
 
         # 選択復元
@@ -1377,27 +1507,24 @@ class ItemPanel(QFrame):
 
         t05: setItemWidget 廃止後はテキストアイテムを直接編集する。
         項目の追加・削除・並び替え後は _refresh_simple_list() を使うこと。
+        i302: 確率/当選数を UserRole データとして更新し、delegate が再描画する。
         """
         entries = self._settings_panel._item_entries
-        settings = self._settings_panel._settings
-        show_prob = settings.show_item_prob
-        show_win = settings.show_item_win_count
-        probs = SettingsPanel._calc_item_probs(list(entries)) if show_prob else []
+        probs = SettingsPanel._calc_item_probs(list(entries))
 
+        s = self._settings_panel._settings
         self._simple_list.blockSignals(True)
         for i in range(self._simple_list.count()):
             if i >= len(entries):
                 break
             item = self._simple_list.item(i)
             entry = entries[i]
-            text = entry.text.replace("\r\n", " ").replace("\n", " ")
-            if show_prob and i < len(probs) and probs[i] is not None:
-                text += f"  {probs[i]:.1f}%"
-            if show_win:
-                count = self._simple_win_counts.get(entry.text, 0)
-                if count > 0:
-                    text += f"  {count}"
-            item.setText(text)
+            prob_val = probs[i] if i < len(probs) else None
+            prob_str = f"{prob_val:.1f}%" if s.show_item_prob and prob_val is not None else ""
+            win_count = self._simple_win_counts.get(entry.text, 0)
+            win_str = str(win_count) if s.show_item_win_count and win_count > 0 else ""
+            item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
+            item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
             item.setCheckState(
                 Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
             )
@@ -1421,10 +1548,13 @@ class ItemPanel(QFrame):
         else:
             self._simple_edit_frame.setVisible(False)
 
-    def _on_simple_item_double_clicked(self, item):
-        """ダブルクリック → 名前編集フィールドにフォーカス。"""
-        self._simple_name_edit.setFocus()
-        self._simple_name_edit.selectAll()
+    def _on_simple_dbl_click(self):
+        """シンプルリストのダブルクリック: テキスト編集モードへ突入。
+
+        i301: テキスト編集アイコン押下と同じ動作を再利用する。
+        """
+        if not self._text_edit_btn.isChecked():
+            self._text_edit_btn.setChecked(True)
 
     def _populate_simple_edit(self, idx: int):
         """指定インデックスの項目データを編集エリアへ反映する。"""
@@ -1433,6 +1563,7 @@ class ItemPanel(QFrame):
             self._simple_edit_frame.setVisible(False)
             return
 
+        self._simple_selected_idx = idx  # i292: 常に内部選択を同期
         entry = entries[idx]
         # シグナルを一時停止してUIを更新
         for w in (self._simple_name_edit, self._simple_enabled_cb,
@@ -1485,6 +1616,11 @@ class ItemPanel(QFrame):
         win_count = self._simple_win_counts.get(entry.text, 0)
         self._simple_win_disp_lbl.setText(str(win_count) if win_count > 0 else "")
 
+        # A: 現在の設定値に基づいてラベル可視性を明示的に再適用
+        s = self._settings_panel._settings
+        self._simple_prob_disp_lbl.setVisible(s.show_item_prob)
+        self._simple_win_disp_lbl.setVisible(s.show_item_win_count)
+
         # 上下ボタンの有効化
         self._simple_up_btn.setEnabled(idx > 0)
         self._simple_down_btn.setEnabled(idx < len(entries) - 1)
@@ -1499,6 +1635,29 @@ class ItemPanel(QFrame):
     def _on_simple_name_changed(self):
         """項目名確定（editingFinished）。"""
         self._apply_simple_entry_change()
+
+    def _on_simple_name_live(self, text: str):
+        """項目名入力途中の即時反映（i306）。"""
+        idx = self._simple_selected_idx
+        entries = self._settings_panel._item_entries
+        if idx < 0 or idx >= len(entries):
+            return
+        name = text.strip()
+        if not name:
+            return
+        entries[idx].text = name
+        # リストのその行の表示テキストを更新
+        item = self._simple_list.item(idx)
+        if item is not None:
+            self._simple_list.blockSignals(True)
+            item.setText(name)
+            self._simple_list.blockSignals(False)
+        # セグメント反映（フルリビルドを防ぐ）
+        self._skip_simple_rebuild = True
+        try:
+            self._settings_panel.notify_entries_changed_from_simple()
+        finally:
+            self._skip_simple_rebuild = False
 
     def _on_simple_enabled_changed(self, checked: bool):
         """有効/無効変更。"""
@@ -1619,6 +1778,8 @@ class ItemPanel(QFrame):
     def _on_text_edit_toggled(self, on: bool):
         if on:
             entries = self._settings_panel._item_entries
+            # i305: 開始時スナップショット保存（キャンセル時ロールバック用）
+            self._text_edit_snapshot = list(entries)
             text = serialize_items_text([e.text for e in entries])
             self._text_edit.blockSignals(True)
             self._text_edit.setPlainText(text)
@@ -1628,6 +1789,14 @@ class ItemPanel(QFrame):
             self._text_edit.setFocus()
         else:
             self._stack.setCurrentIndex(self._display_mode)
+
+    def is_text_edit_mode(self) -> bool:
+        """テキスト編集モード中かどうか。MainWindow の ESC 処理から参照。"""
+        return self._stack.currentIndex() == 2
+
+    def cancel_text_edit(self):
+        """テキスト編集をキャンセルする。MainWindow の ESC 処理から呼ばれる。"""
+        self._on_text_cancel()
 
     def _exit_text_edit_mode(self):
         """テキスト編集モードを終了して元の表示モードへ戻る。"""
@@ -1655,13 +1824,29 @@ class ItemPanel(QFrame):
             self._text_edit.blockSignals(False)
         else:
             self._text_warn_lbl.setVisible(False)
+        self._text_edit_snapshot = None  # i305: 保存確定 → スナップショット破棄
         self._exit_text_edit_mode()
+        # i304: 保存通知が届いた時点ではスタックがテキスト編集ページ(2)だったため
+        # _on_entries_changed の条件(currentIndex==1)を満たせずリビルドされなかった。
+        # モード終了後に明示的に再同期する。
+        if self._display_mode == 1:
+            self._refresh_simple_list()
 
     def _on_text_cancel(self):
+        # i305: スナップショットへロールバック（live preview で変わっていた状態も戻す）
+        if self._text_edit_snapshot is not None:
+            self._settings_panel._item_entries = list(self._text_edit_snapshot)
+            self._settings_panel.notify_entries_changed_from_simple()
+            self._text_edit_snapshot = None
         self._exit_text_edit_mode()
+        if self._display_mode == 1:
+            self._refresh_simple_list()
 
     def _on_text_edit_changed_live(self):
-        """i284: テキスト編集モードでの入力途中即時反映。"""
+        """i305: テキスト編集モードでの入力途中即時プレビュー反映（live update 復活）。
+
+        キャンセル / ESC では _on_text_cancel によりスナップショットへ巻き戻しされる。
+        """
         raw = self._text_edit.toPlainText()
         parsed = parse_items_text(raw)
         if not parsed:
@@ -1780,6 +1965,7 @@ class ManagePanel(QFrame):
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
                  settings_visible: bool = False,
+                 on_drag_bar_changed=None,
                  parent=None):
         super().__init__(parent)
         self._design = design
@@ -1793,7 +1979,8 @@ class ManagePanel(QFrame):
         self._drag_bar = _PanelDragBar(self, design, parent=self)
         outer.addWidget(self._drag_bar)
         # 右クリック → 移動バー表示/非表示
-        install_panel_context_menu(self, self._drag_bar)
+        install_panel_context_menu(self, self._drag_bar,
+                                   on_drag_bar_changed=on_drag_bar_changed)
 
         # コンテンツ
         body = QFrame()
@@ -1968,6 +2155,7 @@ class SettingsPanel(QFrame):
                  design: DesignSettings, *,
                  pattern_names: list[str] | None = None,
                  current_pattern: str = "デフォルト",
+                 on_drag_bar_changed=None,
                  parent=None):
         """操作・設定パネル。
 
@@ -1996,7 +2184,8 @@ class SettingsPanel(QFrame):
         self._drag_bar = _PanelDragBar(self, design, parent=self)
         outer.addWidget(self._drag_bar)
         # 右クリック → 移動バー表示/非表示
-        install_panel_context_menu(self, self._drag_bar)
+        install_panel_context_menu(self, self._drag_bar,
+                                   on_drag_bar_changed=on_drag_bar_changed)
 
         # ── 常設クイック設定行（透過 / 常に最前面）──
         # v0.4.4 cfg_panel の「ウィンドウ表示」グループ相当。
