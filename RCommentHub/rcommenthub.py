@@ -158,20 +158,22 @@ class RCommentHubApp:
         self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
         self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
 
-        # 接続ダイアログ（conn1 専用）
+        # 接続ダイアログ（マルチプラットフォーム対応）
         self._connect_dialog = ConnectDialog(
             master=root,
             extract_fn=_extract_video_id,
-            verify_fn=self._ctrl.verify,
+            verify_fn=self._ctrl.verify_target,
             connect_fn=self._on_connect_fn,
             api_key_getter=lambda: self._sm.api_key,
             topmost_getter=_topmost_getter,
             pos_getter=lambda: self._sm.get("cd_pos", None),
             pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
-            url_getter=lambda: self._sm.get("conn1_url", ""),
-            url_saver=lambda url: self._sm.update({"conn1_url": url}),
+            url_getter=self._get_first_profile_url,
+            url_saver=self._save_first_profile_url,
             auth_checker=lambda: self._ctrl.auth_service.is_authenticated(),
             auth_mode_getter=lambda: self._sm.get("auth_mode", "api_key"),
+            profiles_getter=lambda: self._ctrl.get_profiles(),
+            twitch_auth_checker=lambda: self._ctrl.twitch_auth.is_authenticated(),
         )
 
         # 設定ウィンドウ
@@ -183,6 +185,8 @@ class RCommentHubApp:
             pos_getter=lambda: self._sm.get("sw_pos", None),
             pos_setter=lambda pos: self._sm.update({"sw_pos": pos}),
             auth_service_getter=lambda: self._ctrl.auth_service,
+            twitch_auth_getter=lambda: self._ctrl.twitch_auth,
+            overlay_placement_cb=lambda: self._overlay_win.toggle_placement_mode(),
         )
 
         # デバッグ送信ウィンドウ
@@ -247,41 +251,54 @@ class RCommentHubApp:
     def _open_settings_window(self):
         self._settings_win.open()
 
-    def _on_connect_fn(self, verify_result: dict):
-        """ConnectDialog から呼ばれる接続開始（conn1 + 自動 conn2 試行）"""
-        self._ctrl.connect_with_auto_conn2(verify_result, source_id="conn1")
+    def _get_first_profile_url(self) -> str:
+        """接続ダイアログのプリフィル用: 最初のプロファイルの URL を返す"""
+        profiles = self._ctrl.get_profiles()
+        if profiles:
+            return profiles[0].get("target_url", "")
+        return self._sm.get("conn1_url", "")
+
+    def _save_first_profile_url(self, url: str):
+        """接続ダイアログの確認後: 最初のプロファイルの URL を保存する"""
+        profiles = self._ctrl.get_profiles()
+        if profiles:
+            profiles[0]["target_url"] = url
+            self._sm.save_connection_profiles(profiles)
+        else:
+            self._sm.update({"conn1_url": url})
+
+    def _on_connect_fn(self, profile_id: str, verify_result: dict):
+        """ConnectDialog から呼ばれる接続開始（指定プロファイル + 他の有効プロファイルを自動接続）"""
+        self._ctrl.connect_all_enabled_after(verify_result, profile_id)
 
     def _get_active_sources(self) -> list:
         """
         デバッグ送信ウィンドウ用: 送信先として使える接続の一覧を返す。
 
-        - デバッグモード中: 設定で「有効」になっている接続を全て返す
-          （YouTube への実接続がなくてもデバッグ送信できるため）
-        - 通常接続中: 実際に receiving/connecting/reconnecting な接続のみ返す
+        - デバッグモード中: 設定で「有効」になっているプロファイルを全て返す
+        - 通常接続中: 実際に receiving/connecting/reconnecting なプロファイルのみ返す
         """
-        result = []
+        profiles = self._ctrl.get_profiles()
+        result   = []
+
+        def _oname(p):
+            return p.get("overlay_name", p.get("display_name", p.get("profile_id", "接続")))
 
         if self._ctrl.debug_mode:
-            # デバッグ時は設定で enabled な接続を列挙
-            for conn_id in ("conn1", "conn2"):
-                default_en = (conn_id == "conn1")
-                if self._sm.get(f"{conn_id}_enabled", default_en):
-                    name = self._sm.get(
-                        f"{conn_id}_name",
-                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
-                    )
-                    result.append((conn_id, name))
+            for p in profiles:
+                if p.get("enabled", True):
+                    result.append((p["profile_id"], _oname(p), p.get("platform", "youtube")))
         else:
             statuses = self._ctrl.get_conn_statuses()
-            for conn_id in ("conn1", "conn2"):
-                if statuses.get(conn_id, "disconnected") not in ("disconnected", "error"):
-                    name = self._sm.get(
-                        f"{conn_id}_name",
-                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
-                    )
-                    result.append((conn_id, name))
+            for p in profiles:
+                pid = p["profile_id"]
+                if statuses.get(pid, "disconnected") not in ("disconnected", "error"):
+                    result.append((pid, _oname(p), p.get("platform", "youtube")))
 
-        return result if result else [("conn1", self._sm.get("conn1_name", "接続1"))]
+        if not result and profiles:
+            first = profiles[0]
+            return [(first["profile_id"], _oname(first), first.get("platform", "youtube"))]
+        return result if result else [("profile_0", "接続1", "youtube")]
 
     # --- コントローラ → コーディネーター コールバック ---
 
@@ -335,17 +352,15 @@ class RCommentHubApp:
 
     def _compute_show_source(self) -> bool:
         """接続元ラベルを表示すべきかを返す。
-        ユーザー設定で常時 ON、YouTube 2接続 active、または
-        デバッグモードで接続設定が2つ有効な場合に True。"""
+        ユーザー設定で常時 ON、2プロファイル以上 active、または
+        デバッグモードで有効プロファイルが2件以上の場合に True。"""
         if self._sm.get("cw_show_source", False):
             return True
         if self._ctrl.is_multi_conn_active():
             return True
         if self._ctrl.debug_mode:
-            enabled = sum(
-                1 for conn_id in ("conn1", "conn2")
-                if self._sm.get(f"{conn_id}_enabled", conn_id == "conn1")
-            )
+            profiles = self._ctrl.get_profiles()
+            enabled  = sum(1 for p in profiles if p.get("enabled", True))
             return enabled >= 2
         return False
 

@@ -11,7 +11,7 @@ import datetime
 import uuid
 
 from constants import (
-    INPUT_SOURCE_DEBUG,
+    INPUT_SOURCE_DEBUG, INPUT_SOURCE_TWITCH,
     UI_COLORS, FONT_FAMILY, FONT_SIZE_S, FONT_SIZE_M,
 )
 
@@ -49,16 +49,50 @@ _DEFAULT_PRESETS = [
         "is_member":    True,
         "is_verified":  False,
     },
+    # ── Twitch 擬似プリセット ──────────────────────────────────────────────
+    {
+        "name":         "[Twitch] 視聴者",
+        "channel_id":   "twitch_viewer",
+        "is_owner":     False,
+        "is_moderator": False,
+        "is_member":    False,
+        "is_verified":  False,
+    },
+    {
+        "name":         "[Twitch] チャンネル主",
+        "channel_id":   "twitch_broadcaster",
+        "is_owner":     True,
+        "is_moderator": False,
+        "is_member":    False,
+        "is_verified":  False,
+    },
+    {
+        "name":         "[Twitch] モデレーター",
+        "channel_id":   "twitch_moderator",
+        "is_owner":     False,
+        "is_moderator": True,
+        "is_member":    False,
+        "is_verified":  False,
+    },
+    {
+        "name":         "[Twitch] サブスクライバー",
+        "channel_id":   "twitch_subscriber",
+        "is_owner":     False,
+        "is_moderator": False,
+        "is_member":    True,
+        "is_verified":  False,
+    },
 ]
 
 
 def _build_debug_raw(preset: dict, body: str,
-                     source_id: str = "conn1", source_name: str = "") -> dict:
+                     source_id: str = "conn1", source_name: str = "",
+                     source_type: str = INPUT_SOURCE_DEBUG) -> dict:
     """デバッグコメント用の YouTube API 形式 raw dict を生成する"""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return {
         "id":           f"debug_{uuid.uuid4().hex[:12]}",
-        "_source":      INPUT_SOURCE_DEBUG,
+        "_source":      source_type,
         "_source_id":   source_id,
         "_source_name": source_name,
         "snippet": {
@@ -290,11 +324,17 @@ class DebugSenderWindow:
         """接続先リストを最新の sources_getter から更新する"""
         sources = self._sources_getter()
         if not sources:
-            sources = [("conn1", "接続1")]
-        labels = [f"{name} ({sid})" for sid, name in sources]
+            sources = [("conn1", "接続1", "youtube")]
+        # sources は (source_id, source_name) または (source_id, source_name, platform) のいずれか
+        labels = []
+        self._source_map = {}
+        for entry in sources:
+            sid, name = entry[0], entry[1]
+            platform  = entry[2] if len(entry) > 2 else "youtube"
+            label = f"{name} ({sid})"
+            labels.append(label)
+            self._source_map[label] = (sid, name, platform)
         self._source_cb["values"] = labels
-        # _source_var には表示ラベルを保持し、送信時に source_id へ変換する
-        self._source_map = {f"{name} ({sid})": (sid, name) for sid, name in sources}
         cur = self._source_var.get()
         if cur not in self._source_map:
             self._source_var.set(labels[0])
@@ -352,9 +392,12 @@ class DebugSenderWindow:
         # 接続先を解決
         self._refresh_source_list()
         src_label = self._source_var.get()
-        source_id, source_name = self._source_map.get(src_label, ("conn1", "接続1"))
+        entry = self._source_map.get(src_label, ("conn1", "接続1", "youtube"))
+        source_id, source_name, platform = entry[0], entry[1], entry[2] if len(entry) > 2 else "youtube"
+        source_type = INPUT_SOURCE_TWITCH if platform == "twitch" else INPUT_SOURCE_DEBUG
 
-        raw = _build_debug_raw(preset, body, source_id=source_id, source_name=source_name)
+        raw = _build_debug_raw(preset, body, source_id=source_id, source_name=source_name,
+                               source_type=source_type)
         self._add_comment(raw)
 
         # 送信後に本文クリア

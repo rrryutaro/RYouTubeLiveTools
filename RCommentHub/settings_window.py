@@ -14,28 +14,38 @@ class SettingsWindow:
 
     def __init__(self, master: tk.Tk, settings_mgr, on_settings_changed=None,
                  topmost_getter=None, pos_getter=None, pos_setter=None,
-                 auth_service_getter=None):
+                 auth_service_getter=None, twitch_auth_getter=None,
+                 overlay_placement_cb=None):
         """
         settings_mgr:        SettingsManager インスタンス
         on_settings_changed: 設定保存後に呼ばれるコールバック
-        auth_service_getter: () -> AuthService  認証サービスを返す関数（省略可）
+        auth_service_getter: () -> AuthService         YouTube 認証サービスを返す関数（省略可）
+        twitch_auth_getter:  () -> TwitchAuthService   Twitch 認証サービスを返す関数（省略可）
         """
-        self._master              = master
-        self._sm                  = settings_mgr
-        self._on_changed          = on_settings_changed
-        self._topmost_getter      = topmost_getter or (lambda: False)
-        self._pos_getter          = pos_getter or (lambda: None)
-        self._pos_setter          = pos_setter or (lambda pos: None)
-        self._auth_service_getter = auth_service_getter or (lambda: None)
+        self._master               = master
+        self._sm                   = settings_mgr
+        self._on_changed           = on_settings_changed
+        self._topmost_getter       = topmost_getter or (lambda: False)
+        self._pos_getter           = pos_getter or (lambda: None)
+        self._pos_setter           = pos_setter or (lambda pos: None)
+        self._auth_service_getter  = auth_service_getter or (lambda: None)
+        self._twitch_auth_getter   = twitch_auth_getter or (lambda: None)
+        self._overlay_placement_cb = overlay_placement_cb
         self._win: tk.Toplevel | None = None
+        self._win_ready: bool = False     # 位置保存ガード（初期Configure イベントを無視）
         # OAuth 試行 ID: 認証開始ごとにインクリメントし、古い試行の完了通知を無視するために使う
         self._oauth_attempt_id: int = 0
+        self._twitch_oauth_attempt_id: int = 0
+        # 接続プロファイル編集用の内部状態
+        self._profile_edit_data: list = []   # 編集中のプロファイルリスト（conn tab 用）
 
     def open(self):
         if self._win is not None:
             try:
                 self._load_values()
+                self._win_ready = False
                 self._win.deiconify()
+                self._win.after(300, self._mark_win_ready)
                 self._win.lift()
                 self._win.focus_force()
                 return
@@ -55,6 +65,8 @@ class SettingsWindow:
         else:
             win.geometry("640x700")
         win.wm_attributes("-topmost", self._topmost_getter())
+        self._win_ready = False
+        win.after(300, self._mark_win_ready)
         win.bind("<Configure>", self._on_configure)
 
         # ── タブ ──────────────────────────────────────────────────────────────
@@ -271,6 +283,68 @@ class SettingsWindow:
             fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(4, 0))
 
+        # ── Twitch 認証セクション ──────────────────────────────────────────────
+        self._section(parent, "Twitch 認証")
+
+        tw_frame = tk.Frame(parent, bg=C["bg_main"])
+        tw_frame.pack(fill=tk.X, padx=14, pady=4)
+
+        # クライアントID
+        tk.Label(tw_frame, text="Twitch クライアントID:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]).pack(anchor=tk.W)
+        self._twitch_client_id_var = tk.StringVar(
+            value=self._sm.get("twitch_client_id", ""))
+        tw_id_row = tk.Frame(tw_frame, bg=C["bg_main"])
+        tw_id_row.pack(fill=tk.X, pady=2)
+        self._twitch_id_entry = tk.Entry(
+            tw_id_row, textvariable=self._twitch_client_id_var,
+            bg=C["bg_list"], fg=C["fg_main"],
+            insertbackground=C["fg_main"],
+            font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT,
+        )
+        self._twitch_id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 認証状態ラベル
+        tw_auth = self._twitch_auth_getter()
+        tw_status_text = tw_auth.status_label() if tw_auth else "（Twitch 認証サービス未接続）"
+        self._twitch_status_var = tk.StringVar(value=tw_status_text)
+        tk.Label(tw_frame, textvariable=self._twitch_status_var,
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg="#FFAA66", bg=C["bg_main"], anchor=tk.W,
+                 ).pack(anchor=tk.W, pady=(4, 2))
+
+        tw_btn_row = tk.Frame(tw_frame, bg=C["bg_main"])
+        tw_btn_row.pack(anchor=tk.W)
+
+        self._twitch_auth_btn = tk.Button(
+            tw_btn_row, text="Twitch アカウントで認証する",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg="#2A2A4A", fg="#AAAAFF", activebackground="#3A3A6A",
+            relief=tk.FLAT, padx=12, pady=3,
+            command=self._on_twitch_authenticate,
+        )
+        self._twitch_auth_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        self._twitch_revoke_btn = tk.Button(
+            tw_btn_row, text="認証を解除",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["bg_list"], fg=C["fg_label"],
+            relief=tk.FLAT, padx=8, pady=3,
+            command=self._on_twitch_revoke,
+        )
+        self._twitch_revoke_btn.pack(side=tk.LEFT)
+
+        tk.Label(
+            tw_frame,
+            text="※ Twitch 開発者ポータル (dev.twitch.tv) でアプリ登録し、\n"
+                 "   クライアントIDを取得してください。スコープ: user:read:chat\n"
+                 "※ 認証は Device Code Grant Flow を使用します（redirect URI 登録不要）。\n"
+                 "※ トークンはこの PC 内にのみ保存されます（DPAPI 暗号化）。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
     def _toggle_key_visibility(self):
         self._api_entry.config(show="" if self._show_key_var.get() else "*")
 
@@ -366,74 +440,410 @@ class SettingsWindow:
             auth_svc.revoke()
             self._oauth_status_var.set(auth_svc.status_label())
 
-    # ── 接続設定タブ ──────────────────────────────────────────────────────────
+    # ── Twitch 認証ハンドラ ────────────────────────────────────────────────────
+
+    def _on_twitch_authenticate(self):
+        """Twitch Device Code Grant Flow を非同期で実行する"""
+        import threading as _threading
+        tw_auth = self._twitch_auth_getter()
+        if tw_auth is None:
+            messagebox.showerror("エラー", "Twitch 認証サービスが初期化されていません。",
+                                 parent=self._win)
+            return
+
+        # クライアントIDを保存してから認証
+        client_id = self._twitch_client_id_var.get().strip()
+        if not client_id:
+            messagebox.showerror("エラー", "Twitch クライアントIDを入力してください。",
+                                 parent=self._win)
+            return
+        tw_auth.client_id = client_id
+
+        self._twitch_oauth_attempt_id += 1
+        attempt_id = self._twitch_oauth_attempt_id
+
+        # stop_event: 再認証ボタン押下時に前回の polling を中断する
+        stop_event = _threading.Event()
+        self._twitch_stop_event = stop_event
+
+        self._twitch_status_var.set("デバイスコードを取得中...")
+        try:
+            self._twitch_auth_btn.configure(state=tk.DISABLED)
+            self._twitch_revoke_btn.configure(state=tk.DISABLED)
+        except Exception:
+            pass
+
+        def _on_status(msg):
+            """ワーカースレッドから状態ラベルを更新する"""
+            if self._win:
+                try:
+                    self._win.after(0, lambda m=msg: self._twitch_status_var.set(m))
+                except Exception:
+                    pass
+
+        def _on_device_code(user_code, verify_url):
+            """ワーカースレッドからデバイスコードダイアログを表示する"""
+            if self._win:
+                try:
+                    self._win.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "Twitch 認証 — コードを入力してください",
+                            f"ブラウザが開きます。以下のコードを入力して承認してください。\n\n"
+                            f"  認証コード : {user_code}\n"
+                            f"  認証 URL  : {verify_url}\n\n"
+                            f"ブラウザが自動で開かない場合は上記 URL をコピーして開いてください。",
+                            parent=self._win,
+                        ),
+                    )
+                except Exception:
+                    pass
+
+        def _do_flow():
+            try:
+                tw_auth.run_device_code_flow(
+                    on_status=_on_status,
+                    on_device_code=_on_device_code,
+                    stop_event=stop_event,
+                )
+                success = True
+                err_msg = ""
+            except Exception as e:
+                success = False
+                err_msg = str(e)
+            if self._win:
+                try:
+                    self._win.after(
+                        0, lambda: self._on_twitch_auth_done(attempt_id, success, err_msg, tw_auth)
+                    )
+                except Exception:
+                    pass
+
+        _threading.Thread(target=_do_flow, daemon=True).start()
+
+    def _on_twitch_auth_done(self, attempt_id: int, success: bool, err_msg: str, tw_auth):
+        """Twitch 認証完了後の UI 更新"""
+        if attempt_id != self._twitch_oauth_attempt_id:
+            return
+        try:
+            self._twitch_auth_btn.configure(state=tk.NORMAL)
+            self._twitch_revoke_btn.configure(state=tk.NORMAL)
+        except Exception:
+            pass
+        try:
+            self._twitch_status_var.set(tw_auth.status_label())
+        except Exception:
+            pass
+        if success:
+            messagebox.showinfo("認証完了", "Twitch アカウントでの認証が完了しました。",
+                                parent=self._win)
+        else:
+            messagebox.showerror("認証失敗",
+                                 f"Twitch 認証に失敗しました:\n{err_msg}",
+                                 parent=self._win)
+
+    def _on_twitch_revoke(self):
+        """Twitch トークンを失効させる"""
+        tw_auth = self._twitch_auth_getter()
+        if tw_auth is None:
+            return
+        if messagebox.askyesno("確認", "Twitch 認証を解除してよいですか？",
+                               parent=self._win):
+            tw_auth.revoke()
+            try:
+                self._twitch_status_var.set(tw_auth.status_label())
+            except Exception:
+                pass
+
+    # ── 接続設定タブ（プロファイルリスト管理） ────────────────────────────────
 
     def _build_conn_tab(self, parent):
         C = UI_COLORS
 
-        # スクロール対応フレーム
-        canvas = tk.Canvas(parent, bg=C["bg_main"], highlightthickness=0)
-        sb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=sb.set)
+        self._section(parent, "接続プロファイル")
+
+        tk.Label(
+            parent,
+            text="接続先を「プロファイル」として複数登録できます。\n"
+                 "有効なプロファイルは接続開始時に自動接続されます（2件目以降）。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=14, pady=(4, 0))
+
+        # ── プロファイルリスト ────────────────────────────────────────────────
+        list_frame = tk.Frame(parent, bg=C["bg_main"])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
+
+        self._profile_listbox = tk.Listbox(
+            list_frame,
+            bg=C["bg_list"], fg=C["fg_main"],
+            selectbackground=C["accent"], selectforeground="#FFFFFF",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            relief=tk.FLAT, height=8,
+            activestyle="none",
+        )
+        sb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL,
+                           command=self._profile_listbox.yview)
+        self._profile_listbox.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        inner = tk.Frame(canvas, bg=C["bg_main"])
-        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(
-            scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(
-            inner_id, width=e.width))
+        self._profile_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._profile_listbox.bind("<Double-Button-1>", lambda e: self._on_profile_edit())
 
-        def _conn_block(parent, conn_id, label_text):
-            self._section(parent, label_text)
-            pad = {"padx": 18, "pady": 2}
+        # ── ボタン行 ─────────────────────────────────────────────────────────
+        btn_row = tk.Frame(parent, bg=C["bg_main"])
+        btn_row.pack(anchor=tk.W, padx=14, pady=(0, 4))
 
-            # 有効/無効
-            en_default = True if conn_id == "conn1" else False
-            en_var = tk.BooleanVar(value=self._sm.get(f"{conn_id}_enabled", en_default))
-            setattr(self, f"_{conn_id}_enabled_var", en_var)
-            tk.Checkbutton(parent, text="有効", variable=en_var,
-                           font=(FONT_FAMILY, FONT_SIZE_S),
-                           fg=C["fg_main"], bg=C["bg_main"],
-                           activebackground=C["bg_main"],
-                           selectcolor=C["bg_list"]
-                           ).pack(anchor=tk.W, **pad)
+        tk.Button(
+            btn_row, text="追加",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg="#2A4A2A", fg="#AAFFAA", activebackground="#3A6A3A",
+            relief=tk.FLAT, padx=10, pady=3,
+            command=self._on_profile_add,
+        ).pack(side=tk.LEFT, padx=(0, 4))
 
-            # 表示名
-            r_name = self._labeled_row(parent, "表示名:")
-            name_default = "接続1" if conn_id == "conn1" else "接続2"
-            name_var = tk.StringVar(value=self._sm.get(f"{conn_id}_name", name_default))
-            setattr(self, f"_{conn_id}_name_var", name_var)
-            tk.Entry(r_name, textvariable=name_var, width=20,
-                     bg=C["bg_list"], fg=C["fg_main"],
-                     insertbackground=C["fg_main"],
-                     font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT
-                     ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            btn_row, text="編集",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg=C["accent"], fg="#FFFFFF", activebackground="#4A6A9A",
+            relief=tk.FLAT, padx=10, pady=3,
+            command=self._on_profile_edit,
+        ).pack(side=tk.LEFT, padx=(0, 4))
 
-            # URL / 動画ID
-            tk.Label(parent, text="YouTube URL または 動画ID:",
+        tk.Button(
+            btn_row, text="削除",
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            bg="#4A2A2A", fg="#FFAAAA", activebackground="#6A3A3A",
+            relief=tk.FLAT, padx=10, pady=3,
+            command=self._on_profile_delete,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        tk.Label(
+            parent,
+            text="※ 接続ダイアログからも接続できます。\n"
+                 "※ 2件目以降の有効プロファイルは自動接続されます。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=14, pady=(0, 6))
+
+        # 初期データ読み込み
+        self._refresh_profile_list()
+
+    def _refresh_profile_list(self):
+        """プロファイルリストボックスを設定から再描画する"""
+        from constants import PLATFORM_LABELS
+        self._profile_edit_data = self._sm.get_connection_profiles()
+        lb = self._profile_listbox
+        lb.delete(0, tk.END)
+        for p in self._profile_edit_data:
+            plat   = PLATFORM_LABELS.get(p.get("platform", "youtube"), "YouTube")
+            en     = "✓" if p.get("enabled", True) else "　"
+            name   = p.get("profile_name", p.get("display_name", ""))
+            url    = p.get("target_url", "")
+            url_sh = url[:40] + "…" if len(url) > 40 else url
+            lb.insert(tk.END, f"[{en}] [{plat}] {name}  — {url_sh}")
+
+    def _on_profile_add(self):
+        """新規プロファイルを追加する"""
+        from constants import PLATFORM_LABELS
+        new_id = f"profile_{len(self._profile_edit_data)}"
+        default_name = f"接続{len(self._profile_edit_data) + 1}"
+        new_profile = {
+            "profile_id":   new_id,
+            "platform":     "youtube",
+            "profile_name": default_name,
+            "overlay_name": default_name,
+            "tts_name":     default_name,
+            "display_name": default_name,
+            "enabled":      True,
+            "target_url":   "",
+        }
+        result = self._open_profile_edit_dialog(new_profile)
+        if result is not None:
+            self._profile_edit_data.append(result)
+            self._save_profile_list()
+            self._refresh_profile_list()
+
+    def _on_profile_edit(self):
+        """選択中のプロファイルを編集する"""
+        sel = self._profile_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._profile_edit_data):
+            return
+        profile = dict(self._profile_edit_data[idx])
+        result  = self._open_profile_edit_dialog(profile)
+        if result is not None:
+            self._profile_edit_data[idx] = result
+            self._save_profile_list()
+            self._refresh_profile_list()
+            self._profile_listbox.selection_set(idx)
+
+    def _on_profile_delete(self):
+        """選択中のプロファイルを削除する"""
+        sel = self._profile_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._profile_edit_data):
+            return
+        p    = self._profile_edit_data[idx]
+        name = p.get("profile_name", p.get("display_name", ""))
+        if not messagebox.askyesno("確認", f"「{name}」を削除しますか？",
+                                   parent=self._win):
+            return
+        self._profile_edit_data.pop(idx)
+        self._save_profile_list()
+        self._refresh_profile_list()
+
+    def _save_profile_list(self):
+        """編集中のプロファイルリストを設定に保存する"""
+        self._sm.save_connection_profiles(self._profile_edit_data)
+
+    def _open_profile_edit_dialog(self, profile: dict) -> dict | None:
+        """
+        プロファイル編集ダイアログを開く。
+        OK なら更新済みプロファイル dict を返す。キャンセルなら None。
+        """
+        from constants import PLATFORM_LABELS
+        C = UI_COLORS
+
+        dlg = tk.Toplevel(self._win or self._master)
+        dlg.title("接続プロファイルを編集")
+        dlg.configure(bg=C["bg_main"])
+        dlg.resizable(False, False)
+        dlg.geometry("540x380")
+        dlg.grab_set()
+
+        result_holder: list = [None]
+
+        def _labeled(parent, text):
+            tk.Label(parent, text=text,
                      font=(FONT_FAMILY, FONT_SIZE_S),
-                     fg=C["fg_label"], bg=C["bg_main"]
-                     ).pack(anchor=tk.W, padx=18, pady=(4, 0))
-            url_var = tk.StringVar(value=self._sm.get(f"{conn_id}_url", ""))
-            setattr(self, f"_{conn_id}_url_var", url_var)
-            tk.Entry(parent, textvariable=url_var,
+                     fg=C["fg_label"], bg=C["bg_main"],
+                     width=14, anchor=tk.E).pack(side=tk.LEFT, padx=(0, 6))
+
+        def _row(parent):
+            f = tk.Frame(parent, bg=C["bg_main"])
+            f.pack(fill=tk.X, padx=16, pady=4)
+            return f
+
+        def _entry(parent, var, width=26):
+            tk.Entry(parent, textvariable=var,
                      bg=C["bg_list"], fg=C["fg_main"],
                      insertbackground=C["fg_main"],
-                     font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT
-                     ).pack(fill=tk.X, padx=18, pady=(0, 4))
+                     font=(FONT_FAMILY, FONT_SIZE_S), relief=tk.FLAT, width=width
+                     ).pack(side=tk.LEFT)
 
-        _conn_block(inner, "conn1", "接続1（メイン）")
-        tk.Label(inner, text="※ 接続1は「接続」ダイアログからも URL を入力できます。",
-                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"], wraplength=380, justify=tk.LEFT
-                 ).pack(anchor=tk.W, padx=18, pady=(0, 6))
+        # プラットフォーム
+        r1 = _row(dlg)
+        _labeled(r1, "プラットフォーム:")
+        plat_var = tk.StringVar(value=profile.get("platform", "youtube"))
+        plat_cb = ttk.Combobox(
+            r1, textvariable=plat_var,
+            values=list(PLATFORM_LABELS.keys()),
+            state="readonly", width=12,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+        )
+        plat_cb.pack(side=tk.LEFT)
+        plat_label_var = tk.StringVar(
+            value=PLATFORM_LABELS.get(profile.get("platform", "youtube"), "YouTube"))
+        tk.Label(r1, textvariable=plat_label_var,
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=4)
 
-        _conn_block(inner, "conn2", "接続2（サブ）")
-        tk.Label(inner, text="※ 接続2は接続1が開始されると自動的に接続を試みます。",
+        def _on_plat_change(*_):
+            plat_label_var.set(PLATFORM_LABELS.get(plat_var.get(), plat_var.get()))
+            url_hint.set("YouTube URL または 動画ID" if plat_var.get() == "youtube"
+                         else "Twitch URL またはチャンネル名")
+        plat_var.trace_add("write", _on_plat_change)
+
+        # ─── 名称 3 分離 ──────────────────────────────────────────────────────
+        r_pname = _row(dlg)
+        _labeled(r_pname, "プロファイル名:")
+        pname_var = tk.StringVar(value=profile.get("profile_name",
+                                                    profile.get("display_name", "")))
+        _entry(r_pname, pname_var)
+        tk.Label(r_pname, text="管理用",
                  font=(FONT_FAMILY, FONT_SIZE_S - 1),
-                 fg=C["fg_label"], bg=C["bg_main"], wraplength=380, justify=tk.LEFT
-                 ).pack(anchor=tk.W, padx=18, pady=(0, 6))
+                 fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=(6, 0))
+
+        r_oname = _row(dlg)
+        _labeled(r_oname, "配信用表示名:")
+        oname_var = tk.StringVar(value=profile.get("overlay_name",
+                                                    profile.get("display_name", "")))
+        _entry(r_oname, oname_var)
+        tk.Label(r_oname, text="配信用Overlay・接続元ラベル",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=(6, 0))
+
+        r_tname = _row(dlg)
+        _labeled(r_tname, "読み上げ名:")
+        tname_var = tk.StringVar(value=profile.get("tts_name",
+                                                    profile.get("display_name", "")))
+        _entry(r_tname, tname_var)
+        tk.Label(r_tname, text="TTS 接続元名読み上げ",
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"]).pack(side=tk.LEFT, padx=(6, 0))
+
+        # 有効/無効
+        r3 = _row(dlg)
+        _labeled(r3, "")
+        en_var = tk.BooleanVar(value=profile.get("enabled", True))
+        tk.Checkbutton(r3, text="有効（自動接続対象）",
+                       variable=en_var,
+                       font=(FONT_FAMILY, FONT_SIZE_S),
+                       fg=C["fg_main"], bg=C["bg_main"],
+                       activebackground=C["bg_main"],
+                       selectcolor=C["bg_list"]).pack(side=tk.LEFT)
+
+        # URL
+        r4 = _row(dlg)
+        url_hint = tk.StringVar(
+            value="YouTube URL または 動画ID" if profile.get("platform", "youtube") == "youtube"
+            else "Twitch URL またはチャンネル名")
+        _labeled(r4, "接続先 URL:")
+        url_var = tk.StringVar(value=profile.get("target_url", ""))
+        _entry(r4, url_var, width=36)
+
+        # ヒントラベル
+        tk.Label(dlg, textvariable=url_hint,
+                 font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                 fg=C["fg_label"], bg=C["bg_main"]
+                 ).pack(anchor=tk.W, padx=16 + 14 * 7, pady=(0, 4))
+
+        # ボタン行
+        btn_row = tk.Frame(dlg, bg=C["bg_main"])
+        btn_row.pack(pady=10)
+
+        def _ok():
+            pname = pname_var.get().strip() or "接続"
+            result_holder[0] = {
+                "profile_id":   profile.get("profile_id", "profile_new"),
+                "platform":     plat_var.get(),
+                "profile_name": pname,
+                "overlay_name": oname_var.get().strip() or pname,
+                "tts_name":     tname_var.get().strip() or pname,
+                "display_name": pname,   # 後方互換
+                "enabled":      en_var.get(),
+                "target_url":   url_var.get().strip(),
+            }
+            dlg.destroy()
+
+        tk.Button(btn_row, text="OK",
+                  font=(FONT_FAMILY, FONT_SIZE_S),
+                  bg=C["accent"], fg="#FFFFFF",
+                  relief=tk.FLAT, padx=16, pady=4,
+                  command=_ok).pack(side=tk.LEFT, padx=4)
+
+        tk.Button(btn_row, text="キャンセル",
+                  font=(FONT_FAMILY, FONT_SIZE_S),
+                  bg=C["bg_list"], fg=C["fg_label"],
+                  relief=tk.FLAT, padx=12, pady=4,
+                  command=dlg.destroy).pack(side=tk.LEFT, padx=4)
+
+        dlg.wait_window()
+        return result_holder[0]
 
     # ── 統合表示設定タブ（監視用 / 配信用 サイドバイサイド比較） ─────────────
 
@@ -668,7 +1078,27 @@ class SettingsWindow:
                  font=(FONT_FAMILY, FONT_SIZE_S - 1),
                  fg=C["fg_label"], bg=C["bg_main"],
                  wraplength=560, justify=tk.LEFT
-                 ).pack(anchor=tk.W, padx=14, pady=(4, 8))
+                 ).pack(anchor=tk.W, padx=14, pady=(4, 4))
+
+        # ── 配信用 Overlay 配置確認モード ────────────────────────────────────
+        if self._overlay_placement_cb:
+            placement_row = tk.Frame(inner, bg=C["bg_main"])
+            placement_row.pack(anchor=tk.W, padx=14, pady=(0, 8))
+            tk.Button(
+                placement_row,
+                text="配信用 Overlay — 配置確認モード",
+                font=(FONT_FAMILY, FONT_SIZE_S),
+                bg="#2A4A5A", fg="#88CCFF",
+                activebackground="#3A5A7A",
+                relief=tk.FLAT, padx=10, pady=3,
+                command=self._overlay_placement_cb,
+            ).pack(side=tk.LEFT)
+            tk.Label(
+                placement_row,
+                text="※ 一時的に可視化します。本番配信には影響しません。",
+                font=(FONT_FAMILY, FONT_SIZE_S - 1),
+                fg=C["fg_label"], bg=C["bg_main"],
+            ).pack(side=tk.LEFT, padx=(8, 0))
 
     def _copy_monitor_to_overlay(self):
         """監視用の設定を配信用へコピーする"""
@@ -813,6 +1243,12 @@ class SettingsWindow:
                                      parent=self._win)
                 return False
 
+        # Twitch クライアントID 保存
+        twitch_id = self._twitch_client_id_var.get().strip()
+        tw_auth = self._twitch_auth_getter()
+        if tw_auth is not None and twitch_id != tw_auth.client_id:
+            tw_auth.client_id = twitch_id
+
         updates = {
             "auth_mode": self._auth_mode_var.get(),
             "display_rows":       int(self._display_rows_var.get()),
@@ -837,13 +1273,6 @@ class SettingsWindow:
             "tts_read_source_name": self._tts_read_source_var.get(),
             "tts_speed":          int(self._tts_speed_var.get()),
             "tts_interval_sec":   float(self._tts_interval_var.get()),
-            # 接続設定
-            "conn1_enabled":      self._conn1_enabled_var.get(),
-            "conn1_name":         self._conn1_name_var.get().strip(),
-            "conn1_url":          self._conn1_url_var.get().strip(),
-            "conn2_enabled":      self._conn2_enabled_var.get(),
-            "conn2_name":         self._conn2_name_var.get().strip(),
-            "conn2_url":          self._conn2_url_var.get().strip(),
             # Overlay
             "overlay_enabled":         self._overlay_enabled_var.get(),
             "overlay_display_mode":    self._overlay_mode_var.get(),
@@ -870,8 +1299,12 @@ class SettingsWindow:
         if self._apply_settings():
             self._close()
 
+    def _mark_win_ready(self):
+        """初期 Configure イベントを無視するためのフラグをセット"""
+        self._win_ready = True
+
     def _on_configure(self, event):
-        if self._win and event.widget is self._win:
+        if self._win and self._win_ready and event.widget is self._win:
             self._pos_setter([self._win.winfo_x(), self._win.winfo_y()])
 
     def _close(self):
@@ -927,13 +1360,12 @@ class SettingsWindow:
         self._overlay_show_icon_var.set(self._sm.get("overlay_show_icon", True))
         self._ov_fn_var.set(str(self._sm.get("overlay_font_size_name", 9)))
         self._ov_fb_var.set(str(self._sm.get("overlay_font_size_body", 11)))
-        # 接続設定
-        self._conn1_enabled_var.set(self._sm.get("conn1_enabled", True))
-        self._conn1_name_var.set(self._sm.get("conn1_name", "接続1"))
-        self._conn1_url_var.set(self._sm.get("conn1_url", ""))
-        self._conn2_enabled_var.set(self._sm.get("conn2_enabled", False))
-        self._conn2_name_var.set(self._sm.get("conn2_name", "接続2"))
-        self._conn2_url_var.set(self._sm.get("conn2_url", ""))
+        # Twitch クライアントID
+        if hasattr(self, "_twitch_client_id_var"):
+            self._twitch_client_id_var.set(self._sm.get("twitch_client_id", ""))
+        # 接続設定プロファイルリスト
+        if hasattr(self, "_profile_listbox"):
+            self._refresh_profile_list()
 
     # ── ヘルパー ──────────────────────────────────────────────────────────────
 

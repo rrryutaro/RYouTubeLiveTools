@@ -77,9 +77,10 @@ CONN_STATUS_COLORS = {
 
 # ─── 入力ソース ──────────────────────────────────────────────────────────────
 INPUT_SOURCE_YOUTUBE = "live_youtube"
+INPUT_SOURCE_TWITCH  = "live_twitch"
 INPUT_SOURCE_DEBUG   = "debug_manual"
 
-# ─── 接続ソース定義 ──────────────────────────────────────────────────────────
+# ─── 接続ソース定義（後方互換用 — 新規コードは connection_profiles を使うこと）──
 CONN_IDS = ("conn1", "conn2")
 
 SOURCE_COLORS = {
@@ -90,6 +91,59 @@ SOURCE_COLORS = {
 SOURCE_DEFAULT_NAMES = {
     "conn1": "接続1",
     "conn2": "接続2",
+}
+
+# ─── 接続プロファイル カラーパレット ─────────────────────────────────────────
+# インデックス順に接続プロファイルへ割り当てる
+SOURCE_COLOR_PALETTE = [
+    "#88AAFF",   # 0: 青系
+    "#FFBB44",   # 1: 橙系
+    "#44DD88",   # 2: 緑系
+    "#FF88CC",   # 3: ピンク系
+    "#88DDFF",   # 4: シアン系
+]
+
+
+def get_profile_color(profile_id: str, profiles: list) -> str:
+    """
+    プロファイルIDに対応する表示色を返す。
+    プロファイルリスト内のインデックスから色パレットで決定する。
+    """
+    for i, p in enumerate(profiles):
+        if p.get("profile_id") == profile_id:
+            return SOURCE_COLOR_PALETTE[i % len(SOURCE_COLOR_PALETTE)]
+    return "#AAAAAA"
+
+
+def get_source_color(source_id: str) -> str:
+    """
+    source_id に対応する表示色を返す（profiles リスト不要版）。
+
+    旧形式 (conn1/conn2) および新形式 (profile_N) の両方に対応する。
+    インデックスが取れない場合はパレットの先頭色を返す。
+    """
+    # 旧形式
+    if source_id in SOURCE_COLORS:
+        return SOURCE_COLORS[source_id]
+    # 新形式 "profile_N"
+    if source_id.startswith("profile_"):
+        try:
+            idx = int(source_id.split("_", 1)[1])
+            return SOURCE_COLOR_PALETTE[idx % len(SOURCE_COLOR_PALETTE)]
+        except (IndexError, ValueError):
+            pass
+    # それ以外は固定ハッシュでパレットを選ぶ
+    idx = hash(source_id) % len(SOURCE_COLOR_PALETTE)
+    return SOURCE_COLOR_PALETTE[idx]
+
+
+# ─── プラットフォーム定義 ────────────────────────────────────────────────────
+PLATFORM_YOUTUBE = "youtube"
+PLATFORM_TWITCH  = "twitch"
+
+PLATFORM_LABELS = {
+    PLATFORM_YOUTUBE: "YouTube",
+    PLATFORM_TWITCH:  "Twitch",
 }
 
 # ─── 配信状態メッセージ ──────────────────────────────────────────────────────

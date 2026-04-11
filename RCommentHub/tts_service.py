@@ -202,8 +202,10 @@ class TTSService:
         source_prefix = ""
         if self._read_source_name:
             from constants import SOURCE_DEFAULT_NAMES
-            sid   = getattr(item, "source_id",   "conn1")
-            sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(sid, sid)
+            sid   = getattr(item, "source_id",       "conn1")
+            sname = (getattr(item, "tts_source_name", "")
+                     or getattr(item, "source_name",  "")
+                     or SOURCE_DEFAULT_NAMES.get(sid, sid))
             if sname:
                 source_prefix = f"{sname}、"
 

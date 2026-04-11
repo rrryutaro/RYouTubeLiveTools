@@ -15,10 +15,11 @@ from auth_service import AuthService, AUTH_MODE_OAUTH, AUTH_MODE_API_KEY
 from user_manager import UserManager
 from filter_rules import FilterRuleManager
 from session_logger import SessionLogger
+from source_adapter import YouTubeSourceAdapter
 from constants import (
     EVENT_TYPE_LABELS, PROC_STATUS_LABELS,
     ROLE_OWNER, ROLE_MODERATOR, ROLE_MEMBER, ROLE_VERIFIED,
-    SOURCE_DEFAULT_NAMES,
+    SOURCE_DEFAULT_NAMES, get_profile_color,
 )
 
 
@@ -87,9 +88,10 @@ class CommentItem:
 
         self.body = self._extract_body(snippet)
 
-        self.source: str      = raw.get("_source", "live_youtube")
-        self.source_id: str   = raw.get("_source_id", "conn1")
-        self.source_name: str = raw.get("_source_name", "")
+        self.source: str          = raw.get("_source", "live_youtube")
+        self.source_id: str       = raw.get("_source_id", "conn1")
+        self.source_name: str     = raw.get("_source_name", "")
+        self.tts_source_name: str = raw.get("_tts_source_name", self.source_name)
 
         self.author_display_name_tts: str  = make_tts_name(self.author_name)
         self.filter_match:            bool  = False
@@ -177,7 +179,7 @@ class CommentItem:
 class CommentController:
     """
     コメント処理の中核。UI 非依存のビジネスロジック層。
-    v0.2.0: 固定2接続（conn1/conn2）対応。単一接続互換を維持。
+    v0.3.x: 接続プロファイル配列管理 + SourceAdapter 層 (YouTube / Twitch 対応)
     """
     def __init__(self, root, settings_mgr, base_dir: str):
         self._root = root   # tk.Tk: root.after() によるスレッドセーフ実行用
@@ -188,7 +190,7 @@ class CommentController:
         self._seq_counter  = 0
         self._msg_id_set:  set  = set()   # "{source_id}:{msg_id}" 形式で重複排除
 
-        # 認証サービス（OAuth / API キー二系統）
+        # 認証サービス（YouTube OAuth / API キー二系統）
         import os
         self._base_dir = base_dir
         token_path = os.path.join(base_dir, "token.json")
@@ -197,9 +199,13 @@ class CommentController:
         secrets_loaded = self._auth_service.try_load_client_secrets_from_dir(base_dir)
         self._apply_auth_from_settings()
         if secrets_loaded:
-            self._pending_log = f"[認証] client_secrets.json をロードしました"
+            self._pending_log = "[認証] client_secrets.json をロードしました"
         else:
             self._pending_log = None
+
+        # Twitch 認証サービス
+        from twitch_auth_service import TwitchAuthService
+        self._twitch_auth = TwitchAuthService(settings_mgr)
 
         # サービス
         self._user_mgr    = UserManager()
@@ -210,20 +216,16 @@ class CommentController:
         if saved_rules:
             self._filter_mgr.from_list(saved_rules)
 
-        # 接続クライアント（固定2枠）
-        self._yt_clients: dict = {
-            "conn1": YouTubeClient(),
-            "conn2": YouTubeClient(),
-        }
+        # 接続アダプタ（profile_id -> SourceAdapter）
+        self._adapters: dict = {}
 
-        # 接続状態（per-source）
-        self._conn_statuses: dict = {
-            "conn1": "disconnected",
-            "conn2": "disconnected",
-        }
-        self._stream_infos: dict = {}   # source_id -> {title, video_id, chat_id, source_name}
+        # 接続状態（profile_id -> status）
+        self._conn_statuses: dict = {}
 
-        # 旧互換: 単一接続時に参照される情報（conn1 の値を反映）
+        # ストリーム情報（profile_id -> {title, video_id, chat_id, source_name}）
+        self._stream_infos: dict = {}
+
+        # 旧互換: 最初に接続したプロファイルの情報を反映
         self._stream_status  = "unknown"
         self._video_title    = ""
         self._video_id       = ""
@@ -233,6 +235,8 @@ class CommentController:
         # デバッグ
         self._debug_mode           = False
         self._debug_session_active = False
+        # デバッグ用に固定の conn1 ステータスを保持（旧互換）
+        self._conn_statuses["conn1"] = "disconnected"
 
         # UI コールバックリスト
         self._on_comment_added_cbs: list = []   # (item) -> None
@@ -248,6 +252,10 @@ class CommentController:
     @property
     def auth_service(self) -> AuthService:
         return self._auth_service
+
+    @property
+    def twitch_auth(self):
+        return self._twitch_auth
 
     @property
     def user_mgr(self): return self._user_mgr
@@ -271,6 +279,10 @@ class CommentController:
         """per-source 接続状態を返す"""
         return dict(self._conn_statuses)
 
+    def get_profiles(self) -> list:
+        """現在の接続プロファイルリストを返す"""
+        return self._sm.get_connection_profiles()
+
     def is_any_connected(self) -> bool:
         """いずれかの接続が active（receiving/connecting/reconnecting）なら True"""
         return any(
@@ -279,11 +291,12 @@ class CommentController:
         )
 
     def is_multi_conn_active(self) -> bool:
-        """2接続とも active なら True"""
-        return all(
-            self._conn_statuses[sid] not in ("disconnected", "error")
-            for sid in ("conn1", "conn2")
+        """2つ以上のプロファイルが active なら True"""
+        active_count = sum(
+            1 for s in self._conn_statuses.values()
+            if s not in ("disconnected", "error", "debug")
         )
+        return active_count >= 2
 
     # コールバック登録
     def on_comment_added(self, cb): self._on_comment_added_cbs.append(cb)
@@ -336,10 +349,25 @@ class CommentController:
 
     # サービス委譲
     def verify(self, video_id: str, api_key: str = ""):
-        """動画ID の確認。AuthService を使用する（api_key は後方互換用）。"""
-        client = self._yt_clients["conn1"]
+        """YouTube 動画IDの確認（後方互換）。AuthService を使用する。"""
+        client = YouTubeClient()
         client.set_auth_service(self._auth_service)
         return client.verify(video_id, api_key)
+
+    def verify_target(self, platform: str, url: str) -> dict:
+        """
+        プラットフォームを指定して接続先を検証する。
+        platform: "youtube" | "twitch"
+        url: YouTube URL / Twitch チャンネル名 等
+        """
+        if platform == "youtube":
+            return self.verify(_extract_video_id(url))
+        elif platform == "twitch":
+            from twitch_client import TwitchSourceAdapter
+            adapter = TwitchSourceAdapter(self._twitch_auth)
+            return adapter.verify_target(url)
+        else:
+            raise ValueError(f"未対応プラットフォーム: {platform}")
 
     def speak_item(self, item):
         return self._tts.speak_item(item)
@@ -404,28 +432,36 @@ class CommentController:
 
     # ─── 接続管理 ─────────────────────────────────────────────────────────────
 
-    def connect(self, verify_result: dict, source_id: str = "conn1"):
+    def connect_profile(self, profile_id: str, verify_result: dict):
         """
-        1つの接続を開始する。
-        verify_result には live_chat_id / title / video_id が含まれる。
-        _source_name が含まれていればそれを source_name として使用。
+        指定プロファイルの接続を開始する。
+        verify_result には title / live_chat_id / video_id 等が含まれる。
         """
-        chat_id     = verify_result["live_chat_id"]
-        title       = verify_result.get("title", "")
-        video_id    = verify_result.get("video_id", "")
+        profiles    = self._sm.get_connection_profiles()
+        profile     = next((p for p in profiles if p["profile_id"] == profile_id), None)
+        platform    = profile.get("platform", "youtube") if profile else "youtube"
         source_name = (
             verify_result.get("_source_name", "")
-            or self._sm.get(f"{source_id}_name", "")
-            or SOURCE_DEFAULT_NAMES.get(source_id, source_id)
+            or (profile.get("overlay_name", profile.get("display_name", "")) if profile else "")
+            or profile_id
         )
+        tts_source_name = (
+            verify_result.get("_tts_source_name", "")
+            or (profile.get("tts_name", profile.get("display_name", "")) if profile else "")
+            or source_name
+        )
+        title    = verify_result.get("title", "")
+        video_id = verify_result.get("video_id", verify_result.get("broadcaster_id", ""))
+        chat_id  = verify_result.get("live_chat_id", "")
 
-        self._stream_infos[source_id] = {
+        self._stream_infos[profile_id] = {
             "title": title, "video_id": video_id,
             "chat_id": chat_id, "source_name": source_name,
+            "platform": platform,
         }
 
-        # conn1 の場合は旧互換フィールドも更新し、ストリーム情報を通知
-        if source_id == "conn1":
+        # 最初のアクティブ接続の場合はセッションログとストリーム情報を更新
+        if not self.is_any_connected():
             self._debug_session_active = False
             self._notify_stream_info(title, video_id, chat_id, "live")
             try:
@@ -439,90 +475,132 @@ class CommentController:
             for cb in self._on_user_cleared_cbs:
                 cb()
 
-        self._notify_log(f"[{source_id}] 接続確認 OK — {title} ({source_name}) / chatID: {chat_id}")
+        plat_label = "Twitch" if platform == "twitch" else "YouTube"
+        self._notify_log(
+            f"[{profile_id}] 接続確認 OK — {title} ({source_name}) [{plat_label}]"
+        )
         for cb in self._on_connect_ui_cbs:
             cb(False, True, f"受信中... ({source_name})", "#88FF88")
 
-        self._notify_source_status(source_id, "connecting")
-        client = self._yt_clients[source_id]
-        client.set_auth_service(self._auth_service)
-        client.start(
-            live_chat_id=chat_id,
-            on_comment=lambda raw, sid=source_id, sname=source_name: self._on_yt_comment(raw, sid, sname),
-            on_status=lambda status, msg, sid=source_id: self._on_yt_status(sid, status, msg),
+        self._notify_source_status(profile_id, "connecting")
+
+        # プロファイルに対応するアダプタを生成
+        adapter = self._create_adapter(platform)
+        adapter.set_verify_result(verify_result) if hasattr(adapter, "set_verify_result") else None
+        if platform == "twitch":
+            # Twitch は verify_result を直接アダプタに保持させる
+            adapter._verify_result = verify_result
+        self._adapters[profile_id] = adapter
+
+        def _on_comment(raw, pid=profile_id, sname=source_name, tname=tts_source_name):
+            raw["_source_id"]       = pid
+            raw["_source_name"]     = sname
+            raw["_tts_source_name"] = tname
+            self._root.after(0, lambda r=raw: self.add_comment(r))
+
+        def _on_status(status, msg, pid=profile_id):
+            self._root.after(0, lambda: self._on_adapter_status(pid, status, msg))
+
+        adapter.connect(
+            on_comment=_on_comment,
+            on_status=_on_status,
             on_fallback_confirm=self._ask_fallback_permission,
         )
 
+    def _create_adapter(self, platform: str):
+        """プラットフォームに対応するアダプタを生成する"""
+        if platform == "twitch":
+            from twitch_client import TwitchSourceAdapter
+            return TwitchSourceAdapter(self._twitch_auth)
+        else:
+            return YouTubeSourceAdapter(self._auth_service)
+
+    def connect(self, verify_result: dict, source_id: str = "conn1"):
+        """
+        後方互換メソッド。source_id を profile_id として connect_profile を呼ぶ。
+        """
+        self.connect_profile(source_id, verify_result)
+
     def connect_with_auto_conn2(self, verify_result: dict, source_id: str = "conn1"):
         """
-        conn1 を接続した後、conn2 が設定済みなら自動でバックグラウンド接続も試みる。
-        rcommenthub.py から呼ばれる。
+        後方互換メソッド。
+        指定プロファイルを接続し、他の enabled プロファイルを自動接続する。
         """
-        self.connect(verify_result, source_id)
+        self.connect_all_enabled_after(verify_result, source_id)
 
-        other_id      = "conn2" if source_id == "conn1" else "conn1"
-        other_url     = self._sm.get(f"{other_id}_url", "").strip()
-        other_enabled = self._sm.get(f"{other_id}_enabled", False)
+    def connect_all_enabled_after(self, verify_result: dict, profile_id: str):
+        """
+        指定プロファイルを接続し、他の enabled なプロファイルを自動接続する。
+        """
+        self.connect_profile(profile_id, verify_result)
 
-        if not (other_enabled and other_url):
-            return
+        profiles = self._sm.get_connection_profiles()
+        for p in profiles:
+            pid = p.get("profile_id", "")
+            if pid == profile_id:
+                continue
+            if not p.get("enabled", False):
+                continue
+            url = p.get("target_url", "").strip()
+            if not url:
+                continue
+            self._auto_connect_profile(p)
 
-        other_name = (
-            self._sm.get(f"{other_id}_name", "")
-            or SOURCE_DEFAULT_NAMES.get(other_id, other_id)
-        )
-        self._notify_log(f"[{other_id}] 自動接続を開始します: {other_url}")
+    def _auto_connect_profile(self, profile: dict):
+        """バックグラウンドで1プロファイルを自動接続する"""
+        profile_id = profile["profile_id"]
+        platform   = profile.get("platform", "youtube")
+        url        = profile.get("target_url", "").strip()
+        name     = profile.get("overlay_name", profile.get("display_name", profile_id))
+        tts_name = profile.get("tts_name",    profile.get("display_name", name))
+        self._notify_log(f"[{profile_id}] 自動接続を開始します: {url} ({platform})")
 
-        def _auto_connect():
+        def _work():
             try:
-                video_id = _extract_video_id(other_url)
-                result = self.verify(video_id)
-                result["_source_name"] = other_name
-                self._root.after(0, lambda r=result: self.connect(r, other_id))
+                result = self.verify_target(platform, url)
+                result["_source_name"]    = name
+                result["_tts_source_name"] = tts_name
+                self._root.after(0, lambda r=result: self.connect_profile(profile_id, r))
             except Exception as e:
                 self._root.after(
                     0,
-                    lambda msg=str(e): self._notify_log(f"[{other_id}] 自動接続失敗: {msg}")
+                    lambda msg=str(e): self._notify_log(f"[{profile_id}] 自動接続失敗: {msg}")
                 )
 
-        threading.Thread(target=_auto_connect, daemon=True).start()
+        threading.Thread(target=_work, daemon=True).start()
 
     def disconnect(self):
-        """全接続のポーリングを停止する"""
-        for client in self._yt_clients.values():
-            client.stop()
+        """全接続のアダプタを停止する"""
+        for adapter in self._adapters.values():
+            try:
+                adapter.disconnect()
+            except Exception:
+                pass
         self._notify_log("[停止] 全接続の受信停止リクエスト送信")
 
-    def _on_yt_comment(self, raw: dict, source_id: str, source_name: str):
-        raw["_source_id"]   = source_id
-        raw["_source_name"] = source_name
-        self._root.after(0, lambda r=raw: self.add_comment(r))
+    def _on_adapter_status(self, profile_id: str, status: str, message: str):
+        """アダプタからの状態変化通知を処理する（メインスレッドで実行）"""
+        self._notify_source_status(profile_id, status)
+        self._notify_log(f"[{profile_id}] {message}")
 
-    def _on_yt_status(self, source_id: str, status: str, message: str):
-        def _apply():
-            self._notify_source_status(source_id, status)
-            self._notify_log(f"[{source_id}] {message}")
-
-            if status in ("disconnected", "error"):
-                color = "#FF6666" if status == "error" else "#AAAAAA"
-                # 他のすべての接続も非active になったらUIを停止状態にする
-                all_done = all(
-                    s in ("disconnected", "error")
-                    for s in self._conn_statuses.values()
-                )
-                if all_done:
-                    for cb in self._on_connect_ui_cbs:
-                        cb(True, False, message, color)
-                    if self._session_log.is_open:
-                        self._session_log.close(user_snapshot=self._user_mgr.snapshot())
-                        self._notify_log("[セッションログ] 保存完了")
-            elif status == "reconnecting":
+        if status in ("disconnected", "error"):
+            color = "#FF6666" if status == "error" else "#AAAAAA"
+            all_done = all(
+                s in ("disconnected", "error")
+                for s in self._conn_statuses.values()
+            )
+            if all_done:
                 for cb in self._on_connect_ui_cbs:
-                    cb(None, None, f"[{source_id}] {message}", "#FFCC44")
-            elif status == "receiving":
-                for cb in self._on_connect_ui_cbs:
-                    cb(None, None, f"[{source_id}] 受信中", "#88FF88")
-        self._root.after(0, _apply)
+                    cb(True, False, message, color)
+                if self._session_log.is_open:
+                    self._session_log.close(user_snapshot=self._user_mgr.snapshot())
+                    self._notify_log("[セッションログ] 保存完了")
+        elif status == "reconnecting":
+            for cb in self._on_connect_ui_cbs:
+                cb(None, None, f"[{profile_id}] {message}", "#FFCC44")
+        elif status == "receiving":
+            for cb in self._on_connect_ui_cbs:
+                cb(None, None, f"[{profile_id}] 受信中", "#88FF88")
 
     # ─── fallback 許可確認（ワーカースレッドからブロック呼び出し） ────────────
 
@@ -609,8 +687,11 @@ class CommentController:
         self._sm.update({"filter_rules": self._filter_mgr.to_list()})
         if self._session_log.is_open:
             self._session_log.close(user_snapshot=self._user_mgr.snapshot())
-        for client in self._yt_clients.values():
-            client.stop()
+        for adapter in self._adapters.values():
+            try:
+                adapter.disconnect()
+            except Exception:
+                pass
         self._sm.update(cfg)
 
     # ─── 内部通知 ─────────────────────────────────────────────────────────────

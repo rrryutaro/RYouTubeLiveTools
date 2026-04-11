@@ -35,7 +35,7 @@ try:
 except ImportError:
     _PIL_OK = False
 
-from constants import FONT_FAMILY, TRANSPARENT_KEY, SOURCE_COLORS, SOURCE_DEFAULT_NAMES
+from constants import FONT_FAMILY, TRANSPARENT_KEY, SOURCE_COLORS, SOURCE_DEFAULT_NAMES, get_source_color
 from display_utils import normalize_display_text
 
 # ─── カラー定数 ───────────────────────────────────────────────────────────────
@@ -147,6 +147,10 @@ class OverlayWindow:
         self._rz_w0 = 0
         self._rz_h0 = 0
 
+        # 配置確認モード
+        self._placement_mode    = False
+        self._placement_btn:    tk.Button | None = None
+
     # ─── 公開 API ──────────────────────────────────────────────────────────────
 
     @property
@@ -194,8 +198,128 @@ class OverlayWindow:
         except Exception:
             pass
 
+    def toggle_placement_mode(self) -> None:
+        """配置確認モードを切り替える"""
+        if self._placement_mode:
+            self._exit_placement_mode()
+        else:
+            self._enter_placement_mode()
+
+    @property
+    def placement_mode(self) -> bool:
+        return self._placement_mode
+
+    def _enter_placement_mode(self) -> None:
+        """配置確認モードに入る: 常に可視化してドラッグ・リサイズできるよう表示する"""
+        self._placement_mode = True
+        self._ensure_window()
+        if not self._win_ok():
+            return
+        # 透過を一時解除して可視化
+        try:
+            self._win.configure(bg="#1A2A3A")
+            if self._canvas:
+                self._canvas.configure(bg="#1A2A3A")
+            try:
+                self._win.wm_attributes("-transparentcolor", "")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # 配置確認ボタンを配置
+        self._place_placement_btn()
+        # 配置確認コンテンツを描画
+        self._draw_placement_guide()
+        try:
+            self._win.deiconify()
+            self._win.lift()
+        except Exception:
+            pass
+
+    def _exit_placement_mode(self) -> None:
+        """配置確認モードを終了し、通常の透過設定に戻す"""
+        self._placement_mode = False
+        # ボタン削除
+        if self._placement_btn:
+            try:
+                self._placement_btn.destroy()
+            except Exception:
+                pass
+            self._placement_btn = None
+        if not self._win_ok():
+            return
+        # 通常表示に戻す
+        self._apply_transparency()
+        # 表示中のコメントがなければ隠す
+        if not self._current_item:
+            self._hide()
+        else:
+            self._draw(self._current_item)
+
+    def _place_placement_btn(self) -> None:
+        """配置確認終了ボタンをウィンドウ右上に配置する"""
+        if not self._win_ok():
+            return
+        if self._placement_btn:
+            try:
+                self._placement_btn.destroy()
+            except Exception:
+                pass
+        self._placement_btn = tk.Button(
+            self._win,
+            text="配置確認終了",
+            font=("メイリオ", 8, "bold"),
+            bg="#AA2222", fg="#FFFFFF",
+            activebackground="#CC4444",
+            relief=tk.FLAT,
+            padx=6, pady=2,
+            command=self._exit_placement_mode,
+        )
+        self._win.after(50, self._reposition_placement_btn)
+
+    def _reposition_placement_btn(self) -> None:
+        if not self._win_ok() or self._placement_btn is None:
+            return
+        try:
+            w = self._win.winfo_width()
+            self._placement_btn.place(x=w - 90, y=2)
+            self._placement_btn.lift()
+        except Exception:
+            pass
+
+    def _draw_placement_guide(self) -> None:
+        """配置確認モード用のガイド表示を Canvas に描画する"""
+        if not self._win_ok() or self._canvas is None:
+            return
+        c = self._canvas
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w <= 1 or h <= 1:
+            self._win.after(80, self._draw_placement_guide)
+            return
+        c.delete("all")
+        self._img_refs.clear()
+        # 背景
+        c.create_rectangle(0, 0, w, h, fill="#1A2A3A", outline="")
+        # 枠線
+        c.create_rectangle(2, 2, w - 2, h - 2, fill="", outline="#44AAFF", width=2)
+        # ヘッダー帯
+        c.create_rectangle(0, 0, w, _HEADER_H, fill="#0A1A2A", outline="")
+        c.create_text(6, _HEADER_H // 2,
+                      text="RCommentHub Overlay — 配置確認モード",
+                      font=("メイリオ", 7), fill="#44AAFF", anchor=tk.W)
+        # ガイドテキスト
+        cy = h // 2 - 10
+        c.create_text(w // 2, cy,
+                      text="ドラッグして位置を調整  /  右下◢でリサイズ",
+                      font=("メイリオ", 9), fill="#88CCFF", anchor=tk.CENTER)
+        c.create_text(w // 2, cy + 20,
+                      text="「配置確認終了」で本番表示に戻ります",
+                      font=("メイリオ", 8), fill="#6699BB", anchor=tk.CENTER)
+
     def close(self) -> None:
         """ウィンドウを破棄する（アプリ終了時）"""
+        self._placement_mode = False
         self._cancel_hide()
         self._cancel_save()
         if self._win:
@@ -340,7 +464,7 @@ class OverlayWindow:
             sid   = getattr(item, "source_id",   "conn1")
             sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(sid, sid)
             if sname:
-                sc = SOURCE_COLORS.get(sid, "#AAAAAA")
+                sc = get_source_color(sid)
                 c.create_text(text_x, y_cur, text=f"[{sname}]",
                               font=(FONT_FAMILY, max(7, fn - 1), "bold"),
                               fill=sc, anchor=tk.NW)
@@ -470,7 +594,10 @@ class OverlayWindow:
     def _on_canvas_configure(self, event) -> None:
         """Canvas リサイズ時にグリップ再配置・内容再描画"""
         self._place_grip()
-        if self._current_item:
+        if self._placement_mode:
+            self._reposition_placement_btn()
+            self._draw_placement_guide()
+        elif self._current_item:
             self._draw(self._current_item)
 
     def _on_win_configure(self, event) -> None:

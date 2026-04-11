@@ -22,7 +22,7 @@ except ImportError:
 from constants import (
     UI_COLORS, FONT_FAMILY, FONT_SIZE_S, FONT_SIZE_M,
     ROW_COLORS, EVENT_TYPE_LABELS, CONN_STATUS_COLORS, TRANSPARENT_KEY,
-    SOURCE_COLORS, SOURCE_DEFAULT_NAMES,
+    SOURCE_COLORS, SOURCE_DEFAULT_NAMES, get_source_color,
 )
 from display_utils import normalize_display_text
 from filter_rules import FilterRule, FilterRuleManager, MATCH_TYPES
@@ -200,7 +200,7 @@ class CommentCard(tk.Frame):
                 _sid   = getattr(item, "source_id",   "conn1")
                 _sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(_sid, _sid)
                 if _sname:
-                    src_color = SOURCE_COLORS.get(_sid, "#AAAAAA")
+                    src_color = get_source_color(_sid)
                     tk.Label(right, text=f"[{_sname}]",
                              font=(FONT_FAMILY, FONT_SIZE_S - 1, "bold"),
                              fg=src_color, bg=bg, anchor=tk.W).pack(anchor=tk.W)
@@ -1181,7 +1181,7 @@ class CommentWindow:
             else:
                 # ── 2行標準 ───────────────────────────────────────────────
                 if self._show_source and sname:
-                    src_color = SOURCE_COLORS.get(sid, "#AAAAAA")
+                    src_color = get_source_color(sid)
                     tid  = c.create_text(text_x, text_y,
                                          text=f"[{sname}]", fill=src_color,
                                          anchor="nw",
