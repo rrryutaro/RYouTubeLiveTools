@@ -232,7 +232,7 @@ class CollapsibleSection(QWidget):
         layout.setSpacing(0)
 
         # クリック / ドラッグ両対応のヘッダー
-        self._header = QLabel(self._format_title(expanded))
+        self._header = QLabel(self._format_title(expanded), self)  # i289 t10
         self._header.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
         self._header.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         # mousePress は記録だけ。toggle はリリース時にドラッグ判定とあわせて行う。
@@ -243,7 +243,7 @@ class CollapsibleSection(QWidget):
         layout.addWidget(self._header)
 
         # コンテンツ領域
-        self._container = QWidget()
+        self._container = QWidget(self)  # i289 t09: 親なし HWND フラッシュ防止
         self._container.setStyleSheet("background: transparent;")
         self._content_layout = QVBoxLayout(self._container)
         self._content_layout.setContentsMargins(4, 6, 4, 2)
@@ -735,7 +735,7 @@ class ItemPanel(QFrame):
         title_layout.setContentsMargins(8, 3, 8, 3)
         title_layout.setSpacing(4)
 
-        self._items_title_lbl = QLabel("項目")
+        self._items_title_lbl = QLabel("項目", self._title_bar)  # i289 t09
         self._items_title_lbl.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
         self._items_title_lbl.setStyleSheet(f"color: {design.text};")
         title_layout.addWidget(self._items_title_lbl)
@@ -847,7 +847,7 @@ class ItemPanel(QFrame):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self._apply_scroll_style(self._rows_scroll, design)
-        self._rows_content = QWidget()
+        self._rows_content = QWidget(self)  # i289 t09
         self._rows_content.setStyleSheet(f"background-color: {design.panel};")
         self._rows_layout = QVBoxLayout(self._rows_content)
         self._rows_layout.setContentsMargins(8, 4, 8, 8)
@@ -874,7 +874,7 @@ class ItemPanel(QFrame):
         self._stack.addWidget(self._simple_page)   # index 1
 
         # ── スタック 2: テキスト編集ページ ──
-        self._text_container = QWidget()
+        self._text_container = QWidget(self)  # i289 t09
         text_v = QVBoxLayout(self._text_container)
         text_v.setContentsMargins(8, 4, 8, 8)
         text_v.setSpacing(4)
@@ -894,7 +894,7 @@ class ItemPanel(QFrame):
         self._text_edit.textChanged.connect(self._on_text_edit_changed_live)
         text_v.addWidget(self._text_edit, stretch=1)
 
-        self._text_warn_lbl = QLabel("")
+        self._text_warn_lbl = QLabel("", self._text_container)  # i289 t09
         self._text_warn_lbl.setFont(QFont("Meiryo", 8))
         self._text_warn_lbl.setStyleSheet(f"color: {design.gold}; padding: 2px 0;")
         self._text_warn_lbl.setWordWrap(True)
@@ -1052,7 +1052,7 @@ class ItemPanel(QFrame):
 
     def _build_simple_page(self, design: DesignSettings) -> QWidget:
         """シンプル表示ページを構築して返す。"""
-        page = QWidget()
+        page = QWidget(self)  # i289 t09
         page.setStyleSheet(f"background-color: {design.panel};")
         page_v = QVBoxLayout(page)
         page_v.setContentsMargins(0, 0, 0, 0)
@@ -1173,7 +1173,7 @@ class ItemPanel(QFrame):
         top_row.addWidget(self._simple_name_edit, stretch=1)
 
         # 確率・当選数表示ラベル（read-only、詳細モードと同スタイル）
-        self._simple_prob_disp_lbl = QLabel("")
+        self._simple_prob_disp_lbl = QLabel("", self._simple_edit_frame)  # i289 t09
         self._simple_prob_disp_lbl.setFont(QFont("Meiryo", 7))
         self._simple_prob_disp_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._simple_prob_disp_lbl.setMinimumWidth(40)
@@ -1184,7 +1184,7 @@ class ItemPanel(QFrame):
         self._simple_prob_disp_lbl.setVisible(settings_panel._settings.show_item_prob)
         top_row.addWidget(self._simple_prob_disp_lbl)
 
-        self._simple_win_disp_lbl = QLabel("")
+        self._simple_win_disp_lbl = QLabel("", self._simple_edit_frame)  # i289 t09
         self._simple_win_disp_lbl.setFont(QFont("Meiryo", 7))
         self._simple_win_disp_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._simple_win_disp_lbl.setFixedWidth(28)
@@ -2012,7 +2012,7 @@ class SettingsPanel(QFrame):
         )
         self._apply_scroll_style(self._scroll, design)
 
-        self._content = QWidget()
+        self._content = QWidget(self._scroll)  # i289 t09
         self._content.setStyleSheet(
             f"background-color: {design.panel};"
         )
@@ -2210,7 +2210,8 @@ class SettingsPanel(QFrame):
             return self._pattern_collapsible
 
         self._layout.removeWidget(self._pattern_collapsible)
-        self._pattern_collapsible.setParent(None)
+        # i289 t07: setParent(None) は top-level HWND を生成して起動時フラッシュの
+        # 原因になるため廃止。レイアウトから外すだけにし、addWidget 側で再ペアレントさせる。
         try:
             self._pattern_collapsible.toggled.disconnect()
         except (TypeError, RuntimeError):
@@ -2233,7 +2234,8 @@ class SettingsPanel(QFrame):
             return self._items_collapsible
 
         self._layout.removeWidget(self._items_collapsible)
-        self._items_collapsible.setParent(None)
+        # i289 t07: setParent(None) は top-level HWND を生成して起動時フラッシュの
+        # 原因になるため廃止。レイアウトから外すだけにし、addWidget 側で再ペアレントさせる。
         try:
             self._items_collapsible.toggled.disconnect()
         except (TypeError, RuntimeError):
@@ -2362,7 +2364,7 @@ class SettingsPanel(QFrame):
         )
         dbl_row.addWidget(self._dbl_spin, stretch=1)
 
-        self._dbl_row_widget = QWidget()
+        self._dbl_row_widget = QWidget(self._spin_collapsible._container)  # i289 t09
         dbl_row_container = QHBoxLayout(self._dbl_row_widget)
         dbl_row_container.setContentsMargins(0, 0, 0, 0)
         dbl_row_container.setSpacing(4)
@@ -2371,7 +2373,7 @@ class SettingsPanel(QFrame):
         spin_layout.addWidget(self._dbl_row_widget)
 
         # トリプルスピン時間
-        self._tpl_row_widget = QWidget()
+        self._tpl_row_widget = QWidget(self._spin_collapsible._container)  # i289 t09
         tpl_row_container = QHBoxLayout(self._tpl_row_widget)
         tpl_row_container.setContentsMargins(0, 0, 0, 0)
         tpl_row_container.setSpacing(4)
@@ -3482,7 +3484,7 @@ class SettingsPanel(QFrame):
         sec.addLayout(filter_bar)
 
         # 行ウィジェットを格納するコンテナ
-        self._item_rows_container = QWidget()
+        self._item_rows_container = QWidget(self._items_collapsible._container)  # i289 t09
         self._item_rows_layout = QVBoxLayout(self._item_rows_container)
         self._item_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._item_rows_layout.setSpacing(2)
@@ -3539,7 +3541,7 @@ class SettingsPanel(QFrame):
           上段: [CB] [テキスト] [▲] [▼] [×]
           下段: [確率モード] [値ウィジェット（weight combo / fixed spin）]
         """
-        row = QWidget()
+        row = QWidget(self._item_rows_container)  # i289 t09
         outer_layout = QVBoxLayout(row)
         outer_layout.setContentsMargins(0, 1, 0, 1)
         outer_layout.setSpacing(1)
@@ -3578,7 +3580,7 @@ class SettingsPanel(QFrame):
         top_row.addWidget(edit, stretch=1)
 
         # i284: 計算済み当選確率ラベル（全項目向けトグルで表示／非表示）
-        prob_pct_lbl = QLabel("")
+        prob_pct_lbl = QLabel("", row)  # i289 t10
         prob_pct_lbl.setFont(QFont("Meiryo", 7))
         prob_pct_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prob_pct_lbl.setMinimumWidth(40)
@@ -3589,7 +3591,7 @@ class SettingsPanel(QFrame):
         top_row.addWidget(prob_pct_lbl)
 
         # 勝利数ラベル
-        win_lbl = QLabel("0")
+        win_lbl = QLabel("0", row)  # i289 t10
         win_lbl.setFont(QFont("Meiryo", 7))
         win_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         win_lbl.setFixedWidth(28)

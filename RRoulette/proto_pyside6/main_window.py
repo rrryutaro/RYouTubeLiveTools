@@ -2712,6 +2712,8 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         self._save_item_entries()
 
     def _on_arrangement_reset(self):
@@ -2731,6 +2733,8 @@ class MainWindow(QMainWindow):
         )
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(ctx.item_entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         self._save_item_entries()
 
     def _on_items_reset(self):
@@ -2763,6 +2767,8 @@ class MainWindow(QMainWindow):
         )
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(new_entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         self._save_item_entries()
 
     def _update_win_counts(self):
@@ -2986,9 +2992,8 @@ class MainWindow(QMainWindow):
         )
         ctx.panel.set_segments(ctx.segments)
         self._save_item_entries()
-        # i281: エントリ更新で項目行 (子ウィジェット) が新規追加された場合に
-        # 備えて mouseTracking を再適用する。
-        self._refresh_panel_tracking()
+        # i289 t07: _refresh_panel_tracking はここでは呼ばない。
+        # 新規行ウィジェットを追加する set_active_entries 呼び出し元で行う。
         return True
 
     # ================================================================
@@ -3007,6 +3012,8 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         self._update_win_counts()
 
     def _on_pattern_added(self, name: str):
@@ -3022,6 +3029,8 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
 
     def _on_pattern_deleted(self, name: str):
         """パターン削除: 削除後に残りの先頭パターンに切り替える。"""
@@ -3036,6 +3045,8 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        self._refresh_panel_tracking()
         self._settings_panel.set_pattern_list(
             get_pattern_names(self._config), new_current
         )
