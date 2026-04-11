@@ -87,14 +87,16 @@ _DEFAULT_PRESETS = [
 
 def _build_debug_raw(preset: dict, body: str,
                      source_id: str = "conn1", source_name: str = "",
-                     source_type: str = INPUT_SOURCE_DEBUG) -> dict:
+                     source_type: str = INPUT_SOURCE_DEBUG,
+                     tts_source_name: str = "") -> dict:
     """デバッグコメント用の YouTube API 形式 raw dict を生成する"""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return {
-        "id":           f"debug_{uuid.uuid4().hex[:12]}",
-        "_source":      source_type,
-        "_source_id":   source_id,
-        "_source_name": source_name,
+        "id":                f"debug_{uuid.uuid4().hex[:12]}",
+        "_source":           source_type,
+        "_source_id":        source_id,
+        "_source_name":      source_name,
+        "_tts_source_name":  tts_source_name or source_name,
         "snippet": {
             "type":                "textMessageEvent",
             "publishedAt":         now_iso,
@@ -324,16 +326,17 @@ class DebugSenderWindow:
         """接続先リストを最新の sources_getter から更新する"""
         sources = self._sources_getter()
         if not sources:
-            sources = [("conn1", "接続1", "youtube")]
-        # sources は (source_id, source_name) または (source_id, source_name, platform) のいずれか
+            sources = [("conn1", "接続1", "youtube", "接続1")]
+        # sources は (source_id, source_name, platform) または (source_id, source_name, platform, tts_name) のいずれか
         labels = []
         self._source_map = {}
         for entry in sources:
             sid, name = entry[0], entry[1]
-            platform  = entry[2] if len(entry) > 2 else "youtube"
+            platform     = entry[2] if len(entry) > 2 else "youtube"
+            tts_name     = entry[3] if len(entry) > 3 else name
             label = f"{name} ({sid})"
             labels.append(label)
-            self._source_map[label] = (sid, name, platform)
+            self._source_map[label] = (sid, name, platform, tts_name)
         self._source_cb["values"] = labels
         cur = self._source_var.get()
         if cur not in self._source_map:
@@ -392,12 +395,15 @@ class DebugSenderWindow:
         # 接続先を解決
         self._refresh_source_list()
         src_label = self._source_var.get()
-        entry = self._source_map.get(src_label, ("conn1", "接続1", "youtube"))
-        source_id, source_name, platform = entry[0], entry[1], entry[2] if len(entry) > 2 else "youtube"
-        source_type = INPUT_SOURCE_TWITCH if platform == "twitch" else INPUT_SOURCE_DEBUG
+        entry = self._source_map.get(src_label, ("conn1", "接続1", "youtube", "接続1"))
+        source_id    = entry[0]
+        source_name  = entry[1]
+        platform     = entry[2] if len(entry) > 2 else "youtube"
+        tts_name     = entry[3] if len(entry) > 3 else source_name
+        source_type  = INPUT_SOURCE_TWITCH if platform == "twitch" else INPUT_SOURCE_DEBUG
 
         raw = _build_debug_raw(preset, body, source_id=source_id, source_name=source_name,
-                               source_type=source_type)
+                               source_type=source_type, tts_source_name=tts_name)
         self._add_comment(raw)
 
         # 送信後に本文クリア

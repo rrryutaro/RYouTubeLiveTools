@@ -381,6 +381,10 @@ class CommentController:
         """TTS 読み上げ開始時に呼ばれるコールバックを設定する（Overlay 同期用）"""
         self._tts.set_on_speak(callback)
 
+    def set_tts_on_spoken(self, callback):
+        """TTS 読み上げ完了時に呼ばれるコールバックを設定する（Overlay 消去タイマー用）"""
+        self._tts.set_on_spoken(callback)
+
     def get_debug_presets(self) -> list:
         from debug_sender import _DEFAULT_PRESETS
         saved = self._sm.get("debug_presets", None)

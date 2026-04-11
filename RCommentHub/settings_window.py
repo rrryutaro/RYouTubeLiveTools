@@ -712,10 +712,27 @@ class SettingsWindow:
         dlg.title("接続プロファイルを編集")
         dlg.configure(bg=C["bg_main"])
         dlg.resizable(False, False)
-        dlg.geometry("540x380")
+        # 位置を復元する（初回はデフォルト位置）
+        pos = self._sm.get("profile_edit_pos", None)
+        if pos and len(pos) == 2 and pos[0] > 0 and pos[1] > 0:
+            dlg.geometry(f"540x380+{pos[0]}+{pos[1]}")
+        else:
+            dlg.geometry("540x380")
         dlg.grab_set()
 
         result_holder: list = [None]
+
+        def _save_pos():
+            """close 直前に geometry 文字列から位置を保存する（全経路共通）"""
+            try:
+                import re as _re
+                m = _re.match(r'\d+x\d+([+-]\d+)([+-]\d+)', dlg.geometry())
+                if m:
+                    x, y = int(m.group(1)), int(m.group(2))
+                    if x >= 0 and y >= 0:
+                        self._sm.update({"profile_edit_pos": [x, y]})
+            except Exception:
+                pass
 
         def _labeled(parent, text):
             tk.Label(parent, text=text,
@@ -828,7 +845,15 @@ class SettingsWindow:
                 "enabled":      en_var.get(),
                 "target_url":   url_var.get().strip(),
             }
+            _save_pos()
             dlg.destroy()
+
+        def _cancel():
+            _save_pos()
+            dlg.destroy()
+
+        # × ボタンでも最終位置を保存する
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
 
         tk.Button(btn_row, text="OK",
                   font=(FONT_FAMILY, FONT_SIZE_S),
@@ -840,7 +865,7 @@ class SettingsWindow:
                   font=(FONT_FAMILY, FONT_SIZE_S),
                   bg=C["bg_list"], fg=C["fg_label"],
                   relief=tk.FLAT, padx=12, pady=4,
-                  command=dlg.destroy).pack(side=tk.LEFT, padx=4)
+                  command=_cancel).pack(side=tk.LEFT, padx=4)
 
         dlg.wait_window()
         return result_holder[0]
@@ -1311,6 +1336,8 @@ class SettingsWindow:
         """設定ウィンドウを非表示にする（destroy せず withdraw で保持）"""
         if self._win:
             try:
+                # withdraw() が <Configure> を発火させるため、先にガードを解除する
+                self._win_ready = False
                 self._win.withdraw()
             except tk.TclError:
                 pass

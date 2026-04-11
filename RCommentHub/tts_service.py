@@ -21,6 +21,8 @@ class TTSService:
         self._queue: queue.Queue = queue.Queue()
         # TTS が読み上げ開始する直前に呼ばれるコールバック (item) -> None
         self._on_speak = None
+        # TTS が読み上げ完了した直後に呼ばれるコールバック (item) -> None
+        self._on_spoken = None
 
         # 読み上げフィルタ設定
         self._read_normal    = True   # 通常コメント
@@ -106,6 +108,14 @@ class TTSService:
         Overlay と TTS の同期に使う。
         """
         self._on_speak = callback
+
+    def set_on_spoken(self, callback):
+        """
+        TTS が読み上げを完了した直後に呼ばれるコールバックを設定する。
+        callback: (item) -> None  ※ item が None のものは呼ばれない
+        Overlay の消去タイマーを読み上げ完了後に起動するために使う。
+        """
+        self._on_spoken = callback
 
     def set_filter(self, *,
                    normal: bool | None = None,
@@ -257,6 +267,12 @@ class TTSService:
                 self._speak_sapi5(text, speaker)
             else:
                 self._speak_powershell_fallback(text)
+            # 読み上げ完了後にコールバック（Overlay 消去タイマー用）
+            if item is not None and self._on_spoken is not None:
+                try:
+                    self._on_spoken(item)
+                except Exception:
+                    pass
             if self._interval_sec > 0:
                 time.sleep(self._interval_sec)
 

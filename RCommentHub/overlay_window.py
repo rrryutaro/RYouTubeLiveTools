@@ -151,14 +151,23 @@ class OverlayWindow:
         self._placement_mode    = False
         self._placement_btn:    tk.Button | None = None
 
+        # 一度でも deiconify したか（初回だけ withdraw → deiconify、以降は透明化で隠す）
+        self._shown_once: bool = False
+
     # ─── 公開 API ──────────────────────────────────────────────────────────────
 
     @property
     def is_enabled(self) -> bool:
         return bool(self._sm.get("overlay_enabled", False))
 
-    def show_comment(self, item) -> None:
-        """コメントを Overlay に表示する。無効時は何もしない。"""
+    def show_comment(self, item, suppress_auto_hide: bool = False) -> None:
+        """
+        コメントを Overlay に表示する。無効時は何もしない。
+
+        suppress_auto_hide=True のとき、消去タイマーをセットしない。
+        TTS 読み上げ中に消えないよう、TTS 経路から呼ぶ際に使用する。
+        読み上げ完了後は notify_tts_spoken() で 5 秒タイマーを起動すること。
+        """
         if not self.is_enabled:
             return
         self._ensure_window()
@@ -168,21 +177,43 @@ class OverlayWindow:
         self._current_item = item
         self._cancel_hide()
 
-        # ウィンドウ表示
-        try:
-            self._win.deiconify()
-            self._win.lift()
-        except Exception:
-            return
+        if not self._shown_once:
+            # 初回: withdraw 状態から deiconify してウィンドウを OS 上に確立する
+            try:
+                self._win.deiconify()
+                self._win.lift()
+                self._shown_once = True
+            except Exception:
+                return
+        else:
+            # 透明化状態からの復帰: ユーザー設定の透過を再適用して可視化
+            self._apply_transparency()
+            try:
+                self._win.lift()
+            except Exception:
+                pass
 
         # 内容描画
         self._draw(item)
 
-        # 消去スケジュール（timed モード）
-        if self._sm.get("overlay_display_mode", "timed") == "timed":
+        # 消去スケジュール（timed モード、suppress_auto_hide でない場合のみ）
+        if not suppress_auto_hide and self._sm.get("overlay_display_mode", "timed") == "timed":
             duration = max(1, int(self._sm.get("overlay_duration_sec",
                                                self._sm.get("overlay_duration", 5))))
             self._hide_job = self._win.after(duration * 1000, self._hide)
+
+    def notify_tts_spoken(self) -> None:
+        """
+        TTS 読み上げ完了時に呼ぶ。timed モードの場合、5 秒後に Overlay を非表示にする。
+        連続読み上げ時は最後の呼び出し基準でタイマーがリセットされる。
+        always モード時は何もしない。
+        """
+        if not self._win_ok():
+            return
+        if self._sm.get("overlay_display_mode", "timed") != "timed":
+            return
+        self._cancel_hide()
+        self._hide_job = self._win.after(5000, self._hide)
 
     def on_settings_changed(self) -> None:
         """設定変更後に呼び出す（topmost / 透過 などを再適用）"""
@@ -230,11 +261,18 @@ class OverlayWindow:
         self._place_placement_btn()
         # 配置確認コンテンツを描画
         self._draw_placement_guide()
-        try:
-            self._win.deiconify()
-            self._win.lift()
-        except Exception:
-            pass
+        if not self._shown_once:
+            try:
+                self._win.deiconify()
+                self._win.lift()
+                self._shown_once = True
+            except Exception:
+                pass
+        else:
+            try:
+                self._win.lift()
+            except Exception:
+                pass
 
     def _exit_placement_mode(self) -> None:
         """配置確認モードを終了し、通常の透過設定に戻す"""
@@ -320,6 +358,7 @@ class OverlayWindow:
     def close(self) -> None:
         """ウィンドウを破棄する（アプリ終了時）"""
         self._placement_mode = False
+        self._shown_once = False
         self._cancel_hide()
         self._cancel_save()
         if self._win:
@@ -523,11 +562,23 @@ class OverlayWindow:
 
     def _hide(self) -> None:
         self._hide_job = None
-        if self._win_ok():
-            try:
-                self._win.withdraw()
-            except Exception:
-                pass
+        if not self._shown_once:
+            # まだ一度も表示していない（withdraw 状態）→ そのまま何もしない
+            return
+        if not self._win_ok():
+            return
+        # withdraw せず Canvas を空にして完全透明化する。
+        # OBS は Window Capture でウィンドウを掴んでいるため、
+        # 透明色を全面に適用することで OBS フレームにも何も映らなくなる。
+        try:
+            if self._canvas:
+                self._canvas.delete("all")
+                self._img_refs.clear()
+                self._canvas.configure(bg=TRANSPARENT_KEY)
+            self._win.configure(bg=TRANSPARENT_KEY)
+            self._win.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
+        except Exception:
+            pass
 
     def _cancel_hide(self) -> None:
         if self._hide_job is not None:

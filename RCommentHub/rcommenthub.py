@@ -1,8 +1,9 @@
 """
-RCommentHub — YouTube Live コメントハブ  v0.3.0
+RCommentHub — YouTube Live コメントハブ  v0.3.1
 メインエントリポイントおよびアプリコーディネーター
 v0.2.0: 固定2接続（conn1/conn2）同時表示対応
 v0.3.0: OAuth 認証 / streamList 継続受信 / fallback 許可制
+v0.3.1: Twitch 認証/受信・マルチソース・プロファイル名分離・Overlay OBS 非表示・TTS-Overlay 同期
 """
 
 import tkinter as tk
@@ -235,6 +236,7 @@ class RCommentHubApp:
         # TTS 初期化 + Overlay 同期コールバック登録
         self._ctrl.apply_tts_from_settings()
         self._ctrl.set_tts_on_speak(self._on_tts_speak_item)
+        self._ctrl.set_tts_on_spoken(self._on_tts_spoken_item)
 
         # 起動時にコメントビューを自動表示
         root.after(100, self._comment_window.open)
@@ -284,21 +286,24 @@ class RCommentHubApp:
         def _oname(p):
             return p.get("overlay_name", p.get("display_name", p.get("profile_id", "接続")))
 
+        def _tname(p):
+            return p.get("tts_name", _oname(p))
+
         if self._ctrl.debug_mode:
             for p in profiles:
                 if p.get("enabled", True):
-                    result.append((p["profile_id"], _oname(p), p.get("platform", "youtube")))
+                    result.append((p["profile_id"], _oname(p), p.get("platform", "youtube"), _tname(p)))
         else:
             statuses = self._ctrl.get_conn_statuses()
             for p in profiles:
                 pid = p["profile_id"]
                 if statuses.get(pid, "disconnected") not in ("disconnected", "error"):
-                    result.append((pid, _oname(p), p.get("platform", "youtube")))
+                    result.append((pid, _oname(p), p.get("platform", "youtube"), _tname(p)))
 
         if not result and profiles:
             first = profiles[0]
-            return [(first["profile_id"], _oname(first), first.get("platform", "youtube"))]
-        return result if result else [("profile_0", "接続1", "youtube")]
+            return [(first["profile_id"], _oname(first), first.get("platform", "youtube"), _tname(first))]
+        return result if result else [("profile_0", "接続1", "youtube", "接続1")]
 
     # --- コントローラ → コーディネーター コールバック ---
 
@@ -342,7 +347,12 @@ class RCommentHubApp:
     def _on_tts_speak_item(self, item):
         """TTS が読み上げを開始するときに Overlay を更新する（TTS-Overlay 同期）"""
         if self._overlay_win:
-            self._root.after(0, lambda: self._overlay_win.show_comment(item))
+            self._root.after(0, lambda: self._overlay_win.show_comment(item, suppress_auto_hide=True))
+
+    def _on_tts_spoken_item(self, item):
+        """TTS 読み上げ完了後に Overlay の消去タイマーを起動する（TTS-Overlay 同期）"""
+        if self._overlay_win:
+            self._root.after(0, self._overlay_win.notify_tts_spoken)
 
     def _on_ctrl_source_status(self, source_id: str, status: str):
         """per-source 接続状態変化 → マルチ接続モードの切替判定"""
