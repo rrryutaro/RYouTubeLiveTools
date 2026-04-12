@@ -103,7 +103,7 @@ class AppSettings:
     show_item_win_count: bool = True  # 各項目行の当選回数ラベルを表示
 
     # 項目パネル表示モード (i289): 0=詳細表示, 1=シンプル表示
-    item_panel_display_mode: int = 0
+    item_panel_display_mode: int = 1  # i315: デフォルトはシンプルモード
 
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
@@ -261,7 +261,7 @@ class AppSettings:
             replay_show_indicator=config.get("replay_show_indicator", True),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
-            item_panel_display_mode=config.get("item_panel_display_mode", 0),
+            item_panel_display_mode=config.get("item_panel_display_mode", 1),
         )
 
     def to_config_patch(self) -> dict:

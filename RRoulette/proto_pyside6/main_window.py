@@ -24,7 +24,7 @@ PySide6 プロトタイプ — メインウィンドウ
 import re
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRect, QObject, QEvent
-from PySide6.QtGui import QScreen, QMouseEvent, QCursor
+from PySide6.QtGui import QScreen, QMouseEvent, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QMenu, QApplication,
     QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox,
@@ -551,6 +551,58 @@ class _PanelInputFilter(QObject):
         return False
 
 
+class _MainWindowDragBar(QWidget):
+    """メインウィンドウ上部のドラッグバー。ドラッグでウィンドウ全体を移動する。"""
+
+    _BAR_HEIGHT = 20
+
+    def __init__(self, main_window: QMainWindow, design, parent=None):
+        super().__init__(parent)
+        self._mw = main_window
+        self._design = design
+        self._dragging = False
+        self._drag_start = QPoint()
+        self._start_pos = QPoint()
+        self.setFixedHeight(self._BAR_HEIGHT)
+        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(self._design.separator))
+        color = QColor(self._design.text_sub)
+        color.setAlpha(140)
+        p.setPen(color)
+        cx = self.width() // 2
+        cy = self._BAR_HEIGHT // 2
+        for i in range(-3, 4):
+            p.drawPoint(cx + i * 4, cy - 2)
+            p.drawPoint(cx + i * 4, cy + 2)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_start = event.globalPosition().toPoint()
+            self._start_pos = self._mw.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+        delta = event.globalPosition().toPoint() - self._drag_start
+        self._mw.move(self._start_pos + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            event.accept()
+
+    def update_design(self, design):
+        self._design = design
+        self.update()
+
+
 class MainWindow(QMainWindow):
     """PySide6 プロトタイプのメインウィンドウ。
 
@@ -564,6 +616,15 @@ class MainWindow(QMainWindow):
     _EDGE_RIGHT = 1
     _EDGE_BOTTOM = 2
     _EDGE_CORNER = 3  # right + bottom
+
+    # 初回起動時の横長デフォルトサイズ（ルーレット正方形 + 項目パネル）
+    # 高さ 700px → ルーレット正方形領域 = 696×696 (= 700 - 4px margin)
+    # 幅 1080px → ルーレット 696 + gap 12 + 項目パネル 360 + margin 12
+    # i317: ルーレット正方形を大きく表示するため高さを 600→700 に拡張
+    #   rp_size = min(1080, 700) - 4 = 696
+    #   ip_x = 696 + 4 + 8 = 708, ip_w = 1080 - 708 - 12 = 360 (i316の幅を維持)
+    _INITIAL_W = 980
+    _INITIAL_H = 600
 
     def __init__(self):
         super().__init__()
@@ -770,6 +831,10 @@ class MainWindow(QMainWindow):
         self._panel_save_timer.setInterval(500)
         self._panel_save_timer.timeout.connect(self._persist_panel_positions)
 
+        # i318: ルーレットパネルは _create_roulette 時にタイマー未生成のため
+        # ここで改めて接続する
+        self._roulette_panel.geometry_changed.connect(self._panel_save_timer.start)
+
         # --- パネル一覧（Z オーダー管理対象）に SettingsPanel を追加 ---
         self._panels.append(self._settings_panel)
         self._settings_panel.geometry_changed.connect(
@@ -882,6 +947,13 @@ class MainWindow(QMainWindow):
         self._os_theme_timer.timeout.connect(self._check_os_theme_change)
         if self._settings.theme_mode in ("system", "auto"):
             self._os_theme_timer.start()
+
+        # --- メインウィンドウ移動バー ---
+        # centralWidget の最前面に配置し、ドラッグでウィンドウ全体を移動する。
+        central = self.centralWidget()
+        self._mw_drag_bar = _MainWindowDragBar(self, self._design, parent=central)
+        self._mw_drag_bar.setGeometry(0, 0, self.width(), _MainWindowDragBar._BAR_HEIGHT)
+        self._mw_drag_bar.raise_()
 
         # 初期化完了フラグを立て、以後の geometry_changed で
         # _persist_panel_positions が走るようにする。
@@ -1503,6 +1575,13 @@ class MainWindow(QMainWindow):
         panel.geometry_changed.connect(
             lambda p=panel: self._bring_panel_to_front(p)
         )
+        # i318: ルーレットパネルの geometry 変化も debounce 保存対象にする
+        # _panel_save_timer は __init__ 中でタイマー生成後に接続する。
+        # (_create_roulette は __init__ 内でタイマー生成より前に呼ばれるため、
+        #  ここでは hasattr でガードし、タイマーが未生成の場合はスキップする。
+        #  __init__ 内での接続は _panel_save_timer 生成直後に行う。)
+        if hasattr(self, "_panel_save_timer"):
+            panel.geometry_changed.connect(self._panel_save_timer.start)
 
         # 位置・サイズ復元
         self._restore_roulette_panel(panel)
@@ -1899,8 +1978,11 @@ class MainWindow(QMainWindow):
     def _restore_window_geometry(self, default_w: int, default_h: int):
         """保存済みウィンドウ位置・サイズを復元する。"""
         s = self._settings
-        w = s.window_width if s.window_width is not None else default_w
-        h = s.window_height if s.window_height is not None else default_h
+        if s.window_width is not None and s.window_height is not None:
+            w, h = s.window_width, s.window_height
+        else:
+            # 初回起動または保存なし: 横長レイアウト用の初期サイズ
+            w, h = self._INITIAL_W, self._INITIAL_H
         w = max(MIN_W, w)
         h = max(MIN_H, h)
 
@@ -1928,6 +2010,13 @@ class MainWindow(QMainWindow):
             if (cx, cy) != (x, y):
                 self._window_pos_was_fallback = True
             self.move(cx, cy)
+        else:
+            # 初回起動または保存位置なし: メインディスプレイの利用可能領域の中央に表示
+            avail = self._get_available_geometry()
+            if avail is not None:
+                cx = avail.x() + (avail.width() - w) // 2
+                cy = avail.y() + (avail.height() - h) // 2
+                self.move(cx, cy)
 
     def _restore_roulette_panel(self, panel: RoulettePanel | None = None):
         """ルーレットパネルの位置・サイズを復元する。"""
@@ -1935,19 +2024,35 @@ class MainWindow(QMainWindow):
             panel = self._roulette_panel
         s = self._settings
         parent = self.centralWidget()
-        pw = parent.width() if parent else self.width()
-        ph = parent.height() if parent else self.height()
+        # i318: centralWidget は __init__ 中（show 前）は Qt の既定サイズ（640×480 等）
+        # を返すため、_default_panel_positions と同様に resize() 済みの
+        # self.width()/height() を併用して大きい方を採用する。
+        # これにより初期サイズ計算・クランプが正しくなり、保存サイズが
+        # stale な centralWidget サイズで潰される不具合も修正される。
+        if parent:
+            pw = max(parent.width(), self.width(), 1)
+            ph = max(parent.height(), self.height(), 1)
+        else:
+            pw = max(self.width(), 1)
+            ph = max(self.height(), 1)
+        if pw < 100:
+            pw = max(self.width(), self._INITIAL_W)
+        if ph < 100:
+            ph = max(self.height(), self._INITIAL_H)
         m = 2
+        bar_h = _MainWindowDragBar._BAR_HEIGHT  # ドラッグバーの高さ (パネルはこの下から配置)
 
         rp_x = s.roulette_panel_x if s.roulette_panel_x is not None else m
-        rp_y = s.roulette_panel_y if s.roulette_panel_y is not None else m
-        rp_w = s.roulette_panel_width if s.roulette_panel_width is not None else pw - 2 * m
-        rp_h = s.roulette_panel_height if s.roulette_panel_height is not None else ph - 2 * m
+        rp_y = s.roulette_panel_y if s.roulette_panel_y is not None else bar_h + m
+        # 初回起動 / 保存なし: ドラッグバー下の領域を正方形基準で確保する
+        rp_default_size = min(pw, ph - bar_h) - 2 * m
+        rp_w = s.roulette_panel_width if s.roulette_panel_width is not None else rp_default_size
+        rp_h = s.roulette_panel_height if s.roulette_panel_height is not None else rp_default_size
 
         rp_w = max(RoulettePanel._MIN_W, min(rp_w, pw))
-        rp_h = max(RoulettePanel._MIN_H, min(rp_h, ph))
+        rp_h = max(RoulettePanel._MIN_H, min(rp_h, ph - bar_h))
         rp_x = max(0, min(rp_x, pw - rp_w))
-        rp_y = max(0, min(rp_y, ph - rp_h))
+        rp_y = max(bar_h, min(rp_y, ph - rp_h))
 
         panel.setGeometry(rp_x, rp_y, rp_w, rp_h)
 
@@ -1985,22 +2090,29 @@ class MainWindow(QMainWindow):
         if ch < 100:
             ch = max(self.height(), 320)
 
+        bar_h = _MainWindowDragBar._BAR_HEIGHT  # ドラッグバーの高さ (パネルはこの下から配置)
+        panel_top = bar_h + 4  # パネル配置の上端 y 座標
+
         # ManagePanel: 左上 (小さい)
         mp_w, mp_h = 240, 180
         mp_x = 12
-        mp_y = 12
+        mp_y = panel_top
 
-        # ItemPanel: 左寄り、ManagePanel の下
-        ip_w = min(360, max(260, cw - 24))
-        ip_h = min(460, max(220, ch - mp_h - 36))
-        ip_x = 12
-        ip_y = mp_h + 24
+        # ItemPanel: ルーレット正方形領域の右隣に配置（v0.4.4 再現: 左ルーレット・右項目）
+        # ルーレットのデフォルト幅 = min(cw, ch - bar_h) - 4（ドラッグバー下領域の正方形）
+        rp_default_size = min(cw, ch - bar_h) - 4
+        rp_right = rp_default_size + 4  # ルーレット右端 x 座標 (= rp_x + rp_w = 2 + size)
+        ip_x = rp_right + 8
+        ip_w = max(260, cw - ip_x - 12)
+        # i315: 上限を撤廃し、詳細モードで全要素がスクロールなく収まる高さを確保する
+        ip_h = max(220, (ch - bar_h) - 24)
+        ip_y = panel_top
 
         # SettingsPanel: 右寄り
         sp_w = min(320, max(260, cw - 24))
-        sp_h = min(480, max(220, ch - 24))
+        sp_h = min(480, max(220, (ch - bar_h) - 24))
         sp_x = max(0, cw - sp_w - 12)
-        sp_y = 12
+        sp_y = panel_top
 
         return {
             "items": (ip_x, ip_y, ip_w, ip_h),
@@ -2271,6 +2383,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         s = self._settings
+        # ルーレットパネル — i318: geometry_changed トリガーで debounce 保存
+        rp = getattr(self, "_active_panel", None)
+        if rp is not None:
+            s.roulette_panel_x = rp.x()
+            s.roulette_panel_y = rp.y()
+            s.roulette_panel_width = rp.width()
+            s.roulette_panel_height = rp.height()
         # ItemPanel — 表示中のときだけ最新位置を保存する。
         # 非表示中はパネル自身の geometry が無効なので保存しない。
         if hasattr(self, "_item_panel") and self._item_panel.isVisible():
@@ -2549,6 +2668,12 @@ class MainWindow(QMainWindow):
             self.blockSignals(True)
             self.resize(size, size)
             self.blockSignals(False)
+        # 移動バーをウィンドウ幅に追従させ、常に最前面に置く
+        if hasattr(self, "_mw_drag_bar"):
+            self._mw_drag_bar.setGeometry(
+                0, 0, self.width(), _MainWindowDragBar._BAR_HEIGHT
+            )
+            self._mw_drag_bar.raise_()
         # 通常リサイズ時もサイズを保存対象にする
         if not getattr(self, "_init_complete", False):
             return
@@ -3280,6 +3405,8 @@ class MainWindow(QMainWindow):
         self._settings_panel.update_design(self._design)
         if hasattr(self, "_item_panel") and self._item_panel:
             self._item_panel.update_design(self._design)
+        if hasattr(self, "_mw_drag_bar"):
+            self._mw_drag_bar.update_design(self._design)
         self._save_config()
 
     def _open_design_editor(self):
@@ -3309,6 +3436,8 @@ class MainWindow(QMainWindow):
         self._settings_panel.update_design(self._design)
         if hasattr(self, "_item_panel") and self._item_panel:
             self._item_panel.update_design(self._design)
+        if hasattr(self, "_mw_drag_bar"):
+            self._mw_drag_bar.update_design(self._design)
         self._save_config()
 
     def _on_design_editor_closed(self):

@@ -207,6 +207,16 @@ def load_design(config: dict | None = None) -> DesignSettings:
     return DesignSettings.from_dict(config.get("design", {}))
 
 
+_DEFAULT_ITEMS = [
+    {"text": "項目A", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+    {"text": "項目B", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+    {"text": "項目C", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+    {"text": "項目D", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+    {"text": "項目E", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+    {"text": "項目F", "enabled": True, "split_count": 1, "prob_mode": None, "prob_value": None},
+]
+
+
 def _get_current_pattern_items(config: dict) -> list:
     """config dict から現在のパターンの raw 項目リストを取得する。"""
     patterns = config.get("item_patterns", {})
@@ -217,6 +227,8 @@ def _get_current_pattern_items(config: dict) -> list:
             if v:
                 raw_items = v
                 break
+    if not raw_items:
+        return list(_DEFAULT_ITEMS)
     return raw_items
 
 
