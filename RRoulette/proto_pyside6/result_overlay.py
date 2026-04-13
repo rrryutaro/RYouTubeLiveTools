@@ -92,14 +92,14 @@ class ResultOverlay(QLabel):
     # ================================================================
 
     def show_result(self, winner: str):
-        """結果テキストを表示し、フラッシュ演出後に安定表示する。"""
+        """結果テキストを表示し、安定表示する。"""
         self._stop_auto_timer()
         self._stop_flash()
         self.setText(f"  \U0001f3af {winner}  ")
         self.show()
         self.raise_()
         self.update_position()
-        self._start_flash()
+        self._start_auto_timer_if_needed()
 
     def dismiss(self):
         """overlay を確実に閉じる。タイマーも停止する。

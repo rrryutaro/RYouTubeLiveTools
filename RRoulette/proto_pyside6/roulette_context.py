@@ -33,3 +33,8 @@ class RouletteContext:
     panel: RoulettePanel
     item_entries: list[ItemEntry] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
+    # i338: per-roulette pattern state.
+    # None = use global config (for "default" roulette only).
+    # dict = {"パターン名": [raw_item_dict, ...]} (for additional roulettes).
+    item_patterns: dict | None = field(default=None)
+    current_pattern: str | None = field(default=None)

@@ -178,6 +178,10 @@ from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from dark_theme import dark_checkbox_style, dark_spinbox_style, get_header_colors
 
 
+# i341: メインウィンドウ移動バー（進入禁止領域）の高さ
+# _MainWindowDragBar._BAR_HEIGHT と同値。循環インポートを避けるため定数として持つ。
+_MW_DRAG_BAR_H = 20
+
 # ================================================================
 #  セクション UI 部品
 # ================================================================
@@ -478,6 +482,7 @@ class _PanelGrip(QWidget):
         self._start_target_h = 0
         self._start_win_w = 0
         self._start_win_h = 0
+        self._skip_parent_clamp = False  # roulette_only_mode 時に親サイズ制限をスキップ
         self.setFixedSize(self._GRIP_SIZE, self._GRIP_SIZE)
         self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
         self.raise_()
@@ -523,12 +528,16 @@ class _PanelGrip(QWidget):
             # パネルのみリサイズ（位置固定、右下方向に拡縮）
             new_w = max(self._min_w, self._start_target_w + delta.x())
             new_h = max(self._min_h, self._start_target_h + delta.y())
-            parent = self._target.parentWidget()
-            if parent:
-                max_w = parent.width() - self._target.x()
-                max_h = parent.height() - self._target.y()
-                new_w = min(new_w, max_w)
-                new_h = min(new_h, max_h)
+            # _skip_parent_clamp が False の場合のみ親ウィンドウ幅に制限する。
+            # roulette_only_mode 中は親＝ウィンドウと同サイズのため制限をスキップし、
+            # ウィンドウ側が後追いでリサイズする。
+            if not self._skip_parent_clamp:
+                parent = self._target.parentWidget()
+                if parent:
+                    max_w = parent.width() - self._target.x()
+                    max_h = parent.height() - self._target.y()
+                    new_w = min(new_w, max_w)
+                    new_h = min(new_h, max_h)
             self._target.resize(new_w, new_h)
         else:
             # wheel 側: ウィンドウをリサイズ（パネル幅は保持）
@@ -647,7 +656,8 @@ class _PanelDragBar(QWidget):
             tw = self._target.width()
             th = self._target.height()
             new_x = max(0, min(new_pos.x(), max(0, parent.width() - tw)))
-            new_y = max(0, min(new_pos.y(), max(0, parent.height() - th)))
+            # i341: 移動バー領域（_MW_DRAG_BAR_H より上）への侵入禁止
+            new_y = max(_MW_DRAG_BAR_H, min(new_pos.y(), max(_MW_DRAG_BAR_H, parent.height() - th)))
             self._target.move(new_x, new_y)
         else:
             self._target.move(new_pos)
@@ -1092,6 +1102,12 @@ class ItemPanel(QFrame):
         widget.installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        # i341: 項目名 QLineEdit のフォーカス変化でパターンコンボを有効/無効化
+        if hasattr(self, '_simple_name_edit') and obj is self._simple_name_edit:
+            if event.type() == QEvent.Type.FocusIn:
+                self._settings_panel.set_pattern_switching_enabled(False)
+            elif event.type() == QEvent.Type.FocusOut:
+                self._settings_panel.set_pattern_switching_enabled(True)
         if event.type() == QEvent.Type.Enter:
             hint = self._hint_map.get(obj)
             if hint and isinstance(obj, QWidget):
@@ -1302,6 +1318,8 @@ class ItemPanel(QFrame):
         )
         self._simple_name_edit.editingFinished.connect(self._on_simple_name_changed)
         self._simple_name_edit.textChanged.connect(self._on_simple_name_live)  # i306: 入力途中即時反映
+        # i341: フォーカス変化でパターンコンボの有効/無効を切り替えるためフィルタ登録
+        self._simple_name_edit.installEventFilter(self)
         top_row.addWidget(self._simple_name_edit, stretch=1)
 
         # 確率・当選数表示ラベル（read-only、詳細モードと同スタイル）
@@ -1787,12 +1805,26 @@ class ItemPanel(QFrame):
             self._text_warn_lbl.setVisible(False)
             self._stack.setCurrentIndex(2)
             self._text_edit.setFocus()
+            # i341: テキスト編集開始 → パターンコンボ無効化
+            self._settings_panel.set_pattern_switching_enabled(False)
         else:
             self._stack.setCurrentIndex(self._display_mode)
 
     def is_text_edit_mode(self) -> bool:
         """テキスト編集モード中かどうか。MainWindow の ESC 処理から参照。"""
         return self._stack.currentIndex() == 2
+
+    def is_item_name_editing(self) -> bool:
+        """項目名のインライン編集中かどうか。
+
+        i340: テキスト編集モード（textarea）または項目名 QLineEdit にフォーカスが
+        ある場合に True を返す。パターン切替禁止判定に使用する。
+        """
+        if self.is_text_edit_mode():
+            return True
+        if hasattr(self, '_simple_name_edit') and self._simple_name_edit.hasFocus():
+            return True
+        return False
 
     def cancel_text_edit(self):
         """テキスト編集をキャンセルする。MainWindow の ESC 処理から呼ばれる。"""
@@ -1804,6 +1836,8 @@ class ItemPanel(QFrame):
         self._text_edit_btn.setChecked(False)
         self._text_edit_btn.blockSignals(False)
         self._stack.setCurrentIndex(self._display_mode)
+        # i341: テキスト編集終了 → パターンコンボ再有効化
+        self._settings_panel.set_pattern_switching_enabled(True)
 
     def _on_text_save(self):
         raw = self._text_edit.toPlainText()
@@ -1961,6 +1995,11 @@ class ManagePanel(QFrame):
     settings_panel_toggled = Signal(bool)
     reset_positions_requested = Signal()
     geometry_changed = Signal()
+    roulette_add_requested = Signal()
+    roulette_activate_requested = Signal(str)
+    roulette_visibility_toggled = Signal(str, bool)
+    roulette_delete_requested = Signal(str)
+    apply_to_all_changed = Signal(bool)  # i347: 一括適用フラグ
 
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
@@ -2025,13 +2064,66 @@ class ManagePanel(QFrame):
         # i276: ショートカット説明はユーザー要請により削除。
         # 将来ヘルプを追加する余地を残してあるが、本セッションでは追加しない。
 
-        body_layout.addStretch(1)
+        body_layout.addSpacing(8)
+
+        roulette_title = QLabel("ルーレット管理")
+        roulette_title.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        roulette_title.setStyleSheet(f"color: {design.text};")
+        body_layout.addWidget(roulette_title)
+
+        # ルーレット一覧（動的に更新）
+        self._roulette_list_layout = QVBoxLayout()
+        self._roulette_list_layout.setSpacing(4)
+        self._roulette_list_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addLayout(self._roulette_list_layout)
+        self._roulette_rows: dict[str, QWidget] = {}
+
+        # 追加ボタン
+        self._add_roulette_btn = QPushButton("+ ルーレットを追加")
+        self._add_roulette_btn.setFont(QFont("Meiryo", 9))
+        self._add_roulette_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_roulette_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 4px; padding: 5px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._add_roulette_btn.clicked.connect(self.roulette_add_requested.emit)
+        body_layout.addWidget(self._add_roulette_btn)
+
+        body_layout.addSpacing(8)
+
+        # i347: 設定一括適用チェックボックス
+        apply_title = QLabel("設定適用先")
+        apply_title.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        apply_title.setStyleSheet(f"color: {design.text};")
+        body_layout.addWidget(apply_title)
+
+        self._apply_all_cb = QCheckBox("全ルーレットに適用")
+        self._apply_all_cb.setFont(QFont("Meiryo", 9))
+        self._apply_all_cb.setStyleSheet(f"color: {design.text};")
+        self._apply_all_cb.setChecked(False)
+        self._apply_all_cb.setToolTip(
+            "ON: 設定パネルの変更を全ルーレットに一括適用\nOFF: 選択中ルーレットのみに適用"
+        )
+        self._apply_all_cb.toggled.connect(self.apply_to_all_changed.emit)
+        body_layout.addWidget(self._apply_all_cb)
 
         body.setStyleSheet(f"background-color: {design.panel};")
-        outer.addWidget(body, stretch=1)
+
+        # i348: コンテンツをスクロール領域で包む（高さ不足でも潰れない）
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(body)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(f"background-color: {design.panel};")
+        outer.addWidget(self._scroll, stretch=1)
 
         self.setStyleSheet(f"background-color: {design.panel};")
-        self.setMinimumSize(220, 160)
+        self.setMinimumSize(240, 220)
 
     # ----------------------------------------------------------------
     #  公開 API
@@ -2049,10 +2141,132 @@ class ManagePanel(QFrame):
         self._settings_cb.setChecked(visible)
         self._settings_cb.blockSignals(False)
 
+    def set_roulette_list(self, entries: list) -> None:
+        """ルーレット一覧を更新する。
+
+        Args:
+            entries: list of dicts with keys:
+                - 'id': str
+                - 'label': str (表示名)
+                - 'active': bool
+                - 'visible': bool
+        """
+        # 既存行をクリア
+        for row in self._roulette_rows.values():
+            self._roulette_list_layout.removeWidget(row)
+            row.deleteLater()
+        self._roulette_rows.clear()
+
+        total = len(entries)
+        for entry in entries:
+            rid = entry["id"]
+            row = self._make_roulette_row(entry, total_count=total)
+            self._roulette_list_layout.addWidget(row)
+            self._roulette_rows[rid] = row
+
+    def _make_roulette_row(self, entry: dict, *, total_count: int = 2) -> QWidget:
+        """ルーレット1件の行ウィジェットを作成する。"""
+        rid = entry["id"]
+        is_active = entry["active"]
+        is_visible = entry.get("visible", True)
+        label_text = entry.get("label", rid)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        # アクティブ時は強調色で表示
+        name_btn = QPushButton(label_text)
+        name_btn.setFont(QFont("Meiryo", 9))
+        name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        if is_active:
+            name_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {self._design.accent}; color: {self._design.text};"
+                f" border: none; border-radius: 4px; padding: 4px 8px; text-align: left; }}"
+                f"QPushButton:hover {{ opacity: 0.8; }}"
+            )
+        else:
+            name_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {self._design.separator}; color: {self._design.text};"
+                f" border: none; border-radius: 4px; padding: 4px 8px; text-align: left; }}"
+                f"QPushButton:hover {{ background-color: {self._design.accent}; }}"
+            )
+        name_btn.clicked.connect(lambda checked=False, r=rid: self.roulette_activate_requested.emit(r))
+        row_layout.addWidget(name_btn, stretch=1)
+
+        # 表示/非表示トグル
+        vis_btn = QPushButton("👁" if is_visible else "🚫")
+        vis_btn.setFont(QFont("Meiryo", 9))
+        vis_btn.setFixedSize(28, 28)
+        vis_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        vis_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {self._design.separator}; color: {self._design.text};"
+            f" border: none; border-radius: 4px; }}"
+            f"QPushButton:hover {{ background-color: {self._design.accent}; }}"
+        )
+        vis_btn.setToolTip("表示/非表示")
+        current_visible = is_visible
+        vis_btn.clicked.connect(
+            lambda checked=False, r=rid, b=vis_btn, cv=current_visible:
+            self._on_vis_btn_clicked(r, b, cv)
+        )
+        row_layout.addWidget(vis_btn)
+
+        # i338: 削除ボタン（最後の1個は無効）
+        del_btn = QPushButton("✕")
+        del_btn.setFont(QFont("Meiryo", 9))
+        del_btn.setFixedSize(28, 28)
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {self._design.separator}; color: {self._design.text};"
+            f" border: none; border-radius: 4px; }}"
+            f"QPushButton:hover {{ background-color: #E53935; color: #FFFFFF; }}"
+            f"QPushButton:disabled {{ opacity: 0.3; }}"
+        )
+        del_btn.setToolTip("このルーレットを削除")
+        del_btn.setEnabled(total_count > 1)
+        del_btn.clicked.connect(lambda checked=False, r=rid: self.roulette_delete_requested.emit(r))
+        row_layout.addWidget(del_btn)
+
+        return row
+
+    def _on_vis_btn_clicked(self, roulette_id: str, btn: QPushButton, current_visible: bool):
+        """表示/非表示ボタンのクリック処理。"""
+        new_visible = not current_visible
+        btn.setText("👁" if new_visible else "🚫")
+        # ボタンのクロージャの cv を更新するため、clicked を再接続する
+        try:
+            btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        btn.clicked.connect(
+            lambda checked=False, r=roulette_id, b=btn, cv=new_visible:
+            self._on_vis_btn_clicked(r, b, cv)
+        )
+        self.roulette_visibility_toggled.emit(roulette_id, new_visible)
+
+    def update_active_roulette(self, active_id: str) -> None:
+        """アクティブなルーレット ID だけを更新（一覧全再構築を避ける）。
+
+        実際には set_roulette_list を呼んで全再構築する。
+        """
+        # 現在の実装では set_roulette_list で全更新する方が簡単なため、
+        # 呼び出し元から set_roulette_list を使ってもらう。
+        pass
+
+    def set_apply_to_all(self, value: bool) -> None:
+        """一括適用チェック状態を外部から同期する（シグナルなし）。"""
+        self._apply_all_cb.blockSignals(True)
+        self._apply_all_cb.setChecked(value)
+        self._apply_all_cb.blockSignals(False)
+
     def update_design(self, design: DesignSettings):
         self._design = design
         self.setStyleSheet(f"background-color: {design.panel};")
         self._drag_bar.update_design(design)
+        self._scroll.setStyleSheet(f"background-color: {design.panel};")
+        self._apply_all_cb.setStyleSheet(f"color: {design.text};")
 
     # ----------------------------------------------------------------
     #  イベント
@@ -3282,8 +3496,16 @@ class SettingsPanel(QFrame):
         sec = self._log_collapsible.content_layout
         self._layout.addWidget(self._log_collapsible)
 
-        # i274: 「ログオーバーレイ表示」は廃止。残すのは「ログ前面表示」のみ。
-        # ここではタイムスタンプ表示を最初の項目として配置する。
+        # i342: ログ表示 ON/OFF (log_overlay_show) を明示的に持たせる。
+        self._log_show_cb = QCheckBox("ログ表示")
+        self._log_show_cb.setFont(QFont("Meiryo", 8))
+        self._log_show_cb.setStyleSheet(f"color: {design.text};")
+        self._log_show_cb.setChecked(settings.log_overlay_show)
+        self._log_show_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_overlay_show", v)
+        )
+        sec.addWidget(self._log_show_cb)
+
         self._log_ts_cb = QCheckBox("タイムスタンプ表示")
         self._log_ts_cb.setFont(QFont("Meiryo", 8))
         self._log_ts_cb.setStyleSheet(f"color: {design.text};")
@@ -3562,6 +3784,32 @@ class SettingsPanel(QFrame):
         if name and name != self._current_pattern:
             self._current_pattern = name
             self.pattern_switched.emit(name)
+
+    def revert_pattern_to(self, name: str):
+        """パターンコンボを指定名に戻す（シグナルなし）。
+
+        i340: 項目名編集中にパターン切替が来た場合に呼ばれる。
+        """
+        self._pattern_combo.blockSignals(True)
+        self._pattern_combo.setCurrentText(name)
+        self._current_pattern = name
+        self._pattern_combo.blockSignals(False)
+
+    def set_pattern_switching_enabled(self, enabled: bool):
+        """パターン切替 UI の有効/無効を切り替える。
+
+        i341: 項目名編集中は False にしてコンボボックスを操作不能にする。
+        編集確定またはキャンセル後に True で復元する。
+        """
+        if not hasattr(self, '_pattern_combo'):
+            return
+        self._pattern_combo.setEnabled(enabled)
+        if not enabled:
+            # 既に popup が開いていたら閉じる
+            try:
+                self._pattern_combo.hidePopup()
+            except Exception:
+                pass
 
     def _on_pattern_add(self):
         """パターン追加ボタン押下。"""
@@ -4783,8 +5031,9 @@ class SettingsPanel(QFrame):
             self._sound_result_cb.setChecked(value)
             self._sound_result_cb.blockSignals(False)
         elif key == "log_overlay_show":
-            # i274: 廃止された設定。互換のため受け流すだけで何もしない。
-            pass
+            self._log_show_cb.blockSignals(True)
+            self._log_show_cb.setChecked(value)
+            self._log_show_cb.blockSignals(False)
         elif key == "spin_duration":
             self._dur_spin.blockSignals(True)
             self._dur_spin.setValue(value)
@@ -5035,7 +5284,7 @@ class SettingsPanel(QFrame):
         self._tick_test_btn.setStyleSheet(small_btn_style)
         self._win_file_btn.setStyleSheet(small_btn_style)
         self._win_test_btn.setStyleSheet(small_btn_style)
-        # log_show_cb は i274 で廃止されたため、ここでは更新しない
+        self._log_show_cb.setStyleSheet(cb_style)
         self._log_ts_cb.setStyleSheet(cb_style)
         self._log_border_cb.setStyleSheet(cb_style)
         self._log_on_top_cb.setStyleSheet(cb_style)

@@ -38,8 +38,8 @@ class AppSettings:
 
     text_size_mode: int = 1        # 0=省略, 1=収める, 2=縮小
     text_direction: int = 0        # 0=横(回転), 1=横(水平), 2=縦上, 3=縦下, 4=縦直立
-    donut_hole: bool = False       # ドーナツ穴表示
-    pointer_angle: float = 0.0     # ポインター角度
+    donut_hole: bool = True        # ドーナツ穴表示（デフォルト: あり）
+    pointer_angle: float = 90.0    # ポインター角度（デフォルト: 右）
     profile_idx: int = 1           # サイズプロファイル (0=S, 1=M, 2=L)
 
     # ============================================================
@@ -142,7 +142,7 @@ class AppSettings:
     manage_panel_width: int | None = None
     manage_panel_height: int | None = None
     manage_panel_visible: bool = False
-    always_on_top: bool = False        # メインウィンドウ常に最前面
+    always_on_top: bool = True         # メインウィンドウ常に最前面（デフォルト: ON）
     # 透過フラグは window / roulette を独立に持つ
     # 旧 `transparent` キーは互換のため from_config 側でフォールバック読込
     window_transparent: bool = False   # メインウィンドウ背景透過
@@ -151,6 +151,7 @@ class AppSettings:
     ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
     float_win_show_instance: bool = True  # インスタンス番号表示
     settings_panel_float: bool = False   # 設定パネルフローティング独立化
+    roulette_only_mode: bool = False     # ルーレット以外非表示モード
 
     # 各パネルの移動バー表示状態 (E: i294)
     items_panel_drag_bar_visible: bool = True
@@ -173,8 +174,8 @@ class AppSettings:
         return cls(
             text_size_mode=config.get("text_size_mode", 1),
             text_direction=config.get("text_direction", 0),
-            donut_hole=config.get("donut_hole", False),
-            pointer_angle=config.get("pointer_angle", 0.0),
+            donut_hole=config.get("donut_hole", True),
+            pointer_angle=config.get("pointer_angle", 90.0),
             profile_idx=config.get("profile_idx", 1),
             spin_direction=config.get("spin_direction", 1),
             spin_preset_name=config.get("spin_preset_name", DEFAULT_PRESET_NAME),
@@ -233,7 +234,7 @@ class AppSettings:
             manage_panel_width=config.get("manage_panel_width"),
             manage_panel_height=config.get("manage_panel_height"),
             manage_panel_visible=config.get("manage_panel_visible", False),
-            always_on_top=config.get("always_on_top", False),
+            always_on_top=config.get("always_on_top", True),
             # 透過: 新キー優先、旧 transparent 互換 (両方に同じ値)
             window_transparent=config.get(
                 "window_transparent", config.get("transparent", False)
@@ -245,6 +246,7 @@ class AppSettings:
             ctrl_box_visible=config.get("ctrl_box_visible", True),
             float_win_show_instance=config.get("float_win_show_instance", True),
             settings_panel_float=config.get("settings_panel_float", False),
+            roulette_only_mode=config.get("roulette_only_mode", False),
             items_panel_drag_bar_visible=config.get("items_panel_drag_bar_visible", True),
             settings_panel_drag_bar_visible=config.get("settings_panel_drag_bar_visible", True),
             manage_panel_drag_bar_visible=config.get("manage_panel_drag_bar_visible", True),
@@ -324,6 +326,7 @@ class AppSettings:
             "ctrl_box_visible": self.ctrl_box_visible,
             "float_win_show_instance": self.float_win_show_instance,
             "settings_panel_float": self.settings_panel_float,
+            "roulette_only_mode": self.roulette_only_mode,
             "items_panel_drag_bar_visible": self.items_panel_drag_bar_visible,
             "settings_panel_drag_bar_visible": self.settings_panel_drag_bar_visible,
             "manage_panel_drag_bar_visible": self.manage_panel_drag_bar_visible,

@@ -503,16 +503,18 @@ def _standard_order(raw_segs: list) -> list:
     fillers = [by_idx[i][0] for i in nonsplit_idxs]
 
     # 単一 split: Bresenham 法
+    # i339: split セグメントを fillers より先に配置し、
+    # 「分割後の先頭が必ず split 項目になる」並び順を保証する。
     if len(split_idxs) == 1:
         subs = by_idx[split_idxs[0]]
         K, F = len(subs), len(fillers)
         result = []
         fi = 0
         for k in range(K):
+            result.append(subs[k])
             n_fill = (k + 1) * F // K - k * F // K
             result.extend(fillers[fi:fi + n_fill])
             fi += n_fill
-            result.append(subs[k])
         return result
 
     # 複数 split: 位相ずらし greedy

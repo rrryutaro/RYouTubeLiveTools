@@ -22,6 +22,7 @@ PySide6 プロトタイプ — メインウィンドウ
 """
 
 import re
+import ctypes
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRect, QObject, QEvent
 from PySide6.QtGui import QScreen, QMouseEvent, QCursor, QPainter, QColor
@@ -43,6 +44,7 @@ from bridge import (
     save_config, save_item_entries,
     get_pattern_names, get_current_pattern_name,
     set_current_pattern, add_pattern, delete_pattern,
+    ItemEntry,
 )
 from config_utils import BASE_DIR, INSTANCE_NUM
 from app_settings import AppSettings
@@ -63,6 +65,38 @@ from settings_panel import SettingsPanel, ItemPanel, ManagePanel, _PanelGrip
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from sound_manager import SoundManager
 from dark_theme import get_app_stylesheet, resolve_theme_mode
+
+
+class _SpaceSpinFilter(QObject):
+    """i344: Space キー同時スピン用 QApplication レベルイベントフィルタ。
+
+    QApplication 全体にインストールし、フォーカスウィジェットに関係なく
+    Space キーを捕捉する。テキスト入力系ウィジェットにフォーカスがある場合は
+    素通しし、それ以外は _start_all_visible_spin() を呼んでイベントを消費する。
+
+    keyPressEvent (QMainWindow) への依存を廃止することで、ルーレットパネルや
+    選択ハンドルをクリック後も Space が確実に発火する。
+    """
+
+    _TEXT_INPUT_TYPES = (
+        QLineEdit, QPlainTextEdit, QTextEdit,
+        QSpinBox, QDoubleSpinBox,
+    )
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._mw = main_window
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.KeyPress
+                and event.key() == Qt.Key.Key_Space
+                and not event.isAutoRepeat()):
+            fw = QApplication.focusWidget()
+            if isinstance(fw, self._TEXT_INPUT_TYPES):
+                return False  # テキスト入力系はスルー
+            self._mw._start_all_visible_spin()
+            return True  # イベント消費
+        return False
 
 
 class _PanelInputFilter(QObject):
@@ -513,7 +547,9 @@ class _PanelInputFilter(QObject):
                     pw = panel.width()
                     ph = panel.height()
                     new_x = max(0, min(new_x, max(0, parent.width() - pw)))
-                    new_y = max(0, min(new_y, max(0, parent.height() - ph)))
+                    # i340: 移動バー領域（bar_h より上）への侵入を禁止する
+                    bar_h = _MainWindowDragBar._BAR_HEIGHT
+                    new_y = max(bar_h, min(new_y, max(bar_h, parent.height() - ph)))
                 panel.move(new_x, new_y)
                 return True
             return False
@@ -772,6 +808,7 @@ class MainWindow(QMainWindow):
         self._settings_panel._floating = False
         self._settings_panel_visible = False
         self._settings_panel.hide()
+        self._roulette_only_saved_visibility: dict = {}  # roulette_only_mode 前の状態保存
 
         self._settings_panel.spin_requested.connect(self._start_spin)
         self._settings_panel.preset_changed.connect(self._on_preset_changed)
@@ -889,6 +926,21 @@ class MainWindow(QMainWindow):
         self._manage_panel.geometry_changed.connect(
             self._panel_save_timer.start
         )
+        self._manage_panel.roulette_add_requested.connect(
+            self._on_manage_roulette_add
+        )
+        self._manage_panel.roulette_activate_requested.connect(
+            self._on_manage_roulette_activate
+        )
+        self._manage_panel.roulette_visibility_toggled.connect(
+            self._on_manage_roulette_visibility
+        )
+        self._manage_panel.roulette_delete_requested.connect(
+            self._on_manage_roulette_delete
+        )
+        self._manage_panel.apply_to_all_changed.connect(  # i347
+            self._on_manage_apply_to_all_changed
+        )
         # i279: 親 (centralWidget) が show されると child は既定で
         # visible になるため、ここで明示的に hide しておく。表示は
         # `_restore_all_panel_geometries` で manage_panel_visible に
@@ -899,6 +951,12 @@ class MainWindow(QMainWindow):
         if not self._settings.manage_panel_drag_bar_visible:
             self._manage_panel._drag_bar.setVisible(False)
         self._manage_panel_visible = False
+        # i333: 表示中のルーレット ID セット（デフォルトは "default" のみ）
+        self._roulette_visible_ids: set[str] = {"default"}
+
+        # i336: 追加ルーレットを config から復元（_roulette_visible_ids 初期化後に実行）
+        self._roulette_saved_geometries: dict[str, tuple] = {}
+        self._restore_extra_roulettes(central)
 
         # i278/i280: 統一マウスフィルタ (focus + drag + resize) を
         # QApplication 全体にインストール。
@@ -916,6 +974,13 @@ class MainWindow(QMainWindow):
             focus_only_panels=[],
         )
         QApplication.instance().installEventFilter(self._panel_input_filter)
+
+        # i344: Space キー同時スピン用フィルタ（QApplication 全体にインストール）
+        self._space_spin_filter = _SpaceSpinFilter(self)
+        QApplication.instance().installEventFilter(self._space_spin_filter)
+
+        # i346: 設定適用先（False = 選択中のみ / True = 全ルーレット）
+        self._apply_to_all: bool = False
 
         # i279: 復元は showEvent (初回) で行う。
         # __init__ 時点では centralWidget の layout が未活性で、stale な
@@ -984,8 +1049,44 @@ class MainWindow(QMainWindow):
         return self._manager.active.segments
 
     def _sync_settings_to_active(self):
-        """SettingsPanel の表示をアクティブコンテキストに同期する。"""
-        self._settings_panel.set_active_entries(self._active_entries)
+        """SettingsPanel / ItemPanel の表示をアクティブコンテキストに同期する。
+
+        i334: set_active_entries は SettingsPanel 内の詳細ビュー(item_rows)を
+        再構築するが、ItemPanel のシンプルリストは item_entries_changed シグナル
+        経由でしか更新されない。active 切替時に即時反映させるため、
+        set_active_entries の後で明示的に ItemPanel のリスト再構築を呼ぶ。
+        i338: SettingsPanel のパターン一覧も active ルーレット専用に切り替える。
+        """
+        ctx = self._active_context
+        entries = ctx.item_entries
+        self._settings_panel.set_active_entries(entries)
+        # i338: パターン表示を active ルーレットに合わせて切替
+        if hasattr(self, "_settings_panel"):
+            if ctx.item_patterns is not None:
+                # non-default ルーレット: per-roulette パターン
+                self._settings_panel.set_pattern_list(
+                    list(ctx.item_patterns.keys()),
+                    ctx.current_pattern or "デフォルト",
+                )
+            else:
+                # default ルーレット: グローバル config のパターン
+                self._settings_panel.set_pattern_list(
+                    get_pattern_names(self._config),
+                    get_current_pattern_name(self._config),
+                )
+        # ItemPanel のシンプルリストを即時更新
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
+        # i345: active ルーレットの per-roulette ログ設定を SettingsPanel に即時反映する。
+        # update_setting は blockSignals を使うためシグナルの再入なし。
+        if hasattr(self, "_settings_panel"):
+            ap = ctx.panel
+            self._settings_panel.update_setting("log_overlay_show", ap.wheel._log_visible)
+            self._settings_panel.update_setting("log_on_top", ap.wheel._log_on_top)
+        # 行ウィジェット再構築後のマウストラッキング再適用
+        if getattr(self, "_init_complete", False):
+            self._refresh_panel_tracking()
+            self._update_win_counts()
 
     # ================================================================
     #  アクションディスパッチャ（マクロ向け共通入口）
@@ -1087,6 +1188,13 @@ class MainWindow(QMainWindow):
         SettingsPanel が追従するようにする。
         """
         self._sync_settings_to_active()
+        # i333: 全ルーレットパネルのアクティブ表示を更新
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx and ctx.panel:
+                ctx.panel.set_active(rid == roulette_id)
+        # i333: 管理パネルのルーレット一覧を更新
+        self._update_roulette_manage_panel()
         # 開発確認用: ウィンドウタイトルに active ID を反映
         self._update_title_active_id()
 
@@ -1535,9 +1643,8 @@ class MainWindow(QMainWindow):
             panel.spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
         panel.result_overlay.set_close_mode(self._settings.result_close_mode)
         panel.result_overlay.set_hold_sec(self._settings.result_hold_sec)
-        # i274: ログオーバーレイは「ログ前面表示 (log_on_top)」のみで制御。
-        # 旧 log_visible は内部的に常時 True にしておく（描画条件は log_on_top）。
-        panel.wheel.set_log_visible(True)
+        # i342: ログ表示 (log_overlay_show) と前面表示 (log_on_top) を分離。
+        panel.wheel.set_log_visible(self._settings.log_overlay_show)
         panel.wheel.set_log_timestamp(self._settings.log_timestamp)
         panel.wheel.set_log_box_border(self._settings.log_box_border)
         panel.wheel.set_log_on_top(self._settings.log_on_top)
@@ -1569,6 +1676,8 @@ class MainWindow(QMainWindow):
         panel.result_overlay.closed.connect(
             lambda rid=roulette_id: self._on_result_overlay_closed(rid)
         )
+        panel.window_drag_delta.connect(self._on_roulette_window_drag)
+        panel.window_resize_needed.connect(self._on_roulette_window_resize)
 
         # パネル一覧・Z オーダー管理
         self._panels.append(panel)
@@ -1576,12 +1685,10 @@ class MainWindow(QMainWindow):
             lambda p=panel: self._bring_panel_to_front(p)
         )
         # i318: ルーレットパネルの geometry 変化も debounce 保存対象にする
-        # _panel_save_timer は __init__ 中でタイマー生成後に接続する。
-        # (_create_roulette は __init__ 内でタイマー生成より前に呼ばれるため、
-        #  ここでは hasattr でガードし、タイマーが未生成の場合はスキップする。
-        #  __init__ 内での接続は _panel_save_timer 生成直後に行う。)
         if hasattr(self, "_panel_save_timer"):
             panel.geometry_changed.connect(self._panel_save_timer.start)
+        # i334: multi roulette-only mode 中のウィンドウ境界再計算
+        panel.geometry_changed.connect(self._recalc_multi_roulette_only_bounds)
 
         # 位置・サイズ復元
         self._restore_roulette_panel(panel)
@@ -1611,6 +1718,16 @@ class MainWindow(QMainWindow):
         parent = self.centralWidget()
         panel = self._create_roulette(roulette_id, parent)
 
+        # i338: default 以外のルーレットは空の項目 + 1パターンで初期化
+        if roulette_id != "default":
+            ctx = self._manager.get(roulette_id)
+            if ctx is not None:
+                ctx.item_patterns = {"デフォルト": []}
+                ctx.current_pattern = "デフォルト"
+                ctx.item_entries = []
+                ctx.segments = []
+                ctx.panel.set_segments([])
+
         # 既存パネルと重ならないよう少しずらす
         count = len([p for p in self._panels if isinstance(p, RoulettePanel)])
         if count > 1:
@@ -1618,11 +1735,13 @@ class MainWindow(QMainWindow):
             panel.move(panel.x() + offset, panel.y() + offset)
 
         panel.show()
+        self._roulette_visible_ids.add(roulette_id)
 
         if activate:
             self._set_active_roulette(roulette_id)
 
         self._update_instance_labels()
+        self._update_roulette_manage_panel()
         return panel
 
     def _remove_roulette(self, roulette_id: str) -> bool:
@@ -1659,7 +1778,9 @@ class MainWindow(QMainWindow):
                 and self._last_spin_result.roulette_id == roulette_id):
             self._last_spin_result = None
 
+        self._roulette_visible_ids.discard(roulette_id)
         self._update_instance_labels()
+        self._update_roulette_manage_panel()
         return True
 
     # ---- ID 採番 ----
@@ -1732,8 +1853,20 @@ class MainWindow(QMainWindow):
         save_config(self._config)
 
     def _save_item_entries(self):
-        """項目データを config に書き戻して保存する。"""
-        save_item_entries(self._config, self._active_context.item_entries)
+        """項目データを config に書き戻して保存する。
+
+        i338: default ルーレットはグローバル config に保存。
+        それ以外は RouletteContext.item_patterns に在メモリ保存
+        （_save_window_state で一括ディスク書き込み）。
+        """
+        ctx = self._active_context
+        if ctx.item_patterns is not None:
+            # non-default ルーレット: per-roulette パターンにフラッシュ
+            pat = ctx.current_pattern or "デフォルト"
+            ctx.item_patterns[pat] = [e.to_dict() for e in ctx.item_entries]
+        else:
+            # default ルーレット: グローバル config に書き込み
+            save_item_entries(self._config, ctx.item_entries)
 
     # ================================================================
     #  ウィンドウフラグ・パネル Z オーダー管理
@@ -1745,6 +1878,39 @@ class MainWindow(QMainWindow):
         if self._settings.always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
+
+    @staticmethod
+    def _dwm_set_borderless(hwnd: int, enabled: bool):
+        """Windows DWM レベルで外周枠・角丸・影を完全除去する。
+
+        Windows 11 では FramelessWindowHint + NoDropShadowWindowHint だけでは
+        DWM が 1px ボーダーと角丸を描画し続ける。
+        DwmSetWindowAttribute で直接属性を書き換えることで完全に除去できる。
+
+        Args:
+            hwnd: ウィンドウハンドル（winId() の整数値）
+            enabled: True = 枠なし状態にする / False = デフォルト値に戻す
+        """
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            # DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            # DWMWCP_DONOTROUND = 1, DWMWCP_DEFAULT = 0
+            corner_val = 1 if enabled else 0
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, 33,
+                ctypes.byref(ctypes.c_uint(corner_val)),
+                ctypes.sizeof(ctypes.c_uint),
+            )
+            # DWMWA_BORDER_COLOR = 35
+            # DWMWA_COLOR_NONE = 0xFFFFFFFE, DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
+            border_val = 0xFFFFFFFE if enabled else 0xFFFFFFFF
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, 35,
+                ctypes.byref(ctypes.c_uint(border_val)),
+                ctypes.sizeof(ctypes.c_uint),
+            )
+        except Exception:
+            pass  # Windows 以外 / 非対応バージョン
 
     def _apply_central_background(self, transparent: bool):
         """centralWidget の塗りつぶしのみを切り替える。
@@ -1793,6 +1959,206 @@ class MainWindow(QMainWindow):
             ctx = self._manager.get(rid)
             if ctx and ctx.panel:
                 ctx.panel.set_transparent(enabled)
+
+    def _toggle_roulette_only_mode(self):
+        """ルーレット以外非表示モードの ON/OFF を切り替える。"""
+        self._settings.roulette_only_mode = not self._settings.roulette_only_mode
+        self._apply_roulette_only_mode(self._settings.roulette_only_mode)
+        self._save_config()
+
+    def _apply_roulette_only_mode(self, enabled: bool):
+        """ルーレット以外非表示モードを適用する。
+
+        i334: single / multi で挙動を分岐する。
+          single (roulette 1件): 従来どおりウィンドウ操作に委譲。
+          multi  (roulette 2件以上): 非ルーレット系パネルのみ非表示にし、
+            各 roulette は現在位置のまま保持。ウィンドウを全 roulette の
+            最小包含矩形へ追従させる。
+        """
+        if self._manager.count > 1:
+            self._apply_roulette_only_mode_multi(enabled)
+        else:
+            self._apply_roulette_only_mode_single(enabled)
+
+    def _apply_roulette_only_mode_single(self, enabled: bool):
+        """single 時の `ルーレット以外非表示` 処理（従来ロジックを維持）。"""
+        panel = self._active_panel
+        if enabled:
+            # ON 前の状態を保存（可視性・パネル位置・ウィンドウサイズ・透過状態）
+            self._roulette_only_saved_visibility = {
+                "item": self._item_panel.isVisible(),
+                "settings": self._settings_panel.isVisible(),
+                "manage": self._manage_panel.isVisible(),
+                "window_transparent": self._settings.window_transparent,
+                "roulette_transparent": self._settings.roulette_transparent,
+                "panel_pos": QPoint(panel.pos()),
+                "panel_size": panel.size(),
+                "window_size": self.size(),
+                "panel_offsets": {
+                    "item":     (self._item_panel.x(),     self._item_panel.y()),
+                    "settings": (self._settings_panel.x(), self._settings_panel.y()),
+                    "manage":   (self._manage_panel.x(),   self._manage_panel.y()),
+                },
+            }
+            # パネルを非表示
+            self._item_panel.hide()
+            self._settings_panel.hide()
+            self._settings_panel_visible = False
+            self._manage_panel.hide()
+            # ドラッグバーを非表示
+            if hasattr(self, "_mw_drag_bar"):
+                self._mw_drag_bar.hide()
+            # ウィンドウ背景とルーレットパネルを透過
+            self._apply_window_transparent(True)
+            self._apply_roulette_transparent(True)
+            # ルーレットパネルをウィンドウ左上に寄せてウィンドウをパネルサイズへ
+            panel.roulette_only_mode = True
+            panel._grip._skip_parent_clamp = True
+            panel.move(0, 0)
+            self.resize(panel.width(), panel.height())
+            # ウィンドウから外枠・影を OS/Qt レベルで完全に除去
+            was_visible = self.isVisible()
+            flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+                     | Qt.WindowType.NoDropShadowWindowHint)
+            if self._settings.always_on_top:
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            self.setWindowFlags(flags)
+            if was_visible:
+                self.show()
+            self._dwm_set_borderless(int(self.winId()), True)
+        else:
+            saved = self._roulette_only_saved_visibility
+            was_visible = self.isVisible()
+            self._apply_window_flags()
+            if was_visible:
+                self.show()
+            self._dwm_set_borderless(int(self.winId()), False)
+            panel.roulette_only_mode = False
+            panel._grip._skip_parent_clamp = False
+            dw = panel.width()  - saved["panel_size"].width()
+            dh = panel.height() - saved["panel_size"].height()
+            if "panel_pos" in saved:
+                panel.move(saved["panel_pos"])
+            if "window_size" in saved:
+                new_w = saved["window_size"].width()  + max(0, dw)
+                new_h = saved["window_size"].height() + max(0, dh)
+                self.resize(new_w, new_h)
+            if hasattr(self, "_mw_drag_bar"):
+                self._mw_drag_bar.setGeometry(
+                    0, 0, self.width(), _MainWindowDragBar._BAR_HEIGHT
+                )
+                self._mw_drag_bar.show()
+                self._mw_drag_bar.raise_()
+            self._apply_window_transparent(saved.get("window_transparent", False))
+            self._apply_roulette_transparent(saved.get("roulette_transparent", False))
+            old_rp_right  = saved["panel_pos"].x() + saved["panel_size"].width()
+            old_rp_bottom = saved["panel_pos"].y() + saved["panel_size"].height()
+            offsets = saved.get("panel_offsets", {})
+            panel_entries = [
+                ("item",     self._item_panel,     saved.get("item",     False)),
+                ("settings", self._settings_panel, saved.get("settings", False)),
+                ("manage",   self._manage_panel,   saved.get("manage",   False)),
+            ]
+            for key, sp, was_visible_panel in panel_entries:
+                if not was_visible_panel:
+                    continue
+                sp.show()
+                ox, oy = offsets.get(key, (sp.x(), sp.y()))
+                shift_x = dw if ox >= old_rp_right  else 0
+                shift_y = dh if oy >= old_rp_bottom else 0
+                new_x, new_y = self._clamp_to_client(
+                    ox + shift_x, oy + shift_y, sp.width(), sp.height()
+                )
+                sp.move(new_x, new_y)
+            if saved.get("settings", False):
+                self._settings_panel_visible = True
+
+    def _apply_roulette_only_mode_multi(self, enabled: bool):
+        """multi 時の `ルーレット以外非表示` 処理。
+
+        i335 修正:
+          ON:  非ルーレット系パネルのみ非表示。各 roulette は現在位置のまま。
+               roulette の移動は OFF 時と同様にメインウィンドウ内の通常移動とする。
+               ウィンドウサイズの動的追従は行わない。
+          OFF: 可視状態を ON 前に復元。roulette の位置/サイズは維持。
+        """
+        if enabled:
+            # ON 前の状態を保存
+            self._roulette_only_saved_visibility = {
+                "item": self._item_panel.isVisible(),
+                "settings": self._settings_panel.isVisible(),
+                "manage": self._manage_panel.isVisible(),
+                "window_transparent": self._settings.window_transparent,
+                "roulette_transparent": self._settings.roulette_transparent,
+                "window_size": self.size(),
+            }
+            # 非ルーレット系パネルのみ非表示
+            self._item_panel.hide()
+            self._settings_panel.hide()
+            self._settings_panel_visible = False
+            self._manage_panel.hide()
+            if hasattr(self, "_mw_drag_bar"):
+                self._mw_drag_bar.hide()
+            # ウィンドウ・ルーレットを透過
+            self._apply_window_transparent(True)
+            self._apply_roulette_transparent(True)
+            # ウィンドウフラグ: 外枠・影を除去
+            was_visible = self.isVisible()
+            flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+                     | Qt.WindowType.NoDropShadowWindowHint)
+            if self._settings.always_on_top:
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            self.setWindowFlags(flags)
+            if was_visible:
+                self.show()
+            self._dwm_set_borderless(int(self.winId()), True)
+            # 各 roulette は roulette_only_mode = False のまま。
+            # ウィンドウ内の通常移動（OFF 時と同様）で扱う。
+        else:
+            saved = self._roulette_only_saved_visibility
+            was_visible = self.isVisible()
+            self._apply_window_flags()
+            if was_visible:
+                self.show()
+            self._dwm_set_borderless(int(self.winId()), False)
+            # ウィンドウサイズを復元
+            if "window_size" in saved:
+                self.resize(saved["window_size"])
+            if hasattr(self, "_mw_drag_bar"):
+                self._mw_drag_bar.setGeometry(
+                    0, 0, self.width(), _MainWindowDragBar._BAR_HEIGHT
+                )
+                self._mw_drag_bar.show()
+                self._mw_drag_bar.raise_()
+            self._apply_window_transparent(saved.get("window_transparent", False))
+            self._apply_roulette_transparent(saved.get("roulette_transparent", False))
+            # 可視パネルを復元
+            panel_entries = [
+                ("item",     self._item_panel),
+                ("settings", self._settings_panel),
+                ("manage",   self._manage_panel),
+            ]
+            for key, sp in panel_entries:
+                if saved.get(key, False):
+                    sp.show()
+            if saved.get("settings", False):
+                self._settings_panel_visible = True
+
+    def _recalc_multi_roulette_only_bounds(self):
+        """i335: multi 時の動的ウィンドウ境界追従は無効化。
+
+        i334 で実装した包含矩形追従ロジックは移動不具合を引き起こすため
+        i335 で撤回。geometry_changed からの接続は残るが、何もしない。
+        """
+        return
+
+    def _on_roulette_window_drag(self, delta):
+        """roulette_only_mode 時のルーレットドラッグをウィンドウ移動に変換する。"""
+        self.move(self.pos() + delta)
+
+    def _on_roulette_window_resize(self, new_size):
+        """roulette_only_mode 時のルーレットリサイズをウィンドウリサイズに反映する。"""
+        self.resize(new_size)
 
     def _toggle_always_on_top(self):
         """常に最前面の ON/OFF を切り替える。"""
@@ -1947,6 +2313,92 @@ class MainWindow(QMainWindow):
             if ctx and ctx.panel:
                 ctx.panel.set_instance_label(i + 1 if show else None)
 
+    # ================================================================
+    #  i333: マルチルーレット管理
+    # ================================================================
+
+    def _update_roulette_manage_panel(self):
+        """ManagePanel のルーレット一覧を現在の状態に合わせて更新する。"""
+        if not hasattr(self, "_manage_panel") or not hasattr(self, "_roulette_visible_ids"):
+            return
+        active_id = self._manager.active_id
+        entries = []
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            # 表示名: roulette_id がシンプルなら番号で表示
+            if rid == "default":
+                label = "ルーレット 1"
+            elif rid.startswith("roulette_"):
+                try:
+                    n = int(rid[len("roulette_"):])
+                    label = f"ルーレット {n}"
+                except ValueError:
+                    label = rid
+            else:
+                label = rid
+            entries.append({
+                "id": rid,
+                "label": label,
+                "active": rid == active_id,
+                "visible": rid in self._roulette_visible_ids,
+            })
+        self._manage_panel.set_roulette_list(entries)
+
+    def _on_manage_roulette_add(self):
+        """ManagePanel の追加ボタンからのコールバック。"""
+        self._add_new_roulette(activate=True)
+
+    def _on_manage_roulette_activate(self, roulette_id: str):
+        """ManagePanel からのアクティブ切替コールバック。"""
+        self.apply_action(SetActiveRoulette(roulette_id))
+
+    def _on_manage_roulette_visibility(self, roulette_id: str, visible: bool):
+        """ManagePanel からの表示/非表示切替コールバック。"""
+        ctx = self._manager.get(roulette_id)
+        if ctx is None:
+            return
+        if visible:
+            self._roulette_visible_ids.add(roulette_id)
+            ctx.panel.show()
+        else:
+            self._roulette_visible_ids.discard(roulette_id)
+            ctx.panel.hide()
+
+    def _on_manage_roulette_delete(self, roulette_id: str):
+        """ManagePanel からの削除コールバック（i338）。"""
+        if self._manager.count <= 1:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        ctx = self._manager.get(roulette_id)
+        if ctx is None:
+            return
+        # 表示名を取得
+        if roulette_id == "default":
+            label = "ルーレット 1"
+        elif roulette_id.startswith("roulette_"):
+            try:
+                n = int(roulette_id[len("roulette_"):])
+                label = f"ルーレット {n}"
+            except ValueError:
+                label = roulette_id
+        else:
+            label = roulette_id
+        reply = QMessageBox.question(
+            self, "ルーレット削除",
+            f"「{label}」を削除しますか？\nこの操作は取り消せません。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._remove_roulette(roulette_id)
+
+    def _on_manage_apply_to_all_changed(self, value: bool) -> None:
+        """ManagePanel の一括適用チェックボックスから: _apply_to_all フラグを更新する（i347）。"""
+        self._apply_to_all = value
+
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。
 
@@ -2056,6 +2508,76 @@ class MainWindow(QMainWindow):
 
         panel.setGeometry(rp_x, rp_y, rp_w, rp_h)
 
+    def _restore_extra_roulettes(self, parent: QWidget) -> None:
+        """i336: config["roulettes"] から全ルーレットの geometry と追加ルーレットを復元する。
+
+        i337 修正: AppSettings.roulette_panel_x/y はアクティブパネルの位置を保存するため、
+        アクティブが "default" 以外だった場合に "default" の復元位置がずれる。
+        config["roulettes"] の "default" エントリも _roulette_saved_geometries に記録し、
+        _restore_all_panel_geometries で AppSettings の誤位置を上書きする。
+        """
+        roulettes_cfg = self._config.get("roulettes", [])
+        for entry in roulettes_cfg:
+            rid = entry.get("id", "")
+            if not rid:
+                continue
+
+            # geometry を記録（"default" 含む全エントリ対象）
+            x = entry.get("x")
+            y = entry.get("y")
+            w = entry.get("w")
+            h = entry.get("h")
+            if None not in (x, y, w, h):
+                self._roulette_saved_geometries[rid] = (x, y, w, h)
+
+            if rid == "default":
+                # "default" パネル生成は不要だが per-roulette ログ設定は復元する (i344)
+                ctx = self._manager.get("default")
+                if ctx is not None:
+                    log_show = entry.get("log_overlay_show", self._settings.log_overlay_show)
+                    log_on_top = entry.get("log_on_top", self._settings.log_on_top)
+                    ctx.panel.wheel.set_log_visible(log_show)
+                    ctx.panel.wheel.set_log_on_top(log_on_top)
+                continue
+
+            if self._manager.get(rid) is not None:
+                continue
+            panel = self._add_roulette(rid, activate=False)
+            if panel is None:
+                continue
+            # i338: per-roulette item_patterns + current_pattern を復元
+            item_patterns_raw = entry.get("item_patterns")
+            current_pat = entry.get("current_pattern", "デフォルト")
+            ctx = self._manager.get(rid)
+            if ctx is not None and item_patterns_raw is not None:
+                ctx.item_patterns = dict(item_patterns_raw)
+                ctx.current_pattern = current_pat
+                # 現在パターンの項目を ItemEntry リストに変換
+                raw_items = ctx.item_patterns.get(current_pat, [])
+                entries_list = [
+                    ItemEntry.from_config_entry(r, keep_disabled=True)
+                    for r in raw_items
+                ]
+                entries_list = [e for e in entries_list if e is not None]
+                ctx.item_entries = entries_list
+                ctx.segments, _ = build_segments_from_entries(entries_list, self._config)
+                ctx.panel.set_segments(ctx.segments)
+            elif ctx is not None:
+                # 旧形式 or データなし: 空の1パターンで初期化（_add_roulette 時点で済み）
+                pass
+
+            # i343: per-roulette ログ設定を復元
+            if ctx is not None:
+                log_show = entry.get("log_overlay_show", self._settings.log_overlay_show)
+                log_on_top = entry.get("log_on_top", self._settings.log_on_top)
+                ctx.panel.wheel.set_log_visible(log_show)
+                ctx.panel.wheel.set_log_on_top(log_on_top)
+            # i345: per-roulette ログ自動保存ファイルを復元
+            if ctx is not None:
+                log_path = self._roulette_log_path(rid)
+                if os.path.exists(log_path):
+                    ctx.panel.wheel.load_log(log_path)
+
     # ================================================================
     #  i277: パネル管理 (centralWidget 内の内部パネル) + 前面化フォーカス
     # ================================================================
@@ -2093,8 +2615,8 @@ class MainWindow(QMainWindow):
         bar_h = _MainWindowDragBar._BAR_HEIGHT  # ドラッグバーの高さ (パネルはこの下から配置)
         panel_top = bar_h + 4  # パネル配置の上端 y 座標
 
-        # ManagePanel: 左上 (小さい)
-        mp_w, mp_h = 240, 180
+        # ManagePanel: 左上（i348: 高さを増やしスクロール込みで十分な初期サイズに）
+        mp_w, mp_h = 260, 320
         mp_x = 12
         mp_y = panel_top
 
@@ -2143,8 +2665,10 @@ class MainWindow(QMainWindow):
         if ch < 100:
             ch = max(self.height(), 320)
         # パネルがクライアント領域内に完全に収まるようにクランプ
+        # i339: 移動バーの下端（bar_h）より上にはパネルが入らないようにする
+        bar_h = _MainWindowDragBar._BAR_HEIGHT
         x = max(0, min(x, max(0, cw - w)))
-        y = max(0, min(y, max(0, ch - h)))
+        y = max(bar_h, min(y, max(bar_h, ch - h)))
         return x, y
 
     def _apply_panel_geometry(self, panel: QWidget,
@@ -2188,11 +2712,21 @@ class MainWindow(QMainWindow):
         mp_y = s.manage_panel_y if s.manage_panel_y is not None else defaults["manage"][1]
         mp_w = s.manage_panel_width if s.manage_panel_width is not None else defaults["manage"][2]
         mp_h = s.manage_panel_height if s.manage_panel_height is not None else defaults["manage"][3]
-        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 220, 220)
+        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 240, 220)
         if s.manage_panel_visible:
             self._manage_panel.show()
             self._manage_panel.raise_()
             self._manage_panel_visible = True
+
+        # i336: 追加ルーレットの位置復元
+        for rid, (rx, ry, rw, rh) in getattr(self, "_roulette_saved_geometries", {}).items():
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            self._apply_panel_geometry(
+                ctx.panel, rx, ry, rw, rh,
+                RoulettePanel._MIN_W, RoulettePanel._MIN_H,
+            )
 
         # ManagePanel のチェックボックスを実状態と同期
         self._sync_manage_panel_checks()
@@ -2315,7 +2849,7 @@ class MainWindow(QMainWindow):
         self._apply_panel_geometry(self._settings_panel, sp_x, sp_y, sp_w, sp_h, sp_min, 200)
         # ManagePanel
         mp_x, mp_y, mp_w, mp_h = defaults["manage"]
-        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 220, 220)
+        self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 240, 220)
         # 全部を表示してユーザーが見つけられるようにする
         self._item_panel.show()
         self._item_panel.raise_()
@@ -2563,6 +3097,35 @@ class MainWindow(QMainWindow):
         s.roulette_panel_width = rp.width()
         s.roulette_panel_height = rp.height()
 
+        # i336/i338: マルチルーレット構成を config["roulettes"] に保存
+        roulettes_cfg = []
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            p = ctx.panel
+            if ctx.item_patterns is not None:
+                # i338: non-default ルーレット — 現在の項目を per-roulette パターンにフラッシュ
+                pat = ctx.current_pattern or "デフォルト"
+                ctx.item_patterns[pat] = [e.to_dict() for e in ctx.item_entries]
+                entry = {
+                    "id": rid,
+                    "x": p.x(), "y": p.y(), "w": p.width(), "h": p.height(),
+                    "current_pattern": ctx.current_pattern or "デフォルト",
+                    "item_patterns": ctx.item_patterns,
+                }
+            else:
+                # default ルーレット: items はグローバル config に保存済み
+                entry = {
+                    "id": rid,
+                    "x": p.x(), "y": p.y(), "w": p.width(), "h": p.height(),
+                }
+            # i343: per-roulette ログ設定を保存
+            entry["log_overlay_show"] = p.wheel._log_visible
+            entry["log_on_top"] = p.wheel._log_on_top
+            roulettes_cfg.append(entry)
+        self._config["roulettes"] = roulettes_cfg
+
         # SettingsPanel: 表示中のとき位置を更新、非表示なら最後の値を維持。
         # visible フラグは現在状態を尊重する。
         if self._settings_panel.isVisible():
@@ -2626,6 +3189,13 @@ class MainWindow(QMainWindow):
         finally:
             # 復元後の checkbox 同期と保存対象再開
             self._sync_manage_panel_checks()
+            # i333: 初期ルーレット一覧と active 状態を反映
+            self._update_roulette_manage_panel()
+            active_id = self._manager.active_id
+            if active_id:
+                ctx = self._manager.get(active_id)
+                if ctx and ctx.panel:
+                    ctx.panel.set_active(True)
             # i281: 復元時点で内部 layout が確定した子ウィジェットにも
             # mouseTracking を行き渡らせる。これがないと、項目行などの
             # 動的に追加された QWidget 上で resize cursor のホバーが
@@ -2639,6 +3209,11 @@ class MainWindow(QMainWindow):
                         self._manage_panel,
                     ):
                         f._enable_tracking_recursive(p)
+            except Exception:
+                pass
+            # i345: 復元後に SettingsPanel 表示を active ルーレットの実状態に合わせる
+            try:
+                self._sync_settings_to_active()
             except Exception:
                 pass
 
@@ -2669,7 +3244,9 @@ class MainWindow(QMainWindow):
             self.resize(size, size)
             self.blockSignals(False)
         # 移動バーをウィンドウ幅に追従させ、常に最前面に置く
-        if hasattr(self, "_mw_drag_bar"):
+        # roulette_only_mode 中はドラッグバーを非表示のまま再配置のみスキップ
+        if (hasattr(self, "_mw_drag_bar")
+                and not getattr(self._settings, "roulette_only_mode", False)):
             self._mw_drag_bar.setGeometry(
                 0, 0, self.width(), _MainWindowDragBar._BAR_HEIGHT
             )
@@ -2695,6 +3272,85 @@ class MainWindow(QMainWindow):
             self._stop_auto_advance()
         self.apply_action(SpinRoulette())
 
+    def _start_all_visible_spin(self):
+        """表示中のすべてのルーレットを同時スピンする（Space キー用）。
+
+        - 対象: 現在 isVisible() == True のルーレットパネルのみ
+        - いずれかがすでに回転中なら再押下を無視する
+        """
+        targets = [
+            ctx
+            for rid in self._manager.ids()
+            for ctx in [self._manager.get(rid)]
+            if ctx and ctx.panel.isVisible()
+        ]
+        if not targets:
+            return
+        # いずれかが回転中なら無視
+        if any(ctx.panel.spin_ctrl.is_spinning for ctx in targets):
+            return
+        if self._macro_auto_advancing:
+            self._stop_auto_advance()
+        for ctx in targets:
+            ctx.panel.start_spin()
+
+    def _roulette_log_path(self, roulette_id: str) -> str:
+        """i345: ルーレットごとのログ自動保存パスを返す。
+
+        "default" は後方互換のため旧パス（roulette_autosave_log.json）を使う。
+        それ以外は roulette_autosave_log_{id}.json を使い、ルーレット間の
+        ログ自動保存ファイルを分離する。
+        """
+        if not roulette_id or roulette_id == "default":
+            return self._log_autosave_path
+        safe_id = roulette_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+        return os.path.join(BASE_DIR, f"roulette_autosave_log_{safe_id}.json")
+
+    def _apply_setting_to_all_panels(self, key: str, value) -> None:
+        """i346: active 以外の全ルーレットパネルに設定を一括適用する。
+
+        active パネルへの適用は呼び出し元 (_update_setting_by_action) で済み。
+        per-roulette な設定キーのみを扱い、グローバル設定は対象外。
+        """
+        for rid in self._manager.ids():
+            if rid == self._manager.active_id:
+                continue  # active は呼び出し元で適用済み
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            p = ctx.panel
+            if key == "log_overlay_show":
+                p.wheel.set_log_visible(value)
+            elif key == "log_on_top":
+                p.wheel.set_log_on_top(value)
+            elif key == "log_timestamp":
+                p.wheel.set_log_timestamp(value)
+            elif key == "log_box_border":
+                p.wheel.set_log_box_border(value)
+            elif key == "spin_duration":
+                p.spin_ctrl.set_spin_duration(value)
+            elif key == "spin_mode":
+                p.spin_ctrl.set_spin_mode(value)
+            elif key == "double_duration":
+                p.spin_ctrl.set_double_duration(value)
+            elif key == "triple_duration":
+                p.spin_ctrl.set_triple_duration(value)
+            elif key == "sound_tick_enabled":
+                p.spin_ctrl.set_sound_tick_enabled(value)
+            elif key == "sound_result_enabled":
+                p.spin_ctrl.set_sound_result_enabled(value)
+            elif key == "result_close_mode":
+                p.result_overlay.set_close_mode(value)
+            elif key == "result_hold_sec":
+                p.result_overlay.set_hold_sec(value)
+            elif key == "donut_hole":
+                p.wheel.set_donut_hole(value)
+            elif key == "spin_direction":
+                p.wheel._spin_direction = value
+            elif key == "pointer_angle":
+                p.wheel.set_pointer_angle(value)
+            # グローバル系 (volume, theme, window_size 等) は対象外
+
     def _on_spin_finished(self, winner: str, seg_idx: int,
                           roulette_id: str = ""):
         self._settings_panel.set_spinning(False)
@@ -2711,9 +3367,15 @@ class MainWindow(QMainWindow):
             ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
             if ctx:
                 ctx.panel.wheel.add_log_entry(winner)
-                ctx.panel.wheel.save_log(self._log_autosave_path)
+                # i345: ルーレットごとに独立したログファイルへ保存し、
+                # #3 のスピン結果が #1 のログファイルを上書きしないようにする
+                ctx.panel.wheel.save_log(self._roulette_log_path(roulette_id))
             # 勝利数集計用履歴に記録
-            pattern = get_current_pattern_name(self._config)
+            # i345: non-default ルーレットは per-roulette パターン名を使う
+            if ctx and ctx.current_pattern:
+                pattern = ctx.current_pattern
+            else:
+                pattern = get_current_pattern_name(self._config)
             self._win_history.record(winner, pattern)
             self._win_history.save()
             self._update_win_counts()
@@ -2945,7 +3607,10 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
         self._active_panel.wheel.clear_log()
-        self._active_panel.wheel.save_log(self._log_autosave_path)
+        # i345: active roulette のログファイルをクリア
+        self._active_panel.wheel.save_log(
+            self._roulette_log_path(self._manager.active_id)
+        )
         self._win_history.clear()
         self._win_history.save()
         self._update_win_counts()
@@ -3043,8 +3708,8 @@ class MainWindow(QMainWindow):
         elif key == "win_pattern":
             self._sound.set_win_pattern(value)
         elif key == "log_overlay_show":
-            # i274: 廃止された設定。互換のため受け流す。
-            pass
+            # i342: ログ表示 ON/OFF をアクティブパネルに反映する。
+            rp.wheel.set_log_visible(value)
         elif key == "log_timestamp":
             rp.wheel.set_log_timestamp(value)
         elif key == "log_box_border":
@@ -3113,6 +3778,10 @@ class MainWindow(QMainWindow):
             else:
                 self._os_theme_timer.stop()
 
+        # i346: 全ルーレット一括適用（active パネルへの適用は上記で完了済み）
+        if getattr(self, "_apply_to_all", False):
+            self._apply_setting_to_all_panels(key, value)
+
         self._save_config()
         return True
 
@@ -3156,17 +3825,34 @@ class MainWindow(QMainWindow):
 
     def _on_pattern_switched(self, name: str):
         """パターン切替: 項目を切り替えてホイールを更新する。"""
+        # i340: 項目名編集中はパターン切替を拒否してコンボを元に戻す
+        if hasattr(self, "_item_panel") and self._item_panel.is_item_name_editing():
+            ctx = self._active_context
+            if ctx.item_patterns is not None:
+                old_name = ctx.current_pattern or "デフォルト"
+            else:
+                old_name = get_current_pattern_name(self._config)
+            self._settings_panel.revert_pattern_to(old_name)
+            return
         # 現在のパターンの項目を保存してから切替
         self._save_item_entries()
-        set_current_pattern(self._config, name)
-        # 新パターンの項目を読み込み
-        entries = load_all_item_entries(self._config)
         ctx = self._active_context
+        if ctx.item_patterns is not None:
+            # i338: non-default ルーレット — per-roulette パターンで切替
+            ctx.current_pattern = name
+            raw_items = ctx.item_patterns.get(name, [])
+            entries = [ItemEntry.from_config_entry(r, keep_disabled=True) for r in raw_items]
+            entries = [e for e in entries if e is not None]
+        else:
+            set_current_pattern(self._config, name)
+            entries = load_all_item_entries(self._config)
         ctx.item_entries = entries
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
-        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        # i339: ItemPanel シンプルリストをパターン切替後に即時更新する
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
         self._update_win_counts()
 
@@ -3174,36 +3860,58 @@ class MainWindow(QMainWindow):
         """パターン追加: 空パターンを作成し、切り替える。"""
         # 現在のパターンの項目を保存
         self._save_item_entries()
-        add_pattern(self._config, name)
-        set_current_pattern(self._config, name)
-        # 空の項目リストで更新
-        entries = []
         ctx = self._active_context
+        if ctx.item_patterns is not None:
+            # i338: non-default ルーレット — per-roulette パターン追加
+            if name not in ctx.item_patterns:
+                ctx.item_patterns[name] = []
+            ctx.current_pattern = name
+            entries = []
+            self._settings_panel.set_pattern_list(list(ctx.item_patterns.keys()), name)
+        else:
+            add_pattern(self._config, name)
+            set_current_pattern(self._config, name)
+            entries = []
         ctx.item_entries = entries
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
-        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        # i339: ItemPanel シンプルリストをパターン追加後に即時更新する
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
 
     def _on_pattern_deleted(self, name: str):
         """パターン削除: 削除後に残りの先頭パターンに切り替える。"""
         # 現在のパターンを保存してから削除
         self._save_item_entries()
-        delete_pattern(self._config, name)
-        # 新しい current の項目を読み込み
-        new_current = get_current_pattern_name(self._config)
-        entries = load_all_item_entries(self._config)
         ctx = self._active_context
+        if ctx.item_patterns is not None:
+            # i338: non-default ルーレット — per-roulette パターン削除
+            if name in ctx.item_patterns and len(ctx.item_patterns) > 1:
+                del ctx.item_patterns[name]
+            # SettingsPanel は既に新 current を選択済み
+            new_current = self._settings_panel._current_pattern
+            if new_current not in ctx.item_patterns:
+                new_current = next(iter(ctx.item_patterns))
+            ctx.current_pattern = new_current
+            raw_items = ctx.item_patterns.get(new_current, [])
+            entries = [ItemEntry.from_config_entry(r, keep_disabled=True) for r in raw_items]
+            entries = [e for e in entries if e is not None]
+            self._settings_panel.set_pattern_list(list(ctx.item_patterns.keys()), new_current)
+        else:
+            delete_pattern(self._config, name)
+            new_current = get_current_pattern_name(self._config)
+            entries = load_all_item_entries(self._config)
+            self._settings_panel.set_pattern_list(get_pattern_names(self._config), new_current)
         ctx.item_entries = entries
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
-        # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
+        # i339: ItemPanel シンプルリストをパターン削除後に即時更新する
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
-        self._settings_panel.set_pattern_list(
-            get_pattern_names(self._config), new_current
-        )
 
     # ================================================================
     #  パネル開閉（F1 でトグル）
@@ -3237,145 +3945,35 @@ class MainWindow(QMainWindow):
                 font-size: 10pt;
                 border: 1px solid {d.separator};
             }}
+            QMenu::item {{
+                padding-top: 4px;
+                padding-bottom: 4px;
+                padding-left: 4px;
+                padding-right: 32px;
+            }}
             QMenu::item:selected {{
                 background-color: {d.separator};
             }}
         """)
 
-        spin_action = menu.addAction("  スピン開始 (Space)")
-        spin_action.triggered.connect(self._start_spin)
-        if self._active_panel.spin_ctrl.is_spinning:
-            spin_action.setEnabled(False)
-
-        menu.addSeparator()
-
-        panel_mark = "\u25cf" if self._settings_panel_visible else "  "
-        action = menu.addAction(f"{panel_mark} 設定パネルを表示 (F1)")
-        action.triggered.connect(self._toggle_settings_panel)
-
-        menu.addSeparator()
-
-        for idx, (label, w, h) in enumerate(SIZE_PROFILES):
-            marker = "\u25cf" if idx == s.profile_idx else "  "
-            action = menu.addAction(f"{marker} サイズ {label}  ({w} x {h})")
-            action.triggered.connect(
-                lambda checked, i=idx, ww=w, hh=h: self._set_profile(i, ww, hh)
-            )
-
-        menu.addSeparator()
-
-        current_preset = self._design.preset_name
-        for name in DESIGN_PRESET_NAMES:
-            marker = "\u25cf" if name == current_preset else "  "
-            action = menu.addAction(f"{marker} デザイン: {name}")
-            action.triggered.connect(
-                lambda checked, n=name: self._apply_design_preset(n)
-            )
-
-        editor_action = menu.addAction("  デザインエディタ...")
-        editor_action.triggered.connect(self._open_design_editor)
-
-        graph_action = menu.addAction("  勝利履歴グラフ...")
-        graph_action.triggered.connect(self._open_graph)
-
-        menu.addSeparator()
-
-        mode_names = ["省略", "収める", "縮小"]
-        for m, name in enumerate(mode_names):
-            marker = "\u25cf" if m == s.text_size_mode else "  "
-            action = menu.addAction(f"{marker} テキスト: {name}")
-            action.triggered.connect(
-                lambda checked, mm=m: self._set_text_size_mode(mm)
-            )
-
-        menu.addSeparator()
-
-        donut_mark = "\u25cf" if s.donut_hole else "  "
-        action = menu.addAction(f"{donut_mark} ドーナツ穴")
-        action.triggered.connect(self._toggle_donut)
-
-        menu.addSeparator()
+        # ルーレット以外非表示
+        ro_mark = "\u25cf" if s.roulette_only_mode else "  "
+        action = menu.addAction(f"{ro_mark} ルーレット以外非表示    ")
+        action.triggered.connect(self._toggle_roulette_only_mode)
 
         # 常に最前面
         aot_mark = "\u25cf" if s.always_on_top else "  "
-        action = menu.addAction(f"{aot_mark} 常に最前面")
+        action = menu.addAction(f"{aot_mark} 常に最前面    ")
         action.triggered.connect(self._toggle_always_on_top)
 
         # リサイズグリップ表示
         grip_mark = "\u25cf" if s.grip_visible else "  "
-        action = menu.addAction(f"{grip_mark} リサイズグリップ表示")
+        action = menu.addAction(f"{grip_mark} リサイズグリップ表示    ")
         action.triggered.connect(self._toggle_grip_visible)
 
-        # コントロールボックス表示
-        cb_mark = "\u25cf" if s.ctrl_box_visible else "  "
-        action = menu.addAction(f"{cb_mark} コントロールボックス表示")
-        action.triggered.connect(self._toggle_ctrl_box_visible)
-
-        # インスタンス番号表示
-        inst_mark = "\u25cf" if s.float_win_show_instance else "  "
-        action = menu.addAction(f"{inst_mark} インスタンス番号表示")
-        action.triggered.connect(self._toggle_show_instance)
-
-        # 設定パネル独立化
-        float_mark = "\u25cf" if s.settings_panel_float else "  "
-        action = menu.addAction(f"{float_mark} 設定パネル独立化")
-        action.triggered.connect(self._toggle_settings_panel_float)
-
         menu.addSeparator()
 
-        # マクロ
-        macro_menu = menu.addMenu("  マクロ")
-        macro_menu.setStyleSheet(menu.styleSheet())
-
-        has_session = self._macro_session.total_count > 0
-        session_info = (f" [{self._macro_session.current_index}/"
-                        f"{self._macro_session.total_count}]") if has_session else ""
-
-        action = macro_menu.addAction(f"  エディタを開く{session_info}")
-        action.triggered.connect(self._dev_show_action_viewer)
-
-        macro_menu.addSeparator()
-
-        action = macro_menu.addAction("  ステップ実行")
-        action.triggered.connect(self._dev_step_action)
-        action.setEnabled(self._macro_session.has_next())
-
-        action = macro_menu.addAction("  連続実行")
-        action.triggered.connect(self._dev_run_until_pause)
-        action.setEnabled(self._macro_session.has_next())
-
-        action = macro_menu.addAction("  セッションクリア")
-        action.triggered.connect(self._dev_clear_session)
-        action.setEnabled(has_session)
-
-        macro_menu.addSeparator()
-
-        # 記録
-        is_recording = self._recorder.is_recording
-        rec_count = self._recorder.count
-        if is_recording:
-            rec_label = f"\u25cf 記録停止 ({rec_count} 件記録中)"
-            action = macro_menu.addAction(rec_label)
-            action.triggered.connect(self._toggle_recording)
-
-            action = macro_menu.addAction(f"  記録プレビュー ({rec_count} 件)")
-            action.triggered.connect(self._show_recording_preview)
-            action.setEnabled(rec_count > 0)
-        else:
-            action = macro_menu.addAction("  記録開始")
-            action.triggered.connect(self._toggle_recording)
-            if rec_count > 0:
-                action = macro_menu.addAction(f"  記録プレビュー ({rec_count} 件)")
-                action.triggered.connect(self._show_recording_preview)
-
-        macro_menu.addSeparator()
-
-        macro_menu.addAction("  保存...").triggered.connect(self._dev_save_recording)
-        macro_menu.addAction("  読込...").triggered.connect(self._dev_load_to_session)
-
-        menu.addSeparator()
-
-        menu.addAction("  終了").triggered.connect(self.close)
+        menu.addAction("  終了    ").triggered.connect(self.close)
 
         menu.exec(self.mapToGlobal(pos))
 
@@ -3767,20 +4365,18 @@ class MainWindow(QMainWindow):
         )
 
         if event.key() == Qt.Key.Key_Escape:
-            # テキスト編集モード中なら先にキャンセル（アプリ終了しない）
+            # テキスト編集モード中ならキャンセル（ESC でのアプリ終了は廃止）
             if (hasattr(self, '_item_panel')
                     and self._item_panel.is_text_edit_mode()):
                 self._item_panel.cancel_text_edit()
-            else:
-                self.close()
         elif event.key() == Qt.Key.Key_F1:
             self._toggle_manage_panel()
         elif event.key() == Qt.Key.Key_F2:
             self._toggle_item_panel()
         elif event.key() == Qt.Key.Key_F3:
             self._toggle_settings_panel_v2()
-        elif event.key() == Qt.Key.Key_Space:
-            self._start_spin()
+        # Space は _SpaceSpinFilter (QApplication レベル) が処理するため
+        # ここには届かない。keyPressEvent での処理は廃止 (i344)。
         # --- 開発用ショートカット（アクション経由） ---
         elif event.key() == Qt.Key.Key_N and (mods & ctrl_shift) == ctrl_shift:
             self.apply_action(AddRoulette())

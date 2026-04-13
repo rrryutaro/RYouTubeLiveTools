@@ -375,6 +375,36 @@ def _layout_fit(
     filtered.sort(key=lambda x: (x[0], -x[1]))
     best_n, best_sz, best_rows = filtered[0]
 
+    # i340: 全角1文字の tangential overflow 後確認
+    # _try_fit_capped は outer_edge での chord をチェックするが、
+    # 実際のテキスト中心 rc = outer_edge - measure/2 は内側にあり、
+    # その位置での tangential chord が小さい場合に視覚的クリップが生じる。
+    # 対象を「改行なし・1文字・large font」に限定して保守的に縮小する。
+    stripped = text.replace('\n', '').strip()
+    if best_sz > min_size and len(stripped) == 1:
+        outer_edge_tmp = safe.safe_outer_radius - _TEXT_PAD
+        font_tmp   = _make_font(font_family, best_sz)
+        line_h_tmp = max(1, font_tmp.metrics("linespace"))
+        w_tmp      = font_tmp.measure(stripped)
+        rc_tmp     = max(safe.safe_inner_radius + _TEXT_PAD,
+                         min(outer_edge_tmp, outer_edge_tmp - w_tmp / 2.0))
+        while best_sz > min_size and line_h_tmp > safe.tangential_chord_at(rc_tmp):
+            best_sz   -= 1
+            font_tmp   = _make_font(font_family, best_sz)
+            line_h_tmp = max(1, font_tmp.metrics("linespace"))
+            w_tmp      = font_tmp.measure(stripped)
+            rc_tmp     = max(safe.safe_inner_radius + _TEXT_PAD,
+                             min(outer_edge_tmp, outer_edge_tmp - w_tmp / 2.0))
+        # 縮小後のフォントで rows を再計算
+        if best_sz != filtered[0][1]:
+            font_tmp   = _make_font(font_family, best_sz)
+            line_h_tmp = max(1, font_tmp.metrics("linespace"))
+            rows_tmp   = _try_fit_capped(text, font_tmp, line_h_tmp, safe, best_n)
+            if rows_tmp is not None:
+                best_rows = rows_tmp
+                font      = font_tmp
+                line_h    = line_h_tmp
+
     font   = _make_font(font_family, best_sz)
     line_h = max(1, font.metrics("linespace"))
 

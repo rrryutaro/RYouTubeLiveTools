@@ -22,8 +22,8 @@ resizeEvent で同期的に再計算する。
 """
 
 import math
-from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QFontMetrics
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, QPainterPath
 from PySide6.QtWidgets import QWidget
 
 # 既存ロジックは bridge 経由で import
@@ -44,6 +44,9 @@ class WheelWidget(QWidget):
     スピン制御は SpinController が担当し、
     set_angle() 経由で角度を更新する。
     """
+
+    # i343: ログ状態(エントリ追加/クリア/on_top変更)を RoulettePanel に通知する
+    log_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +152,7 @@ class WheelWidget(QWidget):
         if len(self._log_entries) > self._log_max:
             self._log_entries = self._log_entries[:self._log_max]
         self.update()
+        self.log_changed.emit()  # i343
 
     def set_replay_indicator(self, visible: bool):
         """リプレイ中表示のON/OFFを設定する。"""
@@ -159,6 +163,7 @@ class WheelWidget(QWidget):
         """ログオーバーレイの表示ON/OFFを設定する。"""
         self._log_visible = visible
         self.update()
+        self.log_changed.emit()  # i344: オーバーレイに変更を通知
 
     def set_log_timestamp(self, enabled: bool):
         """ログタイムスタンプ表示ON/OFFを設定する。"""
@@ -174,6 +179,7 @@ class WheelWidget(QWidget):
         """ログ前面表示ON/OFFを設定する。"""
         self._log_on_top = enabled
         self.update()
+        self.log_changed.emit()  # i343: RoulettePanel の前面オーバーレイに通知
 
     def get_log_entries(self) -> list[tuple[str, str]]:
         """ログ履歴を返す（新しい順の (時刻, テキスト) リスト）。"""
@@ -212,6 +218,7 @@ class WheelWidget(QWidget):
         """ログ履歴をクリアする。"""
         self._log_entries.clear()
         self.update()
+        self.log_changed.emit()  # i343
 
     def set_transparent(self, enabled: bool):
         """透過モードを設定する。"""
@@ -380,6 +387,12 @@ class WheelWidget(QWidget):
             and len(self._layout_cache) == len(segs)
         )
 
+        # --- ログオーバーレイ（背景モード: セグメントより後ろに描画）---
+        # i348: log_on_top OFF のとき、セグメントより先に描画することでセグメントの後ろに見える。
+        # log_on_top ON のときは _LogOverlay widget（RoulettePanel の子）が担当する。
+        if self._log_visible and not self._log_on_top and self._log_entries:
+            self._draw_log_overlay(painter, d)
+
         # --- セグメント描画 ---
         bbox = QRectF(cx - r, cy - r, r * 2, r * 2)
 
@@ -399,10 +412,14 @@ class WheelWidget(QWidget):
             if not cache_valid:
                 continue
 
+            # i339: テキストをセクター形状にクリップして隣接セクターへのはみ出しを防ぐ
+            clip_path = QPainterPath()
+            clip_path.moveTo(cx, cy)
+            clip_path.arcTo(bbox, seg_start, seg.arc)
+            clip_path.closeSubpath()
+            painter.setClipPath(clip_path)
             self._draw_sector_text(painter, i, seg_start, seg.arc, cx, cy)
-
-        # --- ログオーバーレイ (背面モード) は廃止。
-        #     i274 以降は「ログ前面表示」のみが残り、ON のときだけ前面に描画する。
+            painter.setClipping(False)
 
         # --- 外周線 ---
         painter.setPen(QPen(QColor(d.wheel.outline_color), d.wheel.outline_width))
@@ -448,11 +465,6 @@ class WheelWidget(QWidget):
 
         # --- ポインター ---
         self._draw_pointer(painter, cx, cy, r, d)
-
-        # --- ログオーバーレイ（前面モードのみ: ポインターの上）---
-        # i274: 「ログ前面表示」が ON の時だけ描画する。デフォルトは OFF。
-        if self._log_on_top and self._log_entries:
-            self._draw_log_overlay(painter, d)
 
         # --- リプレイ中表示 ---
         if self._replay_indicator:
@@ -611,8 +623,9 @@ class WheelWidget(QWidget):
         box_h = line_h * n + padding * 2
 
         # 左上に配置 (上から下へ流れる)
+        # i343: インスタンスラベル (#N) と重ならないよう上部を確保する
         box_x = margin
-        box_y = margin
+        box_y = 30
 
         # 背景ボックス
         bg_color = QColor(d.log.box_bg_color)

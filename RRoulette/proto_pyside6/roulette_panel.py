@@ -21,8 +21,8 @@ PySide6 プロトタイプ — ルーレットパネル
   3. それ以外の空き領域 → パネル移動
 """
 
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QSize, QRectF, QPointF
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QFontMetrics
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from bridge import (
@@ -39,6 +39,156 @@ from settings_panel import _PanelGrip
 _ROULETTE_MIN = 2 * (MIN_R + WHEEL_OUTER_MARGIN) + _PanelGrip._GRIP_SIZE
 _ROULETTE_MIN_W = max(280, _ROULETTE_MIN)
 _ROULETTE_MIN_H = max(280, _ROULETTE_MIN)
+
+# i341: メインウィンドウ移動バー（進入禁止領域）の高さ
+# _MainWindowDragBar._BAR_HEIGHT と同値。循環インポートを避けるため定数として持つ。
+_MW_DRAG_BAR_H = 20
+
+
+class _LogOverlay(QWidget):
+    """ログ前面表示オーバーレイ（RoulettePanel の子として最前面に配置）。
+
+    WheelWidget の内部描画ではなく、RoulettePanel のウィジェット階層で最前面に
+    ログを描画することで、インスタンスラベルや選択ハンドルよりも前面に見せる。
+    i343: ログ前面表示 ON のとき使用する。
+    """
+
+    _LOG_MARGIN_X = 8
+    _LOG_MARGIN_Y = 30  # i347: i346 の誤修正を戻す。z-order は raise_() で管理
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # i346: システム背景が塗り潰されないよう明示的に抑止する
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self._entries: list[tuple[str, str]] = []
+        self._timestamp: bool = False
+        self._design = None
+        self.hide()
+
+    def refresh(self, entries, timestamp: bool, design, visible: bool, on_top: bool):
+        """ログ状態に合わせて表示を更新する。"""
+        self._entries = list(entries)
+        self._timestamp = timestamp
+        self._design = design
+        show = visible and on_top and bool(entries)
+        self.setVisible(show)
+        if show:
+            # raise_() 不要: 作成順で z-order 確定 (i348)
+            self.update()
+
+    def paintEvent(self, event):
+        if not self._entries or self._design is None:
+            return
+        d = self._design
+        log_font = QFont(d.fonts.log_family or "Meiryo", d.log.font_size)
+        fm = QFontMetrics(log_font)
+        line_h = fm.height() + 2
+        padding = 6
+        mx = self._LOG_MARGIN_X
+        my = self._LOG_MARGIN_Y
+
+        lines = []
+        for ts, text in self._entries:
+            if self._timestamp:
+                lines.append(f"[{ts}] {text}")
+            else:
+                lines.append(text)
+
+        max_w = max((fm.horizontalAdvance(ln) for ln in lines), default=0)
+        box_w = max_w + padding * 2
+        box_h = line_h * len(lines) + padding * 2
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bg = QColor(d.log.box_bg_color)
+        bg.setAlpha(180)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(QRectF(mx, my, box_w, box_h), 4, 4)
+
+        painter.setFont(log_font)
+        text_color = QColor(d.log.text_color)
+        shadow_color = QColor(d.log.shadow_color)
+        for i, ln in enumerate(lines):
+            y = my + padding + (i + 1) * line_h - fm.descent()
+            x = mx + padding
+            painter.setPen(shadow_color)
+            painter.drawText(QPointF(x + 1, y + 1), ln)
+            painter.setPen(text_color)
+            painter.drawText(QPointF(x, y), ln)
+
+        painter.end()
+
+
+class _SelectionHandle(QWidget):
+    """小さな選択ハンドル（クリックで active 切替、ドラッグでパネル移動）。
+
+    RoulettePanel の左上コーナーに配置する。
+    クリック → activate_requested を発火（スピンしない）
+    ドラッグ → パネル全体を移動
+    """
+    _SIZE = 20
+
+    def __init__(self, panel: QFrame, parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self._drag_start = QPoint()
+        self._panel_start = QPoint()
+        self._dragging = False
+        self._drag_pending = False
+        self.setFixedSize(self._SIZE, self._SIZE)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 120))
+        # 3x3 グリッドの点を描画
+        dot_r = 2
+        for row in range(3):
+            for col in range(3):
+                cx = 4 + col * 6
+                cy = 4 + row * 6
+                painter.drawEllipse(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panel.activate_requested.emit(self._panel.roulette_id)
+            self._drag_start = event.globalPosition().toPoint()
+            self._panel_start = self._panel.pos()
+            self._drag_pending = True
+            self._dragging = False
+            # i343: 非入力領域クリック後に Space が前チェックボックスへ入るのを防ぐ
+            w = self.window()
+            if w:
+                w.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pending or self._dragging:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            if self._drag_pending and (abs(delta.x()) > 4 or abs(delta.y()) > 4):
+                self._dragging = True
+                self._drag_pending = False
+            if self._dragging:
+                new_pos = self._panel_start + delta
+                parent = self._panel.parentWidget()
+                if parent:
+                    new_x = max(0, min(new_pos.x(), parent.width() - self._panel.width()))
+                    # i341: 移動バー領域（_MW_DRAG_BAR_H より上）への侵入禁止
+                    new_y = max(_MW_DRAG_BAR_H, min(new_pos.y(), parent.height() - self._panel.height()))
+                    self._panel.move(new_x, new_y)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pending = False
+        self._dragging = False
+        event.accept()
 
 
 class RoulettePanel(QFrame):
@@ -58,6 +208,8 @@ class RoulettePanel(QFrame):
     pointer_angle_committed = Signal()
     geometry_changed = Signal()
     activate_requested = Signal(str)
+    window_drag_delta = Signal(QPoint)   # roulette_only_mode: ウィンドウ移動要求
+    window_resize_needed = Signal(QSize) # roulette_only_mode: ウィンドウリサイズ要求
 
     _MIN_W = _ROULETTE_MIN_W
     _MIN_H = _ROULETTE_MIN_H
@@ -74,13 +226,19 @@ class RoulettePanel(QFrame):
         # ── WheelWidget（パネル全体に配置） ──
         self._wheel = WheelWidget(self)
 
+        # ── ログ前面オーバーレイ（i348: _result_overlay より先に作成して z-order 確定）──
+        # 作成順 = z-order: _wheel < _log_overlay < _result_overlay
+        # _log_overlay は wheel の上・result の下に固定。raise_() は不要。
+        self._log_overlay = _LogOverlay(self)
+        self._wheel.log_changed.connect(self._refresh_log_overlay)
+
         # ── スピン制御 ──
         self._spin_ctrl = SpinController(
             self._wheel, sound_manager=sound_manager, parent=self
         )
         self._spin_ctrl.spin_finished.connect(self._on_spin_finished)
 
-        # ── 結果オーバーレイ ──
+        # ── 結果オーバーレイ（i348: _log_overlay より後に作成 → 常に上に位置）──
         self._result_overlay = ResultOverlay(self)
         self._result_overlay.apply_style(design)
 
@@ -114,6 +272,17 @@ class RoulettePanel(QFrame):
         self._panel_drag_start = QPoint()
         self._panel_start_pos = QPoint()
 
+        # ── ルーレット以外非表示モード ──
+        self._roulette_only_mode: bool = False
+
+        # ── アクティブ状態 ──
+        self._is_active = False
+
+        # ── 選択ハンドル（左上コーナー） ──
+        self._selection_handle = _SelectionHandle(self, parent=self)
+        self._selection_handle.move(2, 2)
+        self._selection_handle.show()
+
     # ================================================================
     #  公開プロパティ
     # ================================================================
@@ -133,6 +302,14 @@ class RoulettePanel(QFrame):
     @property
     def result_overlay(self) -> ResultOverlay:
         return self._result_overlay
+
+    @property
+    def roulette_only_mode(self) -> bool:
+        return self._roulette_only_mode
+
+    @roulette_only_mode.setter
+    def roulette_only_mode(self, value: bool):
+        self._roulette_only_mode = value
 
     # ================================================================
     #  設定適用
@@ -162,6 +339,7 @@ class RoulettePanel(QFrame):
             self._instance_label.move(6, 6)
             self._instance_label.show()
             self._instance_label.raise_()
+            # _log_overlay.raise_() 削除: z-order は作成順で管理 (i348)
         else:
             self._instance_label.hide()
 
@@ -177,6 +355,13 @@ class RoulettePanel(QFrame):
             f" border-radius: 3px; padding: 1px 4px;"
         )
 
+    def set_active(self, is_active: bool):
+        """アクティブ状態を設定する。視覚的な強調表示を更新する。"""
+        if self._is_active == is_active:
+            return
+        self._is_active = is_active
+        self.update()
+
     def set_transparent(self, enabled: bool):
         """透過モードを設定する。
 
@@ -190,11 +375,23 @@ class RoulettePanel(QFrame):
         self._wheel.set_transparent(enabled)
         self.update()
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._is_active:
+            painter = QPainter(self)
+            pen = QPen(QColor(79, 195, 247))  # アクティブカラー（水色）
+            pen.setWidth(3)
+            painter.setPen(pen)
+            painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
+
     def _apply_panel_background(self):
         """現在の透過状態に合わせてパネル背景の StyleSheet を設定する。"""
         if self._transparent:
-            # QFrame 自身の塗りつぶしも透明に
-            self.setStyleSheet("QFrame { background-color: transparent; }")
+            # QFrame フレーム描画を無効化し、セレクターなし（インライン相当）で
+            # 透明スタイルを設定する。setFrameStyle(NoFrame) は stylesheet の
+            # border: none より確実にフレーム枠を消す。
+            self.setFrameStyle(QFrame.Shape.NoFrame)
+            self.setStyleSheet("background-color: transparent; border: none;")
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         else:
             self.setStyleSheet(
@@ -225,6 +422,20 @@ class RoulettePanel(QFrame):
         """パネルサイズに WheelWidget を合わせる。"""
         self._wheel.setGeometry(0, 0, self.width(), self.height())
         self._result_overlay.update_position()
+        # i348: ログオーバーレイをパネル全面に広げる。raise_() 不要（作成順で z-order 確定）
+        self._log_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._refresh_log_overlay()  # i344: ジオメトリ確定後に表示状態を同期
+
+    def _refresh_log_overlay(self):
+        """WheelWidget のログ状態をオーバーレイに反映する。"""
+        w = self._wheel
+        self._log_overlay.refresh(
+            entries=w._log_entries,
+            timestamp=w._log_timestamp,
+            design=w._design,
+            visible=w._log_visible,
+            on_top=w._log_on_top,
+        )
 
     def _clamp_to_parent(self):
         """パネルをメインウィンドウのクライアント領域内にクランプする。"""
@@ -232,7 +443,8 @@ class RoulettePanel(QFrame):
         if not parent:
             return
         x = max(0, min(self.x(), parent.width() - self.width()))
-        y = max(0, min(self.y(), parent.height() - self.height()))
+        # i341: 移動バー領域（_MW_DRAG_BAR_H より上）への侵入禁止
+        y = max(_MW_DRAG_BAR_H, min(self.y(), parent.height() - self.height()))
         if x != self.x() or y != self.y():
             self.move(x, y)
 
@@ -248,8 +460,14 @@ class RoulettePanel(QFrame):
         super().resizeEvent(event)
         self._sync_wheel()
         self._grip.reposition()
-        self._clamp_to_parent()
+        # roulette_only_mode 中はウィンドウが後追いでリサイズするため
+        # クランプを先に実行すると位置がずれる。ウィンドウ側で吸収する。
+        if not self._roulette_only_mode:
+            self._clamp_to_parent()
         self.geometry_changed.emit()
+        # roulette_only_mode 時はウィンドウリサイズも要求する
+        if self._roulette_only_mode:
+            self.window_resize_needed.emit(event.size())
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -268,6 +486,10 @@ class RoulettePanel(QFrame):
         """
         self.raise_()
         self.activate_requested.emit(self._roulette_id)
+        # i343: 非入力領域クリック後 Space が前のチェックボックスへ入るのを防ぐ
+        w = self.window()
+        if w:
+            w.setFocus(Qt.FocusReason.MouseFocusReason)
 
         if event.button() == Qt.MouseButton.LeftButton:
             wheel_pos = self._wheel.mapFrom(self, event.pos())
@@ -307,13 +529,25 @@ class RoulettePanel(QFrame):
             if self._drag_pending and (abs(delta.x()) > 4 or abs(delta.y()) > 4):
                 self._dragging_panel = True
                 self._drag_pending = False
+                # roulette_only_mode では _panel_start_pos を毎ステップ更新するため
+                # ここで起点を現在グローバル位置にリセットする
+                if self._roulette_only_mode:
+                    self._panel_drag_start = event.globalPosition().toPoint()
             if self._dragging_panel:
-                new_pos = self._panel_start_pos + delta
-                parent = self.parentWidget()
-                if parent:
-                    new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
-                    new_y = max(0, min(new_pos.y(), parent.height() - self.height()))
-                    self.move(new_x, new_y)
+                if self._roulette_only_mode:
+                    # ウィンドウ移動として委譲
+                    cur = event.globalPosition().toPoint()
+                    move_delta = cur - self._panel_drag_start
+                    self._panel_drag_start = cur
+                    self.window_drag_delta.emit(move_delta)
+                else:
+                    new_pos = self._panel_start_pos + delta
+                    parent = self.parentWidget()
+                    if parent:
+                        new_x = max(0, min(new_pos.x(), parent.width() - self.width()))
+                        # i341: 移動バー領域（_MW_DRAG_BAR_H より上）への侵入禁止
+                        new_y = max(_MW_DRAG_BAR_H, min(new_pos.y(), parent.height() - self.height()))
+                        self.move(new_x, new_y)
             event.accept()
             return
 
