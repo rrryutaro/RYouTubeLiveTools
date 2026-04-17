@@ -43,16 +43,18 @@ from bridge import (
     build_segments_from_config, build_segments_from_entries,
     save_config, save_item_entries,
     get_pattern_names, get_current_pattern_name,
-    set_current_pattern, add_pattern, delete_pattern,
+    set_current_pattern, add_pattern, delete_pattern, rename_pattern,
+    get_pattern_id, ensure_pattern_ids,
     ItemEntry,
 )
-from config_utils import BASE_DIR, INSTANCE_NUM
+from config_utils import BASE_DIR, INSTANCE_NUM, EXPORT_DIR
 from app_settings import AppSettings
 from win_history import WinHistory
 from replay_manager_pyside6 import ReplayManager
 from roulette_panel import RoulettePanel
 from roulette_context import RouletteContext
 from roulette_manager import RouletteManager
+from per_roulette_settings import PerRouletteSettings, PER_ROULETTE_KEYS
 from roulette_actions import (
     RouletteAction, ActionOrigin, LastSpinResult,
     AddRoulette, RemoveRoulette, SetActiveRoulette,
@@ -682,6 +684,9 @@ class MainWindow(QMainWindow):
         self._design_editor = None  # DesignEditorDialog (遅延生成)
         self._graph_dialog = None   # GraphDialog (遅延生成)
         self._replay_dialog = None  # ReplayDialog (遅延生成)
+        # i352: 同時実行リプレイのセッション管理（{roulette_id, panel, saved_*} のリスト）
+        self._replay_sessions: list[dict] = []
+        self._replay_group_remaining: int = 0
 
         # --- ルーレットマネージャー・パネル一覧 ---
         self._manager = RouletteManager(parent=self)
@@ -766,13 +771,10 @@ class MainWindow(QMainWindow):
             os.path.join(BASE_DIR, "roulette_win_history.json")
         )
         self._win_history.load()
-        self._replay_mgr = ReplayManager(
-            os.path.join(BASE_DIR, "roulette_replay.json"),
-            max_count=self._settings.replay_max_count,
-            parent=self,
-        )
-        self._replay_mgr.load()
-        self._replay_mgr.playback_finished.connect(self._on_replay_finished)
+        ensure_pattern_ids(self._config)
+        # i351: ルーレットごとに個別の ReplayManager を保持する辞書。
+        # _create_roulette でルーレット追加時に生成し、_remove_roulette で削除する。
+        self._replay_mgrs: dict[str, ReplayManager] = {}
         self._sound.set_tick_volume(self._settings.tick_volume / 100.0)
         self._sound.set_win_volume(self._settings.win_volume / 100.0)
         self._sound.set_tick_pattern(self._settings.tick_pattern)
@@ -790,6 +792,12 @@ class MainWindow(QMainWindow):
 
         # ログ履歴復元
         self._roulette_panel.wheel.load_log(self._log_autosave_path)
+        # i405: load_log 直後に _current_pattern を設定する。
+        # _sync_settings_to_active は __init__ 内で呼ばれないため、
+        # ここで明示設定しないと起動直後のログが _current_pattern="" のまま表示されない。
+        _init_pat = get_current_pattern_name(self._config)
+        _init_pid = get_pattern_id(self._config, _init_pat)
+        self._roulette_panel.wheel.set_current_pattern(_init_pat, _init_pid)
 
         # ============================================================
         #  項目設定パネル（メインウィンドウ内の内部パネル / i277）
@@ -819,6 +827,7 @@ class MainWindow(QMainWindow):
         self._settings_panel.pattern_switched.connect(self._on_pattern_switched)
         self._settings_panel.pattern_added.connect(self._on_pattern_added)
         self._settings_panel.pattern_deleted.connect(self._on_pattern_deleted)
+        self._settings_panel.pattern_renamed.connect(self._on_pattern_renamed)  # i400
         self._settings_panel.preview_tick_requested.connect(self._on_preview_tick)
         self._settings_panel.preview_win_requested.connect(self._on_preview_win)
         self._settings_panel.custom_tick_file_changed.connect(self._on_custom_tick_file)
@@ -835,6 +844,9 @@ class MainWindow(QMainWindow):
         self._settings_panel.pattern_export_requested.connect(self._on_pattern_export)
         self._settings_panel.pattern_import_requested.connect(self._on_pattern_import)
         self._settings_panel.log_export_requested.connect(self._on_log_export)
+        self._settings_panel.log_import_requested.connect(self._on_log_import)
+        self._settings_panel.settings_export_requested.connect(self._on_settings_export)
+        self._settings_panel.settings_import_requested.connect(self._on_settings_import)
         self._settings_panel.design_editor_requested.connect(
             self._open_design_editor
         )
@@ -941,6 +953,12 @@ class MainWindow(QMainWindow):
         self._manage_panel.apply_to_all_changed.connect(  # i347
             self._on_manage_apply_to_all_changed
         )
+        self._manage_panel.roulette_pkg_export_requested.connect(  # i419
+            self._on_roulette_pkg_export
+        )
+        self._manage_panel.roulette_pkg_import_requested.connect(  # i419
+            self._on_roulette_pkg_import
+        )
         # i279: 親 (centralWidget) が show されると child は既定で
         # visible になるため、ここで明示的に hide しておく。表示は
         # `_restore_all_panel_geometries` で manage_panel_visible に
@@ -991,7 +1009,8 @@ class MainWindow(QMainWindow):
 
         # --- 初期勝利数表示 ---
         self._update_win_counts()
-        self._settings_panel.set_replay_count(self._replay_mgr.count())
+        _init_rp_mgr = self._replay_mgrs.get(self._manager.active_id)
+        self._settings_panel.set_replay_count(_init_rp_mgr.count() if _init_rp_mgr else 0)
 
         # --- ドラッグ・リサイズ状態 ---
         self._dragging_window = False
@@ -1048,14 +1067,32 @@ class MainWindow(QMainWindow):
         """アクティブなルーレットの segments を返す。"""
         return self._manager.active.segments
 
+    @property
+    def _active_replay_mgr(self) -> ReplayManager | None:
+        """アクティブなルーレットの ReplayManager を返す。"""
+        return self._replay_mgrs.get(self._manager.active_id)
+
+    def _roulette_replay_path(self, roulette_id: str) -> str:
+        """i351: ルーレットごとのリプレイ保存パスを返す。
+
+        "default" は後方互換のため旧パス（roulette_replay.json）を使う。
+        それ以外は roulette_replay_{id}.json を使い、ルーレット間の
+        リプレイ保存ファイルを分離する。
+        """
+        if not roulette_id or roulette_id == "default":
+            return os.path.join(BASE_DIR, "roulette_replay.json")
+        safe_id = roulette_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+        return os.path.join(BASE_DIR, f"roulette_replay_{safe_id}.json")
+
     def _sync_settings_to_active(self):
-        """SettingsPanel / ItemPanel の表示をアクティブコンテキストに同期する。
+        """SettingsPanel / ItemPanel / DesignEditorDialog の表示をアクティブコンテキストに同期する。
 
         i334: set_active_entries は SettingsPanel 内の詳細ビュー(item_rows)を
         再構築するが、ItemPanel のシンプルリストは item_entries_changed シグナル
         経由でしか更新されない。active 切替時に即時反映させるため、
         set_active_entries の後で明示的に ItemPanel のリスト再構築を呼ぶ。
         i338: SettingsPanel のパターン一覧も active ルーレット専用に切り替える。
+        i422: DesignEditorDialog が開いていれば active ルーレットの項目数を反映する。
         """
         ctx = self._active_context
         entries = ctx.item_entries
@@ -1077,16 +1114,67 @@ class MainWindow(QMainWindow):
         # ItemPanel のシンプルリストを即時更新
         if hasattr(self, "_item_panel"):
             self._item_panel._refresh_simple_list()
-        # i345: active ルーレットの per-roulette ログ設定を SettingsPanel に即時反映する。
+        # i363/i369: active ルーレットの個別設定を SettingsPanel 表示に反映する。
+        #
+        # i369 変更: 個別設定の読み出し元を「runtime オブジェクト」から「ctx.settings」に変更。
+        #   - ctx.settings は _update_setting_by_action / _restore_per_panel_from_entry で
+        #     常に最新値に保たれるため、active 切替時の信頼できる source-of-truth となる。
+        #   - self._settings へ個別設定を逆書きしない（他ルーレットへの波及経路を断つ）。
+        #   - SettingsPanel UI への反映だけを行う。
+        #
         # update_setting は blockSignals を使うためシグナルの再入なし。
         if hasattr(self, "_settings_panel"):
-            ap = ctx.panel
-            self._settings_panel.update_setting("log_overlay_show", ap.wheel._log_visible)
-            self._settings_panel.update_setting("log_on_top", ap.wheel._log_on_top)
+            s = ctx.settings  # per-roulette 設定の source-of-truth
+            _per_settings = {
+                "spin_duration":        s.spin_duration,
+                "spin_mode":            s.spin_mode,
+                "double_duration":      s.double_duration,
+                "triple_duration":      s.triple_duration,
+                "sound_tick_enabled":   s.sound_tick_enabled,
+                "sound_result_enabled": s.sound_result_enabled,
+                "tick_pattern":         s.tick_pattern,
+                "win_pattern":          s.win_pattern,
+                "spin_direction":       s.spin_direction,
+                "donut_hole":           s.donut_hole,
+                "pointer_angle":        s.pointer_angle,
+                "text_size_mode":       s.text_size_mode,
+                "text_direction":       s.text_direction,
+                "log_overlay_show":       s.log_overlay_show,
+                "log_on_top":             s.log_on_top,
+                "log_timestamp":          s.log_timestamp,
+                "log_box_border":         s.log_box_border,
+                "log_history_all_patterns": s.log_all_patterns,  # i395: active 切替時に UI 反映
+                "result_close_mode":      s.result_close_mode,
+                "result_hold_sec":        s.result_hold_sec,
+            }
+            for _k, _v in _per_settings.items():
+                # i369: self._settings には書かない（global 側に個別設定を逆流させない）
+                self._settings_panel.update_setting(_k, _v)
+            # spin_preset_name は update_setting 未対応のため個別更新
+            try:
+                self._settings_panel._preset_combo.blockSignals(True)
+                self._settings_panel._preset_combo.setCurrentText(s.spin_preset_name)
+                self._settings_panel._preset_combo.blockSignals(False)
+            except AttributeError:
+                pass
+        # i407: active ルーレットのホイールにログフィルタ用パターン（UUID）を反映する
+        _pat_for_wheel = ctx.current_pattern or get_current_pattern_name(self._config)
+        _pid_for_wheel = self._get_current_pattern_id(ctx)
+        ctx.panel.wheel.set_current_pattern(_pat_for_wheel, _pid_for_wheel)
         # 行ウィジェット再構築後のマウストラッキング再適用
         if getattr(self, "_init_complete", False):
             self._refresh_panel_tracking()
             self._update_win_counts()
+        # i351: active 切替時にリプレイ件数表示を active のものに更新する
+        if hasattr(self, "_settings_panel") and getattr(self, "_init_complete", False):
+            _sync_rp_mgr = self._active_replay_mgr
+            self._settings_panel.set_replay_count(_sync_rp_mgr.count() if _sync_rp_mgr else 0)
+        # i352: 管理ダイアログが開いていれば active に即時追従させる
+        if getattr(self, "_init_complete", False):
+            self._refresh_replay_dialog()
+        # i422: デザインエディタが開いていれば active ルーレットの項目数を反映する
+        if self._design_editor is not None:
+            self._design_editor.set_item_count(len(entries))
 
     # ================================================================
     #  アクションディスパッチャ（マクロ向け共通入口）
@@ -1152,7 +1240,9 @@ class MainWindow(QMainWindow):
         panel = ctx.panel
         if panel.spin_ctrl.is_spinning:
             return False
-        if self._replay_mgr.is_playing:
+        # i351: そのルーレット専用の ReplayManager が再生中なら spin 不可
+        _spin_rp_mgr = self._replay_mgrs.get(ctx.roulette_id)
+        if _spin_rp_mgr and _spin_rp_mgr.is_playing:
             return False
         # auto_shuffle: スピン前に項目順をランダム化してセグメント再構築
         if self._settings.auto_shuffle:
@@ -1639,6 +1729,8 @@ class MainWindow(QMainWindow):
 
         panel.spin_ctrl.set_sound_tick_enabled(self._settings.sound_tick_enabled)
         panel.spin_ctrl.set_sound_result_enabled(self._settings.sound_result_enabled)
+        panel.spin_ctrl.set_tick_pattern(self._settings.tick_pattern)
+        panel.spin_ctrl.set_win_pattern(self._settings.win_pattern)
         if self._settings.spin_preset_name:
             panel.spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
         panel.result_overlay.set_close_mode(self._settings.result_close_mode)
@@ -1648,19 +1740,37 @@ class MainWindow(QMainWindow):
         panel.wheel.set_log_timestamp(self._settings.log_timestamp)
         panel.wheel.set_log_box_border(self._settings.log_box_border)
         panel.wheel.set_log_on_top(self._settings.log_on_top)
+        panel.wheel.set_log_all_patterns(self._settings.log_history_all_patterns)  # i395: 初期デフォルト（apply_to_panel で上書き）
         panel.spin_ctrl.set_spin_duration(self._settings.spin_duration)
-        panel.spin_ctrl.set_replay_manager(self._replay_mgr)
+        # i351: ルーレットごとに独立した ReplayManager を生成して紐づける
+        _new_rp_path = self._roulette_replay_path(roulette_id)
+        _new_rp_mgr = ReplayManager(
+            _new_rp_path,
+            max_count=self._settings.replay_max_count,
+            parent=self,
+        )
+        _new_rp_mgr.load()
+        # i352: roulette_id を lambda でキャプチャして _on_replay_finished へ渡す
+        _new_rp_mgr.playback_finished.connect(
+            lambda w, wi, rid=roulette_id: self._on_replay_finished(w, wi, rid)
+        )
+        self._replay_mgrs[roulette_id] = _new_rp_mgr
+        panel.spin_ctrl.set_replay_manager(_new_rp_mgr)
         panel.spin_ctrl.set_spin_mode(self._settings.spin_mode)
         panel.spin_ctrl.set_double_duration(self._settings.double_duration)
         panel.spin_ctrl.set_triple_duration(self._settings.triple_duration)
         panel.set_transparent(self._settings.roulette_transparent)
 
         # manager 登録
+        # i368: PerRouletteSettings を AppSettings から初期化して ctx に持たせる。
+        # この時点では AppSettings が source-of-truth のままだが、
+        # ctx.settings は保存/復元の入口として使い始める（第2段階で反映経路を移す）。
         self._manager.register(RouletteContext(
             roulette_id=roulette_id,
             panel=panel,
             item_entries=item_entries,
             segments=segments,
+            settings=PerRouletteSettings.from_app_settings(self._settings),
         ))
 
         # signal 接続
@@ -1673,6 +1783,8 @@ class MainWindow(QMainWindow):
         panel.activate_requested.connect(
             lambda rid: self.apply_action(SetActiveRoulette(rid))
         )
+        panel.graph_requested.connect(self._on_panel_graph_requested)
+        panel.in_panel_graph_opened.connect(self._on_in_panel_graph_opened)  # i389
         panel.result_overlay.closed.connect(
             lambda rid=roulette_id: self._on_result_overlay_closed(rid)
         )
@@ -1695,8 +1807,47 @@ class MainWindow(QMainWindow):
 
         return panel
 
-    # 新規パネルの初期位置オフセット（複数生成時に重ならないよう少しずらす）
-    _NEW_PANEL_OFFSET = 30
+    # i425: 新規パネル候補位置のステップ幅（ピクセル）
+    _NEW_PANEL_STEP = 40
+
+    def _compute_new_roulette_position(self) -> tuple[int, int]:
+        """新規ルーレットの初期位置候補を計算する（i425）。
+
+        表示中の既存ルーレットと重なりにくい位置を返す。
+        最終的な境界クランプは _apply_panel_geometry で行われる。
+
+        アルゴリズム:
+          - アクティブパネルを基準に (STEP, STEP) ずつ対角方向へずらした候補を順に試す
+          - 表示中の既存パネルと重なりが THRESHOLD 未満になった最初の候補を採用する
+          - MAX_TRIES 回試して全て重なる場合は最後の候補を返す（clamp に委ねる）
+        """
+        STEP = self._NEW_PANEL_STEP
+        THRESHOLD = STEP  # top-left 間距離がこれ未満なら「重なっている」とみなす
+        MAX_TRIES = 8
+
+        # 表示中ルーレットの top-left 座標を収集
+        visible_tops: list[tuple[int, int]] = []
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx is not None and ctx.panel.isVisible():
+                visible_tops.append((ctx.panel.x(), ctx.panel.y()))
+
+        # 基準: アクティブパネルの位置
+        base_x = self._active_panel.x()
+        base_y = self._active_panel.y()
+
+        for i in range(1, MAX_TRIES + 1):
+            cx = base_x + i * STEP
+            cy = base_y + i * STEP
+            too_close = any(
+                abs(cx - vx) < THRESHOLD and abs(cy - vy) < THRESHOLD
+                for vx, vy in visible_tops
+            )
+            if not too_close:
+                return cx, cy
+
+        # 全候補が重なる場合は最後の候補（clamp で補正される）
+        return base_x + MAX_TRIES * STEP, base_y + MAX_TRIES * STEP
 
     def _add_roulette(self, roulette_id: str, *,
                       activate: bool = False) -> RoulettePanel | None:
@@ -1722,17 +1873,24 @@ class MainWindow(QMainWindow):
         if roulette_id != "default":
             ctx = self._manager.get(roulette_id)
             if ctx is not None:
+                import uuid as _uuid_mod
+                _default_pid = str(_uuid_mod.uuid4())
                 ctx.item_patterns = {"デフォルト": []}
                 ctx.current_pattern = "デフォルト"
+                ctx.pattern_id_map = {"デフォルト": _default_pid}
+                ctx.current_pattern_id = _default_pid
                 ctx.item_entries = []
                 ctx.segments = []
                 ctx.panel.set_segments([])
 
-        # 既存パネルと重ならないよう少しずらす
+        # i425: visible 既存パネルと重なりにくい初期位置を計算して適用する
         count = len([p for p in self._panels if isinstance(p, RoulettePanel)])
         if count > 1:
-            offset = (count - 1) * self._NEW_PANEL_OFFSET
-            panel.move(panel.x() + offset, panel.y() + offset)
+            new_x, new_y = self._compute_new_roulette_position()
+            self._apply_panel_geometry(
+                panel, new_x, new_y, panel.width(), panel.height(),
+                RoulettePanel._MIN_W, RoulettePanel._MIN_H,
+            )
 
         panel.show()
         self._roulette_visible_ids.add(roulette_id)
@@ -1779,6 +1937,12 @@ class MainWindow(QMainWindow):
             self._last_spin_result = None
 
         self._roulette_visible_ids.discard(roulette_id)
+        # i351: 削除された roulette の ReplayManager を破棄する
+        self._replay_mgrs.pop(roulette_id, None)
+        # i421: 削除した roulette の win_history を消去する。
+        # 同じ roulette_id が再採番された場合に削除前履歴が dedup base に混入しないようにする。
+        self._win_history.clear(roulette_id=roulette_id)
+        self._win_history.save()
         self._update_instance_labels()
         self._update_roulette_manage_panel()
         return True
@@ -1850,7 +2014,83 @@ class MainWindow(QMainWindow):
         if self._design:
             self._config["design"] = self._design.to_dict()
         self._config["design_presets"] = self._preset_mgr.to_dict()
+        # i366: per-roulette 実設定を設定変更のたびに config["roulettes"] へ反映する。
+        # close 時の _save_window_state のみに頼ると、旧形式 config や初回起動後に
+        # per-roulette エントリが存在せず、再起動時に全ルーレットがグローバル値へ
+        # 引きずられる問題（他ルーレットへの波及）を防ぐ。
+        self._flush_per_roulette_settings_to_config()
         save_config(self._config)
+
+    def _flush_per_roulette_settings_to_config(self) -> None:
+        """全ルーレットの per-roulette 実設定を self._config["roulettes"] に書き戻す。
+
+        i366: _save_config() から呼び出し、設定変更のたびに per-roulette 設定を
+        config に反映する。geometry 等の非設定フィールドは上書きしない。
+
+        i368: per-roulette 設定の書き出し元を ctx.settings 経由に変更。
+        ctx.settings への書き込みは現在も _update_setting_by_action / _sync_settings_to_active
+        が担っているため、実値は runtime オブジェクトから ctx.settings へ同期した上でここに来る。
+        移行過渡期として、ctx.settings の更新が済んでいない項目は panel runtime から直接読む。
+        第2段階で ctx.settings を source-of-truth にした後、runtime 直読みを廃止する。
+        """
+        if not getattr(self, "_init_complete", False):
+            return
+        manager = getattr(self, "_manager", None)
+        if manager is None:
+            return
+        # 既存エントリを id でインデックス化（geometry や item_patterns を保持）
+        existing: dict[str, dict] = {}
+        for e in self._config.get("roulettes", []):
+            rid = e.get("id")
+            if rid:
+                existing[rid] = e
+        for rid in manager.ids():
+            ctx = manager.get(rid)
+            if ctx is None:
+                continue
+            p = ctx.panel
+            entry = existing.get(rid, {"id": rid})
+            # i368: ctx.settings から per-roulette 設定を取り出して書き戻す。
+            # ただし ctx.settings は現時点で第2段階以降の source-of-truth 移行前のため、
+            # runtime オブジェクトの実値で ctx.settings を先に同期してから書き出す。
+            # （active ルーレットは _sync_settings_to_active / _update_setting_by_action
+            #   で随時更新されているが、非 active ルーレットは runtime が正）
+            s = ctx.settings
+            s.spin_preset_name     = p.spin_ctrl.preset_name
+            s.spin_duration        = p.spin_ctrl._spin_duration
+            s.spin_mode            = p.spin_ctrl._spin_mode
+            s.double_duration      = p.spin_ctrl._double_duration
+            s.triple_duration      = p.spin_ctrl._triple_duration
+            s.sound_tick_enabled   = p.spin_ctrl._sound_tick_enabled
+            s.sound_result_enabled = p.spin_ctrl._sound_result_enabled
+            s.tick_pattern         = p.spin_ctrl._tick_pattern
+            s.win_pattern          = p.spin_ctrl._win_pattern
+            s.spin_direction       = p.wheel._spin_direction
+            s.donut_hole           = p.wheel._donut_hole
+            s.pointer_angle        = p.wheel._pointer_angle
+            s.text_size_mode       = p.wheel._text_size_mode
+            s.text_direction       = p.wheel._text_direction
+            s.log_overlay_show     = p.wheel._log_visible
+            s.log_on_top           = p.wheel._log_on_top
+            s.log_timestamp        = p.wheel._log_timestamp
+            s.log_box_border       = p.wheel._log_box_border
+            s.result_close_mode    = p.result_overlay._close_mode
+            s.result_hold_sec      = p.result_overlay._hold_sec
+            # ctx.settings を config エントリへ書き出す（geometry・item_patterns は維持）
+            entry.update(s.to_config_entry())
+            existing[rid] = entry
+        # 元の順序を保ちつつ新規 ID も末尾に追加してリストを再構築
+        seen: set[str] = set()
+        new_list: list[dict] = []
+        for e in self._config.get("roulettes", []):
+            rid = e.get("id")
+            if rid and rid in existing:
+                new_list.append(existing[rid])
+                seen.add(rid)
+        for rid in manager.ids():
+            if rid not in seen and rid in existing:
+                new_list.append(existing[rid])
+        self._config["roulettes"] = new_list
 
     def _save_item_entries(self):
         """項目データを config に書き戻して保存する。
@@ -2298,6 +2538,18 @@ class MainWindow(QMainWindow):
         """
         self._settings_panel.set_spin_section_visible(visible)
 
+    def _roulette_label(self, roulette_id: str) -> str:
+        """roulette_id から表示ラベル文字列を返す（i427）。"""
+        if roulette_id == "default":
+            return "ルーレット 1"
+        if roulette_id.startswith("roulette_"):
+            try:
+                n = int(roulette_id[len("roulette_"):])
+                return f"ルーレット {n}"
+            except ValueError:
+                pass
+        return roulette_id
+
     def _update_instance_labels(self):
         """全 RoulettePanel のインスタンス番号ラベルを更新する。
 
@@ -2305,13 +2557,17 @@ class MainWindow(QMainWindow):
           - float_win_show_instance が ON
           - かつルーレットが2個以上
         単窓時や設定 OFF 時は番号を非表示にする。
+        i427: multi 時はタイトルプレートにルーレット名を設定する。
         """
         ids = self._manager.ids()
         show = self._settings.float_win_show_instance and len(ids) > 1
+        is_multi = len(ids) > 1
         for i, rid in enumerate(ids):
             ctx = self._manager.get(rid)
             if ctx and ctx.panel:
                 ctx.panel.set_instance_label(i + 1 if show else None)
+                # i427: multi 時はタイトルプレートにラベルを設定、single なら非表示
+                ctx.panel.set_title(self._roulette_label(rid) if is_multi else None)
 
     # ================================================================
     #  i333: マルチルーレット管理
@@ -2362,6 +2618,12 @@ class MainWindow(QMainWindow):
         if visible:
             self._roulette_visible_ids.add(roulette_id)
             ctx.panel.show()
+            # i424: 画面外に出ていた場合にクライアント領域内へクランプする
+            p = ctx.panel
+            self._apply_panel_geometry(
+                p, p.x(), p.y(), p.width(), p.height(),
+                RoulettePanel._MIN_W, RoulettePanel._MIN_H,
+            )
         else:
             self._roulette_visible_ids.discard(roulette_id)
             ctx.panel.hide()
@@ -2531,13 +2793,14 @@ class MainWindow(QMainWindow):
                 self._roulette_saved_geometries[rid] = (x, y, w, h)
 
             if rid == "default":
-                # "default" パネル生成は不要だが per-roulette ログ設定は復元する (i344)
+                # "default" パネル生成は不要だが per-roulette 設定は復元する (i344/i364)
                 ctx = self._manager.get("default")
                 if ctx is not None:
                     log_show = entry.get("log_overlay_show", self._settings.log_overlay_show)
                     log_on_top = entry.get("log_on_top", self._settings.log_on_top)
                     ctx.panel.wheel.set_log_visible(log_show)
                     ctx.panel.wheel.set_log_on_top(log_on_top)
+                    self._restore_per_panel_from_entry(ctx.panel, entry, ctx=ctx)  # i368: ctx も渡す
                 continue
 
             if self._manager.get(rid) is not None:
@@ -2552,6 +2815,17 @@ class MainWindow(QMainWindow):
             if ctx is not None and item_patterns_raw is not None:
                 ctx.item_patterns = dict(item_patterns_raw)
                 ctx.current_pattern = current_pat
+                # i407: pattern_id_map を復元する（なければその場で生成）
+                _pid_map_raw = entry.get("pattern_ids", {})
+                ctx.pattern_id_map = dict(_pid_map_raw)
+                import uuid as _uuid_mod
+                for _pname in ctx.item_patterns:
+                    if _pname not in ctx.pattern_id_map:
+                        ctx.pattern_id_map[_pname] = str(_uuid_mod.uuid4())
+                ctx.current_pattern_id = ctx.pattern_id_map.get(current_pat, "")
+                if not ctx.current_pattern_id:
+                    ctx.current_pattern_id = str(_uuid_mod.uuid4())
+                    ctx.pattern_id_map[current_pat] = ctx.current_pattern_id
                 # 現在パターンの項目を ItemEntry リストに変換
                 raw_items = ctx.item_patterns.get(current_pat, [])
                 entries_list = [
@@ -2572,11 +2846,85 @@ class MainWindow(QMainWindow):
                 log_on_top = entry.get("log_on_top", self._settings.log_on_top)
                 ctx.panel.wheel.set_log_visible(log_show)
                 ctx.panel.wheel.set_log_on_top(log_on_top)
+                # i407: ログフィルタ用パターン（UUID）を設定
+                _rp_pat = ctx.current_pattern or get_current_pattern_name(self._config)
+                _rp_pid = ctx.current_pattern_id or get_pattern_id(self._config, _rp_pat)
+                ctx.panel.wheel.set_current_pattern(_rp_pat, _rp_pid)
+                # i364: per-roulette 実設定の復元（i368: ctx も渡して ctx.settings を同期）
+                # i395: log_all_patterns は apply_to_panel() 経由で設定される
+                self._restore_per_panel_from_entry(ctx.panel, entry, ctx=ctx)
             # i345: per-roulette ログ自動保存ファイルを復元
             if ctx is not None:
                 log_path = self._roulette_log_path(rid)
                 if os.path.exists(log_path):
                     ctx.panel.wheel.load_log(log_path)
+
+            # i424: 前回非表示だったパネルを非表示に戻す
+            if not entry.get("visible", True) and ctx is not None:
+                ctx.panel.hide()
+                self._roulette_visible_ids.discard(rid)
+
+    def _restore_per_panel_from_entry(self, panel, entry: dict,
+                                       ctx=None) -> None:
+        """per-roulette 実設定を config エントリから復元する。i364
+
+        _create_roulette() で self._settings から初期化された後、
+        config["roulettes"][*] に保存された per-roulette 値で上書きする。
+        キーが存在しない（旧形式 config）場合は何もしない（self._settings 値を維持）。
+        log_overlay_show / log_on_top は呼び出し元で処理済みのため対象外。
+
+        i368: ctx が渡された場合は ctx.settings も同時に更新する。
+        これにより config 読込時に ctx.settings が実態と乖離しない。
+        """
+        sc = panel.spin_ctrl
+        w  = panel.wheel
+        ro = panel.result_overlay
+        if entry.get("spin_preset_name") is not None:
+            sc.set_spin_preset(entry["spin_preset_name"])
+        if entry.get("spin_duration") is not None:
+            sc.set_spin_duration(entry["spin_duration"])
+        if entry.get("spin_mode") is not None:
+            sc.set_spin_mode(entry["spin_mode"])
+        if entry.get("double_duration") is not None:
+            sc.set_double_duration(entry["double_duration"])
+        if entry.get("triple_duration") is not None:
+            sc.set_triple_duration(entry["triple_duration"])
+        if "sound_tick_enabled" in entry:
+            sc.set_sound_tick_enabled(entry["sound_tick_enabled"])
+        if "sound_result_enabled" in entry:
+            sc.set_sound_result_enabled(entry["sound_result_enabled"])
+        if "tick_pattern" in entry:
+            sc.set_tick_pattern(entry["tick_pattern"])
+        if "win_pattern" in entry:
+            sc.set_win_pattern(entry["win_pattern"])
+        if "spin_direction" in entry:
+            w._spin_direction = entry["spin_direction"]
+        if "donut_hole" in entry:
+            w.set_donut_hole(entry["donut_hole"])
+        if "pointer_angle" in entry:
+            w.set_pointer_angle(entry["pointer_angle"])
+        if "text_size_mode" in entry or "text_direction" in entry:
+            w.set_text_mode(
+                entry.get("text_size_mode", w._text_size_mode),
+                entry.get("text_direction",  w._text_direction),
+            )
+        if "log_timestamp" in entry:
+            w.set_log_timestamp(entry["log_timestamp"])
+        if "log_box_border" in entry:
+            w.set_log_box_border(entry["log_box_border"])
+        if "log_all_patterns" in entry:
+            # i398: per-roulette 設定をホイールウィジェットへ反映（i395 で ctx.settings への
+            # 書き込みは from_config_entry で済んでいたが、wheel への set が欠落していた）
+            w.set_log_all_patterns(entry["log_all_patterns"])
+        if "result_close_mode" in entry:
+            ro.set_close_mode(entry["result_close_mode"])
+        if "result_hold_sec" in entry:
+            ro.set_hold_sec(entry["result_hold_sec"])
+        # i368: ctx.settings を config エントリと整合させる（キー欠落は既存値を維持）
+        if ctx is not None:
+            ctx.settings = PerRouletteSettings.from_config_entry(
+                entry, fallback=ctx.settings
+            )
 
     # ================================================================
     #  i277: パネル管理 (centralWidget 内の内部パネル) + 前面化フォーカス
@@ -3113,6 +3461,7 @@ class MainWindow(QMainWindow):
                     "x": p.x(), "y": p.y(), "w": p.width(), "h": p.height(),
                     "current_pattern": ctx.current_pattern or "デフォルト",
                     "item_patterns": ctx.item_patterns,
+                    "pattern_ids": ctx.pattern_id_map,  # i407: pattern_id_map を保存
                 }
             else:
                 # default ルーレット: items はグローバル config に保存済み
@@ -3120,9 +3469,28 @@ class MainWindow(QMainWindow):
                     "id": rid,
                     "x": p.x(), "y": p.y(), "w": p.width(), "h": p.height(),
                 }
+            # i424: 表示/非表示状態を保存（再起動後に非表示を維持するため）
+            entry["visible"] = rid in self._roulette_visible_ids
             # i343: per-roulette ログ設定を保存
             entry["log_overlay_show"] = p.wheel._log_visible
             entry["log_on_top"] = p.wheel._log_on_top
+            # i364: per-roulette 実設定を保存（スピン・サウンド・表示・結果表示）
+            entry["spin_preset_name"]   = p.spin_ctrl.preset_name
+            entry["spin_duration"]      = p.spin_ctrl._spin_duration
+            entry["spin_mode"]          = p.spin_ctrl._spin_mode
+            entry["double_duration"]    = p.spin_ctrl._double_duration
+            entry["triple_duration"]    = p.spin_ctrl._triple_duration
+            entry["sound_tick_enabled"]   = p.spin_ctrl._sound_tick_enabled
+            entry["sound_result_enabled"] = p.spin_ctrl._sound_result_enabled
+            entry["spin_direction"]  = p.wheel._spin_direction
+            entry["donut_hole"]      = p.wheel._donut_hole
+            entry["pointer_angle"]   = p.wheel._pointer_angle
+            entry["text_size_mode"]  = p.wheel._text_size_mode
+            entry["text_direction"]  = p.wheel._text_direction
+            entry["log_timestamp"]   = p.wheel._log_timestamp
+            entry["log_box_border"]  = p.wheel._log_box_border
+            entry["result_close_mode"] = p.result_overlay._close_mode
+            entry["result_hold_sec"]   = p.result_overlay._hold_sec
             roulettes_cfg.append(entry)
         self._config["roulettes"] = roulettes_cfg
 
@@ -3277,6 +3645,9 @@ class MainWindow(QMainWindow):
 
         - 対象: 現在 isVisible() == True のルーレットパネルのみ
         - いずれかがすでに回転中なら再押下を無視する
+
+        i352: 複数ルーレットを同時スピンするとき、group_id を全 spin_ctrl に付与する。
+        group_id により replay 再生時に同時実行として再現できる。
         """
         targets = [
             ctx
@@ -3291,6 +3662,12 @@ class MainWindow(QMainWindow):
             return
         if self._macro_auto_advancing:
             self._stop_auto_advance()
+        # i352: 2台以上同時スピンの場合のみ group_id を付与する
+        if len(targets) >= 2:
+            import uuid
+            group_id = uuid.uuid4().hex[:12]
+            for ctx in targets:
+                ctx.panel.spin_ctrl.set_replay_group_id(group_id)
         for ctx in targets:
             ctx.panel.start_spin()
 
@@ -3311,14 +3688,23 @@ class MainWindow(QMainWindow):
 
         active パネルへの適用は呼び出し元 (_update_setting_by_action) で済み。
         per-roulette な設定キーのみを扱い、グローバル設定は対象外。
+
+        i369: runtime への適用と同時に ctx.settings も更新する。
+        これにより active 切替時の _sync_settings_to_active が正しい値を読める。
         """
+        if key not in PER_ROULETTE_KEYS:
+            return  # グローバル系は対象外（早期リターン）
+
         for rid in self._manager.ids():
             if rid == self._manager.active_id:
-                continue  # active は呼び出し元で適用済み
+                continue  # active は呼び出し元で適用済み（ctx.settings も済み）
             ctx = self._manager.get(rid)
             if ctx is None:
                 continue
             p = ctx.panel
+            # i369: ctx.settings を先に更新（runtime と同期を保つ）
+            setattr(ctx.settings, key, value)
+            # runtime への適用
             if key == "log_overlay_show":
                 p.wheel.set_log_visible(value)
             elif key == "log_on_top":
@@ -3349,7 +3735,52 @@ class MainWindow(QMainWindow):
                 p.wheel._spin_direction = value
             elif key == "pointer_angle":
                 p.wheel.set_pointer_angle(value)
-            # グローバル系 (volume, theme, window_size 等) は対象外
+            elif key == "text_size_mode":
+                # 対になる text_direction は ctx.settings から読む（runtime ではなく）
+                p.wheel.set_text_mode(value, ctx.settings.text_direction)
+            elif key == "text_direction":
+                # 対になる text_size_mode は ctx.settings から読む
+                p.wheel.set_text_mode(ctx.settings.text_size_mode, value)
+            elif key == "spin_preset_name":
+                p.spin_ctrl.set_spin_preset(value)
+            elif key == "tick_pattern":
+                p.spin_ctrl.set_tick_pattern(value)
+            elif key == "win_pattern":
+                p.spin_ctrl.set_win_pattern(value)
+
+    def _get_current_pattern_id(self, ctx) -> str:
+        """指定コンテキストの現在パターン UUID を返す。
+
+        i407: pattern_id が未設定の場合はその場で生成して登録する。
+        non-default ルーレットは ctx.pattern_id_map を使い、
+        default ルーレットは config["pattern_ids"] を使う。
+        """
+        if ctx is None:
+            name = get_current_pattern_name(self._config)
+            return get_pattern_id(self._config, name)
+        if ctx.current_pattern_id:
+            return ctx.current_pattern_id
+        name = ctx.current_pattern or get_current_pattern_name(self._config)
+        if ctx.item_patterns is not None:
+            # non-default roulette: ctx.pattern_id_map を使う
+            if name not in ctx.pattern_id_map:
+                import uuid as _uuid_mod
+                ctx.pattern_id_map[name] = str(_uuid_mod.uuid4())
+            ctx.current_pattern_id = ctx.pattern_id_map[name]
+            return ctx.current_pattern_id
+        return get_pattern_id(self._config, name)
+
+    def _get_pattern_id_for_ctx(self, ctx, pattern_name: str) -> str:
+        """指定コンテキストの指定パターン名のUUIDを返す。
+
+        i407: 存在しない場合はその場で生成して登録する。
+        """
+        if ctx.item_patterns is not None:
+            if pattern_name not in ctx.pattern_id_map:
+                import uuid as _uuid_mod
+                ctx.pattern_id_map[pattern_name] = str(_uuid_mod.uuid4())
+            return ctx.pattern_id_map[pattern_name]
+        return get_pattern_id(self._config, pattern_name)
 
     def _on_spin_finished(self, winner: str, seg_idx: int,
                           roulette_id: str = ""):
@@ -3365,27 +3796,33 @@ class MainWindow(QMainWindow):
         # ログオーバーレイに追加 + 自動保存
         if winner:
             ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+            # i407: pattern_id（UUID）ベースでログ記録する
+            pattern_id = self._get_current_pattern_id(ctx)
+            pattern_name = (ctx.current_pattern if ctx and ctx.current_pattern
+                            else get_current_pattern_name(self._config))
             if ctx:
-                ctx.panel.wheel.add_log_entry(winner)
+                ctx.panel.wheel.add_log_entry(winner, pattern_id)  # i407: UUID 渡し
                 # i345: ルーレットごとに独立したログファイルへ保存し、
                 # #3 のスピン結果が #1 のログファイルを上書きしないようにする
                 ctx.panel.wheel.save_log(self._roulette_log_path(roulette_id))
             # 勝利数集計用履歴に記録
-            # i345: non-default ルーレットは per-roulette パターン名を使う
-            if ctx and ctx.current_pattern:
-                pattern = ctx.current_pattern
-            else:
-                pattern = get_current_pattern_name(self._config)
-            self._win_history.record(winner, pattern)
+            self._win_history.record(winner, pattern_id, roulette_id or "default",
+                                     pattern_name=pattern_name)
             self._win_history.save()
             self._update_win_counts()
-            self._settings_panel.set_replay_count(self._replay_mgr.count())
+            # i351: スピン完了後、active ルーレットのリプレイ件数を表示更新する
+            if roulette_id == self._manager.active_id:
+                _spin_fin_mgr = self._replay_mgrs.get(roulette_id)
+                self._settings_panel.set_replay_count(
+                    _spin_fin_mgr.count() if _spin_fin_mgr else 0
+                )
             self._refresh_replay_dialog()
         # auto advance の再開は ResultOverlay.closed で行う（spin_finished 直後ではなく
         # 結果表示の hold 完了後に再開するため）
 
     def _on_pointer_angle_changed(self, angle: float):
-        self._settings.pointer_angle = angle
+        # i369: pointer_angle は per-roulette 設定 → ctx.settings に書く
+        self._active_context.settings.pointer_angle = angle
         self._settings_panel.update_setting("pointer_angle", angle)
 
     def _on_pointer_angle_committed(self):
@@ -3393,42 +3830,55 @@ class MainWindow(QMainWindow):
 
     def _on_preset_changed(self, name: str):
         from spin_preset import SPIN_PRESETS
-        self._active_panel.spin_ctrl.set_spin_preset(name)
-        self._settings.spin_preset_name = name
+        ctx = self._active_context
+        ctx.panel.spin_ctrl.set_spin_preset(name)
+        # i369: spin_preset_name / spin_duration は per-roulette 設定 → ctx.settings に書く
+        ctx.settings.spin_preset_name = name
         # プリセット切替時、そのプリセットの duration で spin_duration を連動更新
         if name in SPIN_PRESETS:
             dur = SPIN_PRESETS[name].duration
-            self._settings.spin_duration = dur
-            self._active_panel.spin_ctrl.set_spin_duration(dur)
+            ctx.settings.spin_duration = dur
+            ctx.panel.spin_ctrl.set_spin_duration(dur)
             self._settings_panel.update_setting("spin_duration", dur)
         self._save_config()
 
     def _on_preview_tick(self):
         """tick音テスト再生。"""
-        self._sound.preview_tick(self._settings.tick_pattern)
+        # i370: active ルーレットの per-roulette パターンを使う
+        self._sound.preview_tick(self._active_context.settings.tick_pattern)
 
     def _on_preview_win(self):
         """result音テスト再生。"""
-        self._sound.preview_win(self._settings.win_pattern)
+        # i370: active ルーレットの per-roulette パターンを使う
+        self._sound.preview_win(self._active_context.settings.win_pattern)
 
     def _on_pattern_export(self):
         """現在のパターンをJSONファイルにエクスポートする。"""
         import json
         from PySide6.QtWidgets import QFileDialog
         ctx = self._active_context
-        pattern_name = get_current_pattern_name(self._config)
+        # i410: non-default ルーレットは ctx.current_pattern を使う
+        if ctx.item_patterns is not None:
+            pattern_name = ctx.current_pattern or "デフォルト"
+        else:
+            pattern_name = get_current_pattern_name(self._config)
         entries = [e.to_dict() for e in ctx.item_entries]
         if not entries:
             return
         default_name = f"{pattern_name}.json"
+        # i408: 既定フォルダを EXPORT_DIR に統一
+        default_path = os.path.join(EXPORT_DIR, default_name)
         path, _ = QFileDialog.getSaveFileName(
-            self, "パターンをエクスポート", default_name,
+            self, "パターンをエクスポート", default_path,
             "JSON ファイル (*.json);;全てのファイル (*)"
         )
         if not path:
             return
+        # i411: pattern_id を export に含めて識別情報を保持する
+        pattern_id = self._get_pattern_id_for_ctx(ctx, pattern_name)
         data = {
             "pattern_name": pattern_name,
+            "pattern_id": pattern_id,
             "entries": entries,
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -3438,8 +3888,9 @@ class MainWindow(QMainWindow):
         """JSONファイルからパターンをインポートする。"""
         import json
         from PySide6.QtWidgets import QFileDialog, QMessageBox
+        # i408: 既定フォルダを EXPORT_DIR に統一
         path, _ = QFileDialog.getOpenFileName(
-            self, "パターンをインポート", "",
+            self, "パターンをインポート", EXPORT_DIR,
             "JSON ファイル (*.json);;全てのファイル (*)"
         )
         if not path:
@@ -3459,6 +3910,8 @@ class MainWindow(QMainWindow):
             return
         pattern_name = data.get("pattern_name")
         entries_raw = data.get("entries")
+        # i412: source 側 pattern_id を読み取る（log import 時の再マップに使用）
+        source_pattern_id = data.get("pattern_id", "")
         if not isinstance(pattern_name, str) or not pattern_name.strip():
             QMessageBox.warning(self, "インポートエラー",
                                 "pattern_name が見つからないか不正です。")
@@ -3479,7 +3932,12 @@ class MainWindow(QMainWindow):
                 return
         # 同名パターン衝突時: 連番付き別名で追加
         pattern_name = pattern_name.strip()
-        existing = get_pattern_names(self._config)
+        # i410: non-default ルーレットは ctx.item_patterns を使う
+        ctx = self._active_context
+        if ctx.item_patterns is not None:
+            existing = list(ctx.item_patterns.keys())
+        else:
+            existing = get_pattern_names(self._config)
         final_name = pattern_name
         if final_name in existing:
             suffix = 1
@@ -3488,26 +3946,42 @@ class MainWindow(QMainWindow):
             final_name = f"{pattern_name}_{suffix}"
         # 現在のパターンを保存してからインポート
         self._save_item_entries()
-        # パターン追加 + エントリ書き込み
-        add_pattern(self._config, final_name)
-        # ItemEntry に変換して保存
+        # ItemEntry に変換
         from item_entry import ItemEntry
         imported_entries = []
         for raw in entries_raw:
             item = ItemEntry.from_config_entry(raw, keep_disabled=True)
             if item is not None:
                 imported_entries.append(item)
-        save_item_entries(self._config, imported_entries, pattern_name=final_name)
-        # インポートしたパターンに切替
-        set_current_pattern(self._config, final_name)
-        ctx = self._active_context
+        # i410: パターン追加 + エントリ書き込み + current 切替 をルーレット種別で分岐
+        if ctx.item_patterns is not None:
+            # non-default ルーレット: in-memory パターンに書き込む
+            ctx.item_patterns[final_name] = [e.to_dict() for e in imported_entries]
+            ctx.current_pattern = final_name
+            _pid = self._get_pattern_id_for_ctx(ctx, final_name)
+            ctx.current_pattern_id = _pid
+            ctx.panel.wheel.set_current_pattern(final_name, _pid)
+            self._settings_panel.set_pattern_list(list(ctx.item_patterns.keys()), final_name)
+        else:
+            # default ルーレット: グローバル config に書き込む
+            add_pattern(self._config, final_name)
+            save_item_entries(self._config, imported_entries, pattern_name=final_name)
+            set_current_pattern(self._config, final_name)
+            _pid = self._get_current_pattern_id(ctx)
+            ctx.panel.wheel.set_current_pattern(final_name, _pid)
+            self._settings_panel.set_pattern_list(get_pattern_names(self._config), final_name)
+        # i412: source_pattern_id → dest _pid のマッピングを保存（log import 時の再マップ用）
+        # 同一 source pattern を複数回 import した場合は「最後の import」が有効になる
+        if source_pattern_id:
+            ctx.imported_pattern_id_map[source_pattern_id] = _pid
         ctx.item_entries = imported_entries
         ctx.segments, _ = build_segments_from_entries(imported_entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(imported_entries)
-        self._settings_panel.set_pattern_list(
-            get_pattern_names(self._config), final_name
-        )
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
+        self._refresh_panel_tracking()
+        self._update_win_counts()
 
     def _on_shuffle_once(self):
         """単発ランダム再配置。item_entries をシャッフルしてセグメント再構築。
@@ -3589,11 +4063,13 @@ class MainWindow(QMainWindow):
 
     def _update_win_counts(self):
         """勝利数集計を SettingsPanel / ItemPanel とグラフに反映する。"""
-        pattern = get_current_pattern_name(self._config)
-        counts = self._win_history.count_by_item(pattern)
+        ctx = self._active_context
+        pattern_id = self._get_current_pattern_id(ctx)
+        counts = self._win_history.count_by_item(pattern_id, roulette_id=ctx.roulette_id)
         self._settings_panel.update_win_counts(counts)
         self._item_panel.update_win_counts(counts)
         self._refresh_graph()
+        self._refresh_in_panel_graphs()  # i389: 全 in-panel グラフを更新
 
     def _on_log_clear(self):
         """ログ履歴クリア。confirm_reset=ON なら確認ダイアログを表示。"""
@@ -3611,29 +4087,641 @@ class MainWindow(QMainWindow):
         self._active_panel.wheel.save_log(
             self._roulette_log_path(self._manager.active_id)
         )
-        self._win_history.clear()
+        # i380: active ルーレットの履歴のみクリア（他ルーレットの履歴は保持）
+        self._win_history.clear(roulette_id=self._manager.active_id)
         self._win_history.save()
         self._update_win_counts()
-        self._settings_panel.set_replay_count(self._replay_mgr.count())
+        _log_clr_mgr = self._active_replay_mgr
+        self._settings_panel.set_replay_count(_log_clr_mgr.count() if _log_clr_mgr else 0)
 
     def _on_log_export(self):
-        """ログ履歴をテキストファイルにエクスポートする。"""
+        """ログ履歴を JSON ファイルにエクスポートする（import との対）。
+
+        i393: WinHistory の全件履歴から書き出す。
+        - 既定は選択中パターン + active ルーレット限定
+        - log_history_all_patterns=True の場合は全パターン・全ルーレットを書き出す
+        - 保存先初期ディレクトリは EXPORT_DIR（固定ルール準拠）
+        """
         from PySide6.QtWidgets import QFileDialog
-        entries = self._active_panel.wheel.get_log_entries()
-        if not entries:
+        from datetime import datetime
+        ctx = self._active_context
+        roulette_id = ctx.roulette_id if ctx else None
+        # i407: フィルタは pattern_id（UUID）基準
+        export_pattern_id = self._get_current_pattern_id(ctx)
+
+        # i404: グローバル設定ではなく active ルーレットの per-roulette 設定を基準にする。
+        # multi 時に roulette ごとに log_all_patterns が異なる場合でも、
+        # その時点の active roulette の設定どおりに export 対象が決まる。
+        # ctx は _active_context で常に存在するが、万一 None のときはグローバルにフォールバック。
+        all_patterns = (
+            ctx.settings.log_all_patterns if ctx
+            else self._settings.log_history_all_patterns
+        )
+        # i408: roulette_id は常に active roulette に限定する（全パターンモードでも他 roulette を混ぜない）
+        # pattern_id は全パターンモードなら絞り込みなし
+        _export_pid = None if all_patterns else export_pattern_id
+        export_rid = roulette_id
+
+        # 対象レコード件数を確認
+        records = self._win_history.records
+        if _export_pid is not None:
+            records = [r for r in records if r.get("pattern_id", "") == _export_pid]
+        if export_rid is not None:
+            records = [r for r in records
+                       if r.get("roulette_id", "default") == export_rid]
+        if not records:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "エクスポート", "エクスポートするログがありません。")
             return
+
+        dt = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"roulette_log_{dt}.json"
+        default_path = os.path.join(EXPORT_DIR, default_name)
         path, _ = QFileDialog.getSaveFileName(
-            self, "ログをエクスポート", "roulette_log.txt",
-            "テキストファイル (*.txt);;全てのファイル (*)"
+            self, "ログをエクスポート", default_path,
+            "JSON ファイル (*.json);;全てのファイル (*)"
         )
         if not path:
             return
-        # 古い順に出力（entries は新しい順なので逆順）
-        lines = []
-        for ts, text in reversed(entries):
-            lines.append(f"[{ts}] {text}")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        self._win_history.export_to_json(path,
+                                          pattern_id=_export_pid,
+                                          roulette_id=export_rid)
+
+    def _on_log_import(self):
+        """ログアーカイブを同一 roulette へ復元する。
+
+        i414: ログアーカイブは同一 roulette 専用。
+        アーカイブ内の source_roulette_id が active roulette と一致する場合のみ取り込む。
+        一致しない場合は取り込まずにメッセージを表示して終了する。
+        cross-roulette merge（pid_remap 依存）はこの経路では行わない。
+        """
+        import json as _json
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        path, _ = QFileDialog.getOpenFileName(
+            self, "ログアーカイブを復元", EXPORT_DIR,
+            "JSON ファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+
+        # i414: ファイルを読んで source_roulette_id を確認する
+        try:
+            with open(path, encoding="utf-8") as _f:
+                _archive = _json.load(_f)
+        except Exception:
+            QMessageBox.warning(self, "インポート失敗",
+                                "ログファイルの読み込みに失敗しました。\n"
+                                "エクスポートで出力した JSON ファイルを指定してください。")
+            return
+
+        active_rid = self._manager.active_id
+        if isinstance(_archive, dict):
+            source_rid = _archive.get("source_roulette_id")
+            if source_rid is None:
+                # 旧形式フォールバック: records の roulette_id から推定
+                _recs = _archive.get("records", [])
+                _rids = {r.get("roulette_id", "default")
+                         for r in _recs if isinstance(r, dict)}
+                source_rid = next(iter(_rids)) if len(_rids) == 1 else None
+        else:
+            source_rid = None
+
+        if source_rid is not None and source_rid != active_rid:
+            QMessageBox.warning(self, "インポートできません",
+                                "別のルーレットのログアーカイブです。\n"
+                                "このアーカイブは取り込めません。\n\n"
+                                "同じルーレットで作成したログアーカイブを選択してください。")
+            return
+
+        # i414: 同一 roulette の復元 — roulette_id 上書き・pid_remap 不要
+        added = self._win_history.import_from_json(path)
+        if added < 0:
+            QMessageBox.warning(self, "インポート失敗",
+                                "ログファイルの読み込みに失敗しました。\n"
+                                "エクスポートで出力した JSON ファイルを指定してください。")
+            return
+        self._win_history.save()
+        self._update_win_counts()
+        # i415: WinHistory 更新後、ルーレットパネルのログ表示も即時再構築する。
+        # WheelWidget._log_entries は WinHistory と独立した in-memory ストアのため、
+        # import 後に明示的に再構築しないとパネル側が空のままになる。
+        _wheel = self._active_panel.wheel
+        _recent = [
+            r for r in self._win_history.records
+            if r.get("roulette_id", "default") == active_rid
+        ]
+        _recent.sort(key=lambda r: r.get("ts", ""), reverse=True)
+        _wheel._log_entries = [
+            (r.get("ts", ""), r.get("text", ""), r.get("pattern_id", ""))
+            for r in _recent[:_wheel._log_max]
+        ]
+        _wheel.save_log(self._roulette_log_path(active_rid))
+        _wheel.update()           # i416: wheel 本体の再描画をスケジュール（log_on_top=OFF の内部描画用）
+        _wheel.log_changed.emit()  # i415: overlay 更新シグナル（log_on_top=ON 用）
+        QMessageBox.information(self, "インポート完了",
+                                f"{added} 件のログを復元しました。"
+                                if added > 0
+                                else "新規レコードはありませんでした（重複のためスキップ）。")
+
+    # ================================================================
+    #  設定テンプレート export / import (i356/i376)
+    # ================================================================
+    # export / import の意味: 単一ルーレットの設定テンプレート書き出し / 読み込み。
+    # - export: 現在選択中ルーレットの個別設定（PER_ROULETTE_KEYS）をファイルへ書き出す。
+    # - import: 現在選択中ルーレットを適用先とし、ファイル内設定を上書き適用する。
+    #           ファイル内の source roulette id / active 情報で選択先を変えない。
+    # 全体設定（音量・テーマ等）はこの export / import の対象外。
+
+    def _on_settings_export(self):
+        """現在選択中ルーレットの個別設定をテンプレートとしてエクスポートする。i356/i376
+
+        i376: フォーマットを roulette_template_v1 に変更。
+        対象は PER_ROULETTE_KEYS（20項目）のみ。全体設定は含まない。
+        デフォルトパスは EXPORT_DIR（dist/ または EXE 配置フォルダ）。
+        """
+        import json
+        import datetime
+        from PySide6.QtWidgets import QFileDialog
+
+        ctx = self._active_context
+        if ctx is None:
+            return
+
+        dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = os.path.join(EXPORT_DIR, f"roulette_template_{dt}.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "設定テンプレートをエクスポート",
+            default_path,
+            "JSONファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+
+        # active ルーレットの個別設定を ctx.settings から直接読む（実値保証）
+        s = ctx.settings
+        settings_data = {
+            k: getattr(s, k)
+            for k in PER_ROULETTE_KEYS
+            if hasattr(s, k)
+        }
+
+        data = {
+            "_format": "roulette_template_v1",
+            "_exported_at": dt,
+            "_source_roulette_id": self._manager.active_id or "",  # metadata のみ、import では使わない
+            "settings": settings_data,
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "エクスポートエラー", str(ex))
+
+    def _on_settings_import(self):
+        """設定テンプレートを現在選択中ルーレットへ適用する。i356/i358/i361/i376
+
+        i376: 適用先は常に現在選択中ルーレット（active）。
+        ファイル内の source roulette id で選択先は変えない。
+        フォーマット検出:
+          roulette_template_v1 → _import_settings_template_v1()
+          旧フラット形式（i376以前の単一ルーレット export）→ PER_ROULETTE_KEYS のみ抽出して適用
+          multi_v1（i375の誤った形式）→ エラーダイアログで拒否
+        """
+        import json
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        default_dir = EXPORT_DIR
+        path, _ = QFileDialog.getOpenFileName(
+            self, "設定テンプレートをインポート", default_dir,
+            "JSONファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as ex:
+            QMessageBox.warning(self, "インポートエラー", f"ファイルを読み込めませんでした:\n{ex}")
+            return
+        if not isinstance(data, dict):
+            QMessageBox.warning(self, "インポートエラー",
+                                "ファイル形式が正しくありません。\n"
+                                "設定エクスポートで作成したJSONファイルを使用してください。")
+            return
+
+        fmt = data.get("_format", "")
+        if fmt == "roulette_template_v1":
+            self._import_settings_template_v1(data)
+        elif fmt == "multi_v1":
+            # i376: multi_v1（i375の全体保存形式）はこの UI では扱えない
+            QMessageBox.warning(
+                self, "インポートエラー",
+                "このファイルは旧バージョンのワークスペース保存形式（multi_v1）です。\n"
+                "現在の設定テンプレート形式では読み込めません。\n"
+                "再度エクスポートしてください。"
+            )
+        else:
+            # 旧フラット形式（i375以前のシングルルーレット export）との後方互換
+            # PER_ROULETTE_KEYS のみ抽出して active ルーレットに適用する
+            per_roulette = {k: data[k] for k in PER_ROULETTE_KEYS if k in data}
+            if not per_roulette:
+                QMessageBox.warning(self, "インポートエラー",
+                                    "ファイルから適用できる設定が見つかりませんでした。\n"
+                                    "設定エクスポートで作成したJSONファイルを使用してください。")
+                return
+            self._import_per_roulette_to_active(per_roulette)
+            QMessageBox.information(
+                self, "インポート完了",
+                f"設定を読み込みました（{len(per_roulette)} 項目）。\n"
+                f"※旧形式ファイルとして読み込みました。"
+            )
+
+    def _import_settings_template_v1(self, data: dict):
+        """roulette_template_v1 形式を現在選択中ルーレットへ適用する。i376
+
+        適用先は常に active ルーレット。source_roulette_id は使わない。
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        per_roulette = data.get("settings", {})
+        if not isinstance(per_roulette, dict) or not per_roulette:
+            QMessageBox.warning(self, "インポートエラー",
+                                "ファイル内に有効な設定データが見つかりませんでした。")
+            return
+
+        applied = self._import_per_roulette_to_active(per_roulette)
+        QMessageBox.information(
+            self, "インポート完了",
+            f"設定を読み込みました（{applied} 項目適用）。"
+        )
+
+    def _import_per_roulette_to_active(self, per_roulette: dict) -> int:
+        """per-roulette 設定を現在の active ルーレットへ適用し、SettingsPanel を同期する。i376
+
+        適用先は常に active ルーレット。active 切替は行わない。
+        """
+        ctx = self._active_context
+        if ctx is None:
+            return 0
+        applied = self._apply_per_roulette_settings_to_ctx(ctx, per_roulette)
+        # active ルーレットの SettingsPanel 表示を同期（spin_preset_name の combo も含む）
+        self._sync_settings_to_active()
+        self._save_config()
+        return applied
+
+    def _apply_per_roulette_settings_to_ctx(self, ctx, per_roulette: dict) -> int:
+        """per-roulette 設定を指定 ctx の ctx.settings と runtime に直接適用する。i375
+
+        _apply_setting_to_all_panels と同等のロジックを任意の ctx に対して実行する。
+        text_size_mode / text_direction の相互参照を正確にするため、
+        パス 1 で全値を ctx.settings に書き込んでからパス 2 で runtime に反映する。
+
+        Returns:
+            適用した設定項目数
+        """
+        applied = 0
+        p = ctx.panel
+
+        # パス 1: ctx.settings を先に全更新（text_size_mode/text_direction 連動対策）
+        for key in PER_ROULETTE_KEYS:
+            if key not in per_roulette:
+                continue
+            try:
+                setattr(ctx.settings, key, per_roulette[key])
+                applied += 1
+            except Exception:
+                pass
+
+        # パス 2: runtime に反映（_apply_setting_to_all_panels と同じロジック）
+        for key in PER_ROULETTE_KEYS:
+            if key not in per_roulette:
+                continue
+            value = per_roulette[key]
+            try:
+                if key == "log_overlay_show":
+                    p.wheel.set_log_visible(value)
+                elif key == "log_on_top":
+                    p.wheel.set_log_on_top(value)
+                elif key == "log_timestamp":
+                    p.wheel.set_log_timestamp(value)
+                elif key == "log_box_border":
+                    p.wheel.set_log_box_border(value)
+                elif key == "spin_duration":
+                    p.spin_ctrl.set_spin_duration(value)
+                elif key == "spin_mode":
+                    p.spin_ctrl.set_spin_mode(value)
+                elif key == "double_duration":
+                    p.spin_ctrl.set_double_duration(value)
+                elif key == "triple_duration":
+                    p.spin_ctrl.set_triple_duration(value)
+                elif key == "sound_tick_enabled":
+                    p.spin_ctrl.set_sound_tick_enabled(value)
+                elif key == "sound_result_enabled":
+                    p.spin_ctrl.set_sound_result_enabled(value)
+                elif key == "result_close_mode":
+                    p.result_overlay.set_close_mode(value)
+                elif key == "result_hold_sec":
+                    p.result_overlay.set_hold_sec(value)
+                elif key == "donut_hole":
+                    p.wheel.set_donut_hole(value)
+                elif key == "spin_direction":
+                    p.wheel._spin_direction = value
+                elif key == "pointer_angle":
+                    p.wheel.set_pointer_angle(value)
+                elif key == "text_size_mode":
+                    # ctx.settings.text_direction はパス 1 で更新済み
+                    p.wheel.set_text_mode(value, ctx.settings.text_direction)
+                elif key == "text_direction":
+                    # ctx.settings.text_size_mode はパス 1 で更新済み
+                    p.wheel.set_text_mode(ctx.settings.text_size_mode, value)
+                elif key == "spin_preset_name":
+                    p.spin_ctrl.set_spin_preset(value)
+                elif key == "tick_pattern":
+                    p.spin_ctrl.set_tick_pattern(value)
+                elif key == "win_pattern":
+                    p.spin_ctrl.set_win_pattern(value)
+            except Exception:
+                pass
+
+        return applied
+
+    # ================================================================
+    #  ルーレット package export / import (i418)
+    # ================================================================
+    # 責務:
+    #   export: active roulette を自己完結した package ファイルとして書き出す。
+    #           roulette 固有設定・pattern 群・ログを含む。AppConfig は含まない。
+    #   import: package ファイルから「新しいルーレット」として追加する。
+    #           既存 roulette には merge しない。新 roulette_id を採番する。
+
+    def _on_roulette_pkg_export(self):
+        """active roulette を roulette package ファイルにエクスポートする。i418
+
+        含める: roulette 固有設定, pattern 群, current_pattern, logs,
+                source metadata (roulette_name / roulette_id)
+        含めない: AppConfig, メインウィンドウ位置, 共通パネル状態,
+                  active roulette 選択状態, 他 roulette データ, ローカル絶対パス
+        """
+        import json
+        import datetime
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        ctx = self._active_context
+        if ctx is None:
+            return
+
+        # i419: export 前に現在の item_entries を item_patterns へフラッシュする。
+        # non-default ルーレットは ctx.item_patterns[current_pattern] が
+        # item_entries と乖離している場合があるため、同期してから収集する。
+        self._save_item_entries()
+
+        rid = ctx.roulette_id
+
+        # --- roulette 表示名を決定 ---
+        if rid == "default":
+            roulette_name = "ルーレット 1"
+        elif rid.startswith("roulette_"):
+            try:
+                n = int(rid[len("roulette_"):])
+                roulette_name = f"ルーレット {n}"
+            except ValueError:
+                roulette_name = rid
+        else:
+            roulette_name = rid
+
+        # --- patterns 収集 ---
+        if ctx.item_patterns is not None:
+            # non-default ルーレット: per-roulette の item_patterns を使う
+            patterns_data = []
+            for pname, raw_entries in ctx.item_patterns.items():
+                pid = ctx.pattern_id_map.get(pname, "")
+                patterns_data.append({
+                    "pattern_name": pname,
+                    "pattern_id": pid,
+                    "entries": list(raw_entries),
+                })
+            current_pattern_id = ctx.current_pattern_id or ""
+        else:
+            # default ルーレット: グローバル config から収集
+            patterns_data = []
+            for pname in get_pattern_names(self._config):
+                pid = get_pattern_id(self._config, pname)
+                raw_entries = self._config.get("item_patterns", {}).get(pname, [])
+                patterns_data.append({
+                    "pattern_name": pname,
+                    "pattern_id": pid,
+                    "entries": list(raw_entries),
+                })
+            current_pattern_id = self._get_current_pattern_id(ctx)
+
+        # --- per-roulette 設定収集 ---
+        s = ctx.settings
+        settings_data = {k: getattr(s, k) for k in PER_ROULETTE_KEYS if hasattr(s, k)}
+
+        # --- logs 収集 (このルーレット分のみ) ---
+        log_records = [
+            r for r in self._win_history.records
+            if r.get("roulette_id", "default") == rid
+        ]
+
+        # --- package 構築 ---
+        dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        package = {
+            "version": 1,
+            "package_type": "roulette_package",
+            "exported_at": dt,
+            "source": {
+                "roulette_id": rid,
+                "roulette_name": roulette_name,
+            },
+            "roulette": {
+                "name": roulette_name,
+                "settings": settings_data,
+                "patterns": patterns_data,
+                "current_pattern_id": current_pattern_id,
+            },
+            "history": {
+                "records": log_records,
+            },
+        }
+
+        # --- ファイル保存 ---
+        dt_file = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = os.path.join(EXPORT_DIR, f"roulette_package_{dt_file}.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "ルーレット package をエクスポート",
+            default_path,
+            "JSON ファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(package, f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            QMessageBox.warning(self, "エクスポートエラー", str(ex))
+
+    def _on_roulette_pkg_import(self):
+        """roulette package ファイルを新しいルーレットとして追加する。i418
+
+        既存 roulette には merge しない。
+        import 時に新しい roulette_id を採番し、
+        package 内の pattern / settings / logs を新 roulette として復元する。
+        """
+        import json
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "ルーレット package をインポート", EXPORT_DIR,
+            "JSON ファイル (*.json);;全てのファイル (*)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, encoding="utf-8") as f:
+                pkg = json.load(f)
+        except Exception as ex:
+            QMessageBox.warning(self, "インポートエラー",
+                                f"ファイルを読み込めませんでした:\n{ex}")
+            return
+
+        if not isinstance(pkg, dict):
+            QMessageBox.warning(self, "インポートエラー",
+                                "ファイル形式が正しくありません。\n"
+                                "roulette package エクスポートで作成したファイルを使用してください。")
+            return
+
+        if pkg.get("package_type") != "roulette_package":
+            QMessageBox.warning(self, "インポートエラー",
+                                "このファイルは roulette package ではありません。\n"
+                                f"(package_type: {pkg.get('package_type', '不明')})\n\n"
+                                "ルーレット package エクスポートで作成したファイルを指定してください。")
+            return
+
+        roulette_data = pkg.get("roulette", {})
+        patterns_raw = roulette_data.get("patterns", [])
+        settings_raw = roulette_data.get("settings", {})
+        current_pattern_id_pkg = roulette_data.get("current_pattern_id", "")
+        history_raw = pkg.get("history", {})
+        log_records = history_raw.get("records", [])
+        source_name = pkg.get("source", {}).get("roulette_name", "インポート")
+
+        if not patterns_raw:
+            QMessageBox.warning(self, "インポートエラー",
+                                "package にパターン情報が含まれていません。\n"
+                                "正しい roulette package ファイルを指定してください。")
+            return
+
+        # --- 新しい roulette_id を採番 ---
+        new_rid = self._next_roulette_id()
+
+        # --- 同名ルーレットの命名: roulette_id 連番採番のみのため競合なし ---
+
+        # --- 新規ルーレットを生成 ---
+        panel = self._add_roulette(new_rid, activate=False)
+        if panel is None:
+            QMessageBox.warning(self, "インポートエラー",
+                                "ルーレットの生成に失敗しました。")
+            return
+
+        ctx = self._manager.get(new_rid)
+        if ctx is None:
+            return
+
+        # --- patterns を復元 ---
+        new_item_patterns: dict = {}
+        new_pattern_id_map: dict = {}
+        current_pattern_name: str | None = None
+
+        for p in patterns_raw:
+            if not isinstance(p, dict):
+                continue
+            pname = p.get("pattern_name", "")
+            pid = p.get("pattern_id", "")
+            entries = p.get("entries", [])
+            if not pname:
+                continue
+            new_item_patterns[pname] = list(entries)
+            if pid:
+                new_pattern_id_map[pname] = pid
+            # current_pattern_id でパターン名を特定
+            if pid and pid == current_pattern_id_pkg:
+                current_pattern_name = pname
+
+        # current_pattern が特定できなかった場合は先頭を使う
+        if current_pattern_name is None and new_item_patterns:
+            current_pattern_name = next(iter(new_item_patterns))
+
+        current_pid = new_pattern_id_map.get(current_pattern_name or "", "")
+
+        # --- ctx に patterns を設定 ---
+        ctx.item_patterns = new_item_patterns
+        ctx.pattern_id_map = new_pattern_id_map
+        ctx.current_pattern = current_pattern_name
+        ctx.current_pattern_id = current_pid
+
+        # --- 現在パターンの item_entries を構築 ---
+        raw_entries = new_item_patterns.get(current_pattern_name or "", [])
+        new_entries = []
+        for raw in raw_entries:
+            entry = ItemEntry.from_config_entry(raw, keep_disabled=True)
+            if entry is not None:
+                new_entries.append(entry)
+
+        ctx.item_entries = new_entries
+        ctx.segments, _ = build_segments_from_entries(new_entries, self._config)
+        ctx.panel.set_segments(ctx.segments)
+
+        # current_pattern をパネルのホイールに反映
+        if current_pattern_name and current_pid:
+            ctx.panel.wheel.set_current_pattern(current_pattern_name, current_pid)
+
+        # --- per-roulette 設定を復元 ---
+        if settings_raw:
+            self._apply_per_roulette_settings_to_ctx(ctx, settings_raw)
+
+        # --- logs を復元 (新 roulette_id に書き換えてマージ) ---
+        added = self._win_history.import_from_records(log_records,
+                                                       target_roulette_id=new_rid)
+        if added > 0:
+            self._win_history.save()
+        # i420: import_from_records の戻り値は dedup で 0 になる場合があるため、
+        # win_history から実際のレコード件数を集計して報告に使う。
+        # （同一 roulette_id が再利用された場合のデータが既に保存ファイルに残っている場合など）
+        _actual_log_count = sum(
+            1 for r in self._win_history.records
+            if r.get("roulette_id", "default") == new_rid
+        )
+
+        # --- wheel のインメモリログを再構築 ---
+        _wheel = ctx.panel.wheel
+        _recent = [
+            r for r in self._win_history.records
+            if r.get("roulette_id", "default") == new_rid
+        ]
+        _recent.sort(key=lambda r: r.get("ts", ""), reverse=True)
+        _wheel._log_entries = [
+            (r.get("ts", ""), r.get("text", ""), r.get("pattern_id", ""))
+            for r in _recent[:_wheel._log_max]
+        ]
+        _wheel.save_log(self._roulette_log_path(new_rid))
+        _wheel.update()
+        _wheel.log_changed.emit()
+
+        # --- active roulette を新 roulette に切り替え ---
+        self._set_active_roulette(new_rid)
+        self._sync_settings_to_active()
+
+        QMessageBox.information(
+            self, "インポート完了",
+            f"ルーレット package をインポートしました。\n\n"
+            f"ソース: {source_name}\n"
+            f"パターン数: {len(new_item_patterns)}\n"
+            f"ログ件数: {_actual_log_count}"
+        )
 
     def _on_custom_tick_file(self, path: str):
         """カスタムtick音ファイル変更。"""
@@ -3658,7 +4746,9 @@ class MainWindow(QMainWindow):
     def _update_setting_by_action(self, key: str, value) -> bool:
         """アクション経由の設定変更。
 
-        既存の設定反映分岐ロジックをそのまま保持する。
+        i369: per-roulette キー（PER_ROULETTE_KEYS）は active の ctx.settings に書く。
+        global キーは self._settings に書く。これにより「全ルーレットに適用 OFF」時に
+        他ルーレットへ個別設定が波及しない。
 
         Args:
             key: 設定キー名
@@ -3670,14 +4760,23 @@ class MainWindow(QMainWindow):
         if not key:
             return False
 
-        if hasattr(self._settings, key):
+        ctx = self._active_context
+        rp = ctx.panel  # = self._active_panel
+
+        # i369: 書き込み先を per-roulette / global で振り分ける。
+        # per-roulette キー → active の ctx.settings（他ルーレットに波及しない）
+        # global キー      → self._settings
+        if key in PER_ROULETTE_KEYS:
+            setattr(ctx.settings, key, value)
+        elif hasattr(self._settings, key):
             setattr(self._settings, key, value)
 
-        rp = self._active_panel
         if key == "text_size_mode":
-            rp.wheel.set_text_mode(value, self._settings.text_direction)
+            # i369: 対になる text_direction は ctx.settings から読む（self._settings ではなく）
+            rp.wheel.set_text_mode(value, ctx.settings.text_direction)
         elif key == "text_direction":
-            rp.wheel.set_text_mode(self._settings.text_size_mode, value)
+            # i369: 対になる text_size_mode は ctx.settings から読む
+            rp.wheel.set_text_mode(ctx.settings.text_size_mode, value)
         elif key == "donut_hole":
             rp.wheel.set_donut_hole(value)
         elif key == "pointer_angle":
@@ -3704,9 +4803,11 @@ class MainWindow(QMainWindow):
         elif key == "win_volume":
             self._sound.set_win_volume(value / 100.0)
         elif key == "tick_pattern":
-            self._sound.set_tick_pattern(value)
+            # i370: per-roulette — active パネルの SpinController に設定する
+            rp.spin_ctrl.set_tick_pattern(value)
         elif key == "win_pattern":
-            self._sound.set_win_pattern(value)
+            # i370: per-roulette — active パネルの SpinController に設定する
+            rp.spin_ctrl.set_win_pattern(value)
         elif key == "log_overlay_show":
             # i342: ログ表示 ON/OFF をアクティブパネルに反映する。
             rp.wheel.set_log_visible(value)
@@ -3716,6 +4817,10 @@ class MainWindow(QMainWindow):
             rp.wheel.set_log_box_border(value)
         elif key == "log_on_top":
             rp.wheel.set_log_on_top(value)
+        elif key == "log_history_all_patterns":
+            # i395: active roulette 単位で記録・反映する（他ルーレットに波及しない）
+            ctx.settings.log_all_patterns = value
+            rp.wheel.set_log_all_patterns(value)
         elif key == "spin_duration":
             rp.spin_ctrl.set_spin_duration(value)
         elif key == "spin_mode":
@@ -3725,8 +4830,13 @@ class MainWindow(QMainWindow):
         elif key == "triple_duration":
             rp.spin_ctrl.set_triple_duration(value)
         elif key == "replay_max_count":
-            self._replay_mgr.set_max_count(value)
-            self._settings_panel.set_replay_count(self._replay_mgr.count())
+            # i351: 全ルーレットの ReplayManager に上限を適用する
+            for _rp_mgr_v in self._replay_mgrs.values():
+                _rp_mgr_v.set_max_count(value)
+            _act_rp_mgr = self._active_replay_mgr
+            self._settings_panel.set_replay_count(
+                _act_rp_mgr.count() if _act_rp_mgr else 0
+            )
         elif key == "replay_show_indicator":
             pass  # 値は AppSettings に保存済み。再生開始時に参照
         elif key == "window_transparent":
@@ -3850,6 +4960,10 @@ class MainWindow(QMainWindow):
         ctx.segments, _ = build_segments_from_entries(entries, self._config)
         ctx.panel.set_segments(ctx.segments)
         self._settings_panel.set_active_entries(entries)
+        # i407: パターン切替時にホイールのログフィルタ対象（UUID）を更新する
+        _sw_pid = self._get_pattern_id_for_ctx(ctx, name)
+        ctx.current_pattern_id = _sw_pid
+        ctx.panel.wheel.set_current_pattern(name, _sw_pid)
         # i339: ItemPanel シンプルリストをパターン切替後に即時更新する
         if hasattr(self, "_item_panel"):
             self._item_panel._refresh_simple_list()
@@ -3866,6 +4980,9 @@ class MainWindow(QMainWindow):
             if name not in ctx.item_patterns:
                 ctx.item_patterns[name] = []
             ctx.current_pattern = name
+            # i407: 新パターンに UUID を割り当てる
+            _add_pid = self._get_pattern_id_for_ctx(ctx, name)
+            ctx.current_pattern_id = _add_pid
             entries = []
             self._settings_panel.set_pattern_list(list(ctx.item_patterns.keys()), name)
         else:
@@ -3890,11 +5007,13 @@ class MainWindow(QMainWindow):
             # i338: non-default ルーレット — per-roulette パターン削除
             if name in ctx.item_patterns and len(ctx.item_patterns) > 1:
                 del ctx.item_patterns[name]
+                ctx.pattern_id_map.pop(name, None)  # i407: UUID も削除
             # SettingsPanel は既に新 current を選択済み
             new_current = self._settings_panel._current_pattern
             if new_current not in ctx.item_patterns:
                 new_current = next(iter(ctx.item_patterns))
             ctx.current_pattern = new_current
+            ctx.current_pattern_id = ctx.pattern_id_map.get(new_current, "")
             raw_items = ctx.item_patterns.get(new_current, [])
             entries = [ItemEntry.from_config_entry(r, keep_disabled=True) for r in raw_items]
             entries = [e for e in entries if e is not None]
@@ -3912,6 +5031,39 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_item_panel"):
             self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
+
+    def _on_pattern_renamed(self, old_name: str, new_name: str):
+        """パターン名変更: データ層のキーをリネームしてホイール表示を更新する。
+
+        i407: pattern_id（UUID）は変わらない。表示名だけを更新する。
+        rename_log_pattern は不要になった（ログはIDベースのため名前変更の影響なし）。
+        """
+        # i400: SettingsPanel 側は既に UI を更新済み。データ層だけ追随する。
+        ctx = self._active_context
+        if ctx.item_patterns is not None:
+            # non-default ルーレット — per-roulette パターンをリネーム
+            ctx.item_patterns = {
+                (new_name if k == old_name else k): v
+                for k, v in ctx.item_patterns.items()
+            }
+            # i407: pattern_id_map のキーも更新（UUID は維持）
+            if old_name in ctx.pattern_id_map:
+                ctx.pattern_id_map[new_name] = ctx.pattern_id_map.pop(old_name)
+            if ctx.current_pattern == old_name:
+                ctx.current_pattern = new_name
+            self._settings_panel.set_pattern_list(
+                list(ctx.item_patterns.keys()), ctx.current_pattern
+            )
+        else:
+            rename_pattern(self._config, old_name, new_name)
+            self._settings_panel.set_pattern_list(
+                get_pattern_names(self._config),
+                get_current_pattern_name(self._config),
+            )
+        # i407: UUID ベースなのでログエントリの更新は不要。
+        # ログフィルタ対象のパターン名を更新する（UUID は変わらないので current_pattern_id はそのまま）
+        ctx.panel.wheel.set_current_pattern(new_name, ctx.current_pattern_id)
+        self._update_win_counts()
 
     # ================================================================
     #  パネル開閉（F1 でトグル）
@@ -4050,8 +5202,14 @@ class MainWindow(QMainWindow):
             self._graph_dialog.activateWindow()
             self._refresh_graph()
             return
-        self._graph_dialog = GraphDialog(self._design, parent=self)
+        self._graph_dialog = GraphDialog(
+            self._design, parent=self,
+            initial_orientation=self._settings.graph_orientation,  # i386
+        )
         self._graph_dialog.finished.connect(self._on_graph_closed)
+        self._graph_dialog.orientation_changed.connect(  # i386
+            self._on_graph_orientation_changed
+        )
         self._refresh_graph()
         self._graph_dialog.show()
 
@@ -4059,16 +5217,91 @@ class MainWindow(QMainWindow):
         """グラフダイアログが閉じられた。"""
         self._graph_dialog = None
 
+    def _on_graph_orientation_changed(self, orientation: str):
+        """グラフ向き変更時に設定へ保存する（i386）。"""
+        self._settings.graph_orientation = orientation
+        self._save_config()
+
+    def _on_panel_graph_requested(self, roulette_id: str):
+        """ルーレットパネル上のグラフボタンからグラフを開く（後方互換）。
+
+        i389: パネルのグラフボタンは _toggle_graph_panel() 経由になったため、
+        このハンドラは設定パネルのグラフボタンや外部からの呼び出し用として残す。
+        """
+        if self._manager.active_id != roulette_id:
+            self.apply_action(SetActiveRoulette(roulette_id))
+        self._open_graph()
+
+    def _on_in_panel_graph_opened(self, roulette_id: str):
+        """i389: ルーレットパネルの in-panel グラフが表示された。
+
+        向き設定を反映し、グラフデータを初期ロードする。
+        """
+        ctx = self._manager.get(roulette_id)
+        if ctx is None:
+            return
+        gw = ctx.panel.in_panel_graph_widget
+        if gw is None:
+            return
+        # 向き設定を反映（シグナルを emit しない set_orientation を使用）
+        gw.set_orientation(self._settings.graph_orientation)
+        # orientation_changed を保存ハンドラへ接続（重複接続を避ける）
+        try:
+            gw.orientation_changed.disconnect(self._on_graph_orientation_changed)
+        except RuntimeError:
+            pass
+        gw.orientation_changed.connect(self._on_graph_orientation_changed)
+        # グラフデータ初期ロード
+        self._refresh_in_panel_graph_for(ctx)
+
+    def _refresh_in_panel_graphs(self):
+        """i389: 全ルーレットパネルの in-panel グラフを更新する。"""
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            self._refresh_in_panel_graph_for(ctx)
+
+    def _refresh_in_panel_graph_for(self, ctx):
+        """i389: 指定コンテキストのパネルの in-panel グラフを更新する。
+
+        グラフウィジェットが存在し、かつ表示中の場合のみ更新する。
+        各パネルは自身の roulette_id に対応するデータを表示する。
+
+        i392: in-panel グラフは現在有効な item_entries のみを表示対象とする。
+        「有効項目に含まれない過去の結果も追加」はしない。
+        これにより、現在の項目パターン外の履歴が混入しない。
+        """
+        panel = ctx.panel
+        gw = panel.in_panel_graph_widget
+        if gw is None or not gw.isVisible():
+            return
+        _igp_pid = self._get_current_pattern_id(ctx)
+        _igp_name = ctx.current_pattern or get_current_pattern_name(self._config)
+        roulette_id = ctx.roulette_id
+        counts = self._win_history.count_by_item(_igp_pid, roulette_id=roulette_id)
+        total = self._win_history.total_count(_igp_pid, roulette_id=roulette_id)
+        # i392: 現在有効な項目のみ。パターン外の過去履歴は混ぜない。
+        items = []
+        for entry in ctx.item_entries:
+            if entry.enabled:
+                name = entry.text
+                items.append((name, len(items), counts.get(name, 0)))
+        panel.update_in_panel_graph(items, total, _igp_name)
+
     def _refresh_graph(self):
         """グラフダイアログが開いていればデータを更新する。"""
         if self._graph_dialog is None:
             return
-        pattern = get_current_pattern_name(self._config)
-        counts = self._win_history.count_by_item(pattern)
-        total = self._win_history.total_count(pattern)
+        ctx = self._active_context
+        pattern = ctx.current_pattern or get_current_pattern_name(self._config)
+        _rg_pid = self._get_current_pattern_id(ctx)
+        roulette_id = ctx.roulette_id
+        counts = self._win_history.count_by_item(_rg_pid, roulette_id=roulette_id)
+        total = self._win_history.total_count(_rg_pid, roulette_id=roulette_id)
         # 現在の有効項目リスト順で項目データを構成
         items = []
-        for entry in self._active_context.item_entries:
+        for entry in ctx.item_entries:
             if entry.enabled:
                 name = entry.text
                 items.append((name, len(items), counts.get(name, 0)))
@@ -4078,6 +5311,14 @@ class MainWindow(QMainWindow):
             if name not in shown_names:
                 items.append((name, len(items), count))
         self._graph_dialog.update_graph(items, total, pattern)
+        # i381: ウィンドウタイトルに現在のルーレット / パターンを表示する
+        ids = self._manager.ids()
+        if len(ids) > 1:
+            idx = ids.index(roulette_id) if roulette_id in ids else 0
+            title = f"勝利履歴グラフ — #{idx + 1} / {pattern}"
+        else:
+            title = f"勝利履歴グラフ — {pattern}"
+        self._graph_dialog.setWindowTitle(title)
 
     # ================================================================
     #  Replay 再生
@@ -4086,90 +5327,194 @@ class MainWindow(QMainWindow):
     def _start_replay(self, idx: int = 0):
         """指定インデックスの replay を再生する。
 
+        i352: group_id を持つレコードは全ルーレット同時再生（同時実行再現）。
+        group_id がない場合は active ルーレット単独再生。
+
         Args:
-            idx: replay records のインデックス（0=最新）
+            idx: 基点となる replay records のインデックス（active mgr 基準）
         """
-        if self._replay_mgr.is_playing or self._replay_mgr.is_recording:
+        replay_mgr = self._active_replay_mgr
+        if replay_mgr is None:
             return
-        if self._active_panel.spin_ctrl.is_spinning:
-            return
-        if self._replay_mgr.count() == 0:
+        if replay_mgr.count() == 0:
             return
 
-        # 再生前の状態を退避
-        panel = self._active_panel
-        self._replay_saved_segments = list(panel.wheel._segments)
-        self._replay_saved_angle = panel.wheel._angle
-        self._replay_saved_pointer = panel.wheel._pointer_angle
-        self._replay_saved_direction = panel.wheel._spin_direction
+        rec = replay_mgr.get(idx)
+        if rec is None:
+            return
+
+        group_id = rec.get("group_id", "")
+
+        # 再生対象を構築: (roulette_id, mgr, rec_idx, panel)
+        # i353: 非表示パネルは対象に含めない（結果表示が残って再生が詰まる問題の防止）
+        targets: list[tuple] = []
+        if group_id:
+            # グループ再生: 全ルーレットから同じ group_id を持つ「表示中」レコードを探す
+            for rid, mgr in self._replay_mgrs.items():
+                grp_idxs = mgr.find_by_group_id(group_id)
+                if grp_idxs:
+                    ctx = self._manager.get(rid)
+                    if ctx and ctx.panel.isVisible():
+                        targets.append((rid, mgr, grp_idxs[0], ctx.panel))
+            # 表示中のグループメンバーが1件もなければ単独再生にフォールバック
+            if not targets:
+                ctx = self._manager.active
+                if ctx and ctx.panel.isVisible():
+                    targets.append((self._manager.active_id, replay_mgr, idx, ctx.panel))
+        else:
+            # 単独再生: active ルーレットのみ（表示中かどうかに関係なく active を優先）
+            ctx = self._manager.active
+            if ctx:
+                targets.append((self._manager.active_id, replay_mgr, idx, ctx.panel))
+
+        if not targets:
+            return
+
+        # 再生中・記録中・スピン中のものがあれば中断
+        for rid, mgr, rec_idx, panel in targets:
+            if mgr.is_playing or mgr.is_recording or panel.spin_ctrl.is_spinning:
+                return
+
+        # セッション情報を保存
+        self._replay_sessions = [
+            {
+                "roulette_id": rid,
+                "panel": panel,
+                "saved_segments": list(panel.wheel._segments),
+                "saved_angle": panel.wheel._angle,
+                "saved_pointer": panel.wheel._pointer_angle,
+                "saved_direction": panel.wheel._spin_direction,
+            }
+            for rid, mgr, rec_idx, panel in targets
+        ]
+        self._replay_group_remaining = len(targets)
 
         # UI ロック
         self._settings_panel.set_spinning(True)
         self._settings_panel.set_replay_playing(True)
 
-        # リプレイ中表示
-        if self._settings.replay_show_indicator:
-            panel.wheel.set_replay_indicator(True)
+        # 各パネルで再生開始
+        failed = False
+        started_panels = []
+        for rid, mgr, rec_idx, panel in targets:
+            if self._settings.replay_show_indicator:
+                panel.wheel.set_replay_indicator(True)
+            ok = mgr.start_playback(rec_idx, panel.wheel, self._sound)
+            if ok:
+                started_panels.append(panel)
+            else:
+                failed = True
 
-        # 再生開始
-        ok = self._replay_mgr.start_playback(
-            idx, panel.wheel, self._sound
-        )
-        if not ok:
+        if failed:
+            # いずれかが失敗した場合は全停止してロール解除
+            for rid, mgr, rec_idx, panel in targets:
+                if mgr.is_playing:
+                    mgr.stop_playback()
+                panel.wheel.set_replay_indicator(False)
+            self._replay_sessions = []
+            self._replay_group_remaining = 0
             self._settings_panel.set_spinning(False)
             self._settings_panel.set_replay_playing(False)
-            panel.wheel.set_replay_indicator(False)
+
+    def _on_replay_finished(self, winner: str, winner_idx: int, roulette_id: str = ""):
+        """replay 再生完了時の処理。
+
+        i352: roulette_id でセッションを特定し、そのパネルで結果表示・復元を行う。
+        全パネルが完了したときのみ UI ロックを解除する。
+        i353: セッション未発見時はカウンタを操作しない（不整合な decrement を防止）。
+        """
+        session = next(
+            (s for s in self._replay_sessions if s["roulette_id"] == roulette_id),
+            None,
+        )
+        if session is None:
+            # i353: セッション対象外（非表示フィルタ等で targets に入らなかった mgr の
+            # playback_finished が稀に発火する場合）。カウンタに触れず無視する。
             return
 
-    def _on_replay_finished(self, winner: str, winner_idx: int):
-        """replay 再生完了時の処理。"""
-        panel = self._active_panel
+        panel = session["panel"]
 
         # 結果表示（win_history / log には記録しない）
-        if winner:
+        if winner and panel.isVisible():
+            # i353: 表示中パネルのみ結果オーバーレイを表示し、クローズ後に復元する
             panel.result_overlay.show_result(winner)
 
-        # 結果表示クローズ後に状態復元
-        def _restore_after_overlay():
-            self._replay_restore_state()
+            def _on_overlay_closed(rid=roulette_id):
+                try:
+                    panel.result_overlay.closed.disconnect(_on_overlay_closed)
+                except RuntimeError:
+                    pass
+                self._on_replay_panel_restored(rid)
 
-        # ResultOverlay の closed シグナルに一度だけ接続
-        def _on_overlay_closed():
-            try:
-                panel.result_overlay.closed.disconnect(_on_overlay_closed)
-            except RuntimeError:
-                pass
-            _restore_after_overlay()
-
-        if winner:
             panel.result_overlay.closed.connect(_on_overlay_closed)
         else:
-            self._replay_restore_state()
+            # 非表示パネル or winner なし: オーバーレイを介さず即時復元
+            self._on_replay_panel_restored(roulette_id)
+
+    def _on_replay_panel_restored(self, roulette_id: str):
+        """1パネルのリプレイ後処理（オーバーレイ消去・状態復元）。
+
+        i352: グループの全パネルが完了したときのみ UI ロックを解除する。
+        """
+        # 対象セッションを復元
+        session = next(
+            (s for s in self._replay_sessions if s["roulette_id"] == roulette_id),
+            None,
+        )
+        if session:
+            panel = session["panel"]
+            panel.wheel.set_replay_indicator(False)
+            panel.wheel.set_segments(session["saved_segments"])
+            panel.wheel.set_angle(session["saved_angle"])
+            panel.wheel.set_pointer_angle(session["saved_pointer"])
+            panel.wheel._spin_direction = session["saved_direction"]
+        else:
+            # i353: セッション不明でもカウンタだけデクリメントして詰まらせない
+            self._replay_group_remaining = max(0, self._replay_group_remaining - 1)
+            if self._replay_group_remaining <= 0:
+                self._replay_sessions = []
+                self._replay_group_remaining = 0
+                self._settings_panel.set_spinning(False)
+                self._settings_panel.set_replay_playing(False)
+                if self._replay_dialog is not None:
+                    self._replay_dialog.set_playing(False)
+            return
+
+        self._replay_group_remaining = max(0, self._replay_group_remaining - 1)
+        if self._replay_group_remaining <= 0:
+            self._replay_sessions = []
+            self._replay_group_remaining = 0
+            self._settings_panel.set_spinning(False)
+            self._settings_panel.set_replay_playing(False)
+            if self._replay_dialog is not None:
+                self._replay_dialog.set_playing(False)
+            self._refresh_replay_dialog()
 
     def _replay_restore_state(self):
-        """replay 再生後に通常状態へ復元する。"""
-        panel = self._active_panel
-
-        # インジケーター消去
-        panel.wheel.set_replay_indicator(False)
-
-        # セグメント・角度・ポインターを復元
-        if hasattr(self, '_replay_saved_segments'):
-            panel.wheel.set_segments(self._replay_saved_segments)
-            panel.wheel.set_angle(self._replay_saved_angle)
-            panel.wheel.set_pointer_angle(self._replay_saved_pointer)
-            panel.wheel._spin_direction = self._replay_saved_direction
-
-        # UI ロック解除
+        """replay 強制中断時に全セッションをまとめて復元する。"""
+        for session in self._replay_sessions:
+            panel = session["panel"]
+            panel.wheel.set_replay_indicator(False)
+            panel.wheel.set_segments(session["saved_segments"])
+            panel.wheel.set_angle(session["saved_angle"])
+            panel.wheel.set_pointer_angle(session["saved_pointer"])
+            panel.wheel._spin_direction = session["saved_direction"]
+        self._replay_sessions = []
+        self._replay_group_remaining = 0
         self._settings_panel.set_spinning(False)
         self._settings_panel.set_replay_playing(False)
         if self._replay_dialog is not None:
             self._replay_dialog.set_playing(False)
+        self._refresh_replay_dialog()
 
     def _cancel_replay(self):
         """進行中の replay を中断する。"""
-        if self._replay_mgr.is_playing:
-            self._replay_mgr.stop_playback()
+        stopped = False
+        for _rp_mgr_c in self._replay_mgrs.values():
+            if _rp_mgr_c.is_playing:
+                _rp_mgr_c.stop_playback()
+                stopped = True
+        if stopped:
             self._replay_restore_state()
 
     # ================================================================
@@ -4177,13 +5522,17 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _open_replay_manager(self):
-        """リプレイ管理ダイアログを開く（非モーダル）。"""
+        """リプレイ管理ダイアログを開く（非モーダル）。
+
+        i352: ダイアログは active roulette に即時追従する。
+        """
         from replay_dialog import ReplayDialog
         if self._replay_dialog is not None:
             self._replay_dialog.raise_()
             self._replay_dialog.activateWindow()
-            self._replay_dialog.refresh_list(self._replay_mgr.records)
+            self._refresh_replay_dialog()
             return
+        mgr = self._active_replay_mgr
         self._replay_dialog = ReplayDialog(self._design, parent=self)
         self._replay_dialog.play_requested.connect(self._on_replay_dialog_play)
         self._replay_dialog.delete_requested.connect(
@@ -4204,39 +5553,98 @@ class MainWindow(QMainWindow):
         self._replay_dialog.import_requested.connect(
             self._on_replay_dialog_import
         )
+        self._replay_dialog.constituent_play_requested.connect(
+            self._on_replay_dialog_constituent_play
+        )
         self._replay_dialog.finished.connect(self._on_replay_dialog_closed)
-        self._replay_dialog.refresh_list(self._replay_mgr.records)
+        self._replay_dialog.refresh_list(mgr.records if mgr else [])
         self._replay_dialog.show()
 
     def _on_replay_dialog_play(self, idx: int):
         """管理ダイアログからの再生リクエスト。"""
         self._start_replay(idx)
         if self._replay_dialog is not None:
-            self._replay_dialog.set_playing(self._replay_mgr.is_playing)
+            mgr = self._active_replay_mgr
+            self._replay_dialog.set_playing(bool(mgr and mgr.is_playing))
+
+    def _on_replay_dialog_constituent_play(self, idx: int):
+        """管理ダイアログからの個別再生リクエスト（multi記録をactive単独で再生）。i354"""
+        self._start_constituent_replay(idx)
+        if self._replay_dialog is not None:
+            mgr = self._active_replay_mgr
+            self._replay_dialog.set_playing(bool(mgr and mgr.is_playing))
+
+    def _start_constituent_replay(self, idx: int):
+        """multi記録をgroup_idを無視してactive roulette 1台だけで再生する。i354"""
+        replay_mgr = self._active_replay_mgr
+        if replay_mgr is None or replay_mgr.count() == 0:
+            return
+        rec = replay_mgr.get(idx)
+        if rec is None:
+            return
+        ctx = self._manager.active
+        if ctx is None:
+            return
+        # 既に再生中・記録中・スピン中なら何もしない
+        if replay_mgr.is_playing or replay_mgr.is_recording or ctx.panel.spin_ctrl.is_spinning:
+            return
+        # group_id を無視して active 単独を targets にする
+        self._replay_sessions = [{
+            "roulette_id": self._manager.active_id,
+            "panel": ctx.panel,
+            "saved_segments": list(ctx.panel.wheel._segments),
+            "saved_angle": ctx.panel.wheel._angle,
+            "saved_pointer": ctx.panel.wheel._pointer_angle,
+            "saved_direction": ctx.panel.wheel._spin_direction,
+        }]
+        self._replay_group_remaining = 1
+        self._settings_panel.set_spinning(True)
+        self._settings_panel.set_replay_playing(True)
+        if self._settings.replay_show_indicator:
+            ctx.panel.wheel.set_replay_indicator(True)
+        ok = replay_mgr.start_playback(idx, ctx.panel.wheel, self._sound)
+        if not ok:
+            self._replay_sessions = []
+            self._replay_group_remaining = 0
+            self._settings_panel.set_spinning(False)
+            self._settings_panel.set_replay_playing(False)
+            ctx.panel.wheel.set_replay_indicator(False)
 
     def _on_replay_dialog_delete(self, idx: int):
         """管理ダイアログからの削除リクエスト。"""
-        self._replay_mgr.delete(idx)
-        self._settings_panel.set_replay_count(self._replay_mgr.count())
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
+        mgr.delete(idx)
+        self._settings_panel.set_replay_count(mgr.count())
         if self._replay_dialog is not None:
-            self._replay_dialog.refresh_list(self._replay_mgr.records)
+            self._replay_dialog.refresh_list(mgr.records)
 
     def _on_replay_dialog_rename(self, idx: int, new_name: str):
         """管理ダイアログからの名称変更リクエスト。"""
-        self._replay_mgr.rename(idx, new_name)
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
+        mgr.rename(idx, new_name)
         if self._replay_dialog is not None:
-            self._replay_dialog.refresh_list(self._replay_mgr.records)
+            self._replay_dialog.refresh_list(mgr.records)
 
     def _on_replay_dialog_keep(self, idx: int, keep: bool):
         """管理ダイアログからの保持フラグ変更リクエスト。"""
-        self._replay_mgr.set_keep(idx, keep)
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
+        mgr.set_keep(idx, keep)
         if self._replay_dialog is not None:
-            self._replay_dialog.refresh_list(self._replay_mgr.records)
+            self._replay_dialog.refresh_list(mgr.records)
 
     def _on_replay_dialog_export(self, idx: int, path: str):
         """管理ダイアログからの書き出しリクエスト。"""
         from PySide6.QtWidgets import QMessageBox
-        ok = self._replay_mgr.export_record(idx, path)
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
+        ok = mgr.export_record(idx, path)
         if self._replay_dialog is not None:
             if ok:
                 QMessageBox.information(
@@ -4252,7 +5660,10 @@ class MainWindow(QMainWindow):
     def _on_replay_dialog_export_multi(self, indices: list, path: str):
         """管理ダイアログからの複数書き出しリクエスト。"""
         from PySide6.QtWidgets import QMessageBox
-        ok = self._replay_mgr.export_records(indices, path)
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
+        ok = mgr.export_records(indices, path)
         if self._replay_dialog is not None:
             if ok:
                 QMessageBox.information(
@@ -4268,10 +5679,13 @@ class MainWindow(QMainWindow):
     def _on_replay_dialog_import(self, paths: list):
         """管理ダイアログからの読み込みリクエスト（複数ファイル対応）。"""
         from PySide6.QtWidgets import QMessageBox
+        mgr = self._active_replay_mgr
+        if mgr is None:
+            return
         total_imported = 0
         failed_files = []
         for path in paths:
-            count = self._replay_mgr.import_record(path)
+            count = mgr.import_record(path)
             if count > 0:
                 total_imported += count
             else:
@@ -4280,8 +5694,8 @@ class MainWindow(QMainWindow):
 
         if self._replay_dialog is not None:
             if total_imported > 0:
-                self._settings_panel.set_replay_count(self._replay_mgr.count())
-                self._replay_dialog.refresh_list(self._replay_mgr.records)
+                self._settings_panel.set_replay_count(mgr.count())
+                self._replay_dialog.refresh_list(mgr.records)
             if total_imported > 0 and not failed_files:
                 if total_imported > 1 or len(paths) > 1:
                     QMessageBox.information(
@@ -4306,9 +5720,14 @@ class MainWindow(QMainWindow):
         self._replay_dialog = None
 
     def _refresh_replay_dialog(self):
-        """リプレイ管理ダイアログが開いていれば一覧を更新する。"""
-        if self._replay_dialog is not None:
-            self._replay_dialog.refresh_list(self._replay_mgr.records)
+        """リプレイ管理ダイアログが開いていれば、active roulette の一覧を更新する。
+
+        i352: 常に active mgr のレコードを表示する（active 切替に即時追従）。
+        """
+        if self._replay_dialog is None:
+            return
+        mgr = self._active_replay_mgr
+        self._replay_dialog.refresh_list(mgr.records if mgr else [])
 
     def _set_text_size_mode(self, mode: int):
         self._settings.text_size_mode = mode

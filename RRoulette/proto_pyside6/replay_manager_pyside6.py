@@ -95,19 +95,21 @@ class ReplayManager(QObject):
     # ================================================================
 
     def start_recording(self, segments: list, pointer_angle: float,
-                        spin_direction: int):
+                        spin_direction: int, group_id: str = ""):
         """スピン開始時に記録を開始する。
 
         Args:
             segments: 現在のセグメントリスト (Segment オブジェクト)
             pointer_angle: ポインター角度
             spin_direction: 回転方向 (0 or 1)
+            group_id: 同時実行グループID（単独スピンは空文字）
         """
         self._start_time = time.perf_counter()
         self._rec = {
             "name": "",
             "created_at": datetime.now().isoformat(),
             "keep": False,
+            "group_id": group_id,  # i352: 同時実行グループID
             "start_snapshot": {
                 "segments": [
                     {
@@ -170,6 +172,22 @@ class ReplayManager(QObject):
 
     def count(self) -> int:
         return len(self._records)
+
+    def find_by_group_id(self, group_id: str) -> list[int]:
+        """指定 group_id を持つレコードのインデックスリストを返す。
+
+        Args:
+            group_id: 検索するグループID（空文字の場合は空リストを返す）
+
+        Returns:
+            マッチしたレコードのインデックスリスト
+        """
+        if not group_id:
+            return []
+        return [
+            i for i, r in enumerate(self._records)
+            if r.get("group_id") == group_id
+        ]
 
     def get(self, idx: int) -> dict | None:
         if 0 <= idx < len(self._records):

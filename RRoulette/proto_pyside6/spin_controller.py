@@ -58,6 +58,8 @@ class SpinController(QObject):
         # --- 音設定 ---
         self._sound_tick_enabled: bool = True
         self._sound_result_enabled: bool = True
+        self._tick_pattern: int = 0   # i370: per-roulette スピン音の種類
+        self._win_pattern: int = 0    # i370: per-roulette 決定音の種類
 
         # --- プリセット ---
         self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
@@ -65,6 +67,7 @@ class SpinController(QObject):
 
         # --- リプレイ記録 ---
         self._replay_mgr = None  # ReplayManager (optional)
+        self._replay_group_id: str = ""  # i352: 同時実行グループID
 
         # --- マルチスピン ---
         self._spin_mode: int = 0               # 0=single, 1=double, 2=triple
@@ -119,11 +122,27 @@ class SpinController(QObject):
         """リプレイ記録用マネージャーを設定する。"""
         self._replay_mgr = mgr
 
+    def set_replay_group_id(self, group_id: str):
+        """次回記録時に付与する同時実行グループIDを設定する。
+
+        i352: _start_all_visible_spin からスピン開始前に呼ばれる。
+        start_recording() 呼び出し後に自動クリアされる。
+        """
+        self._replay_group_id = group_id
+
     def set_sound_tick_enabled(self, enabled: bool):
         self._sound_tick_enabled = enabled
 
     def set_sound_result_enabled(self, enabled: bool):
         self._sound_result_enabled = enabled
+
+    def set_tick_pattern(self, idx: int):
+        """スピン中 tick 音の種類を設定する（i370: per-roulette）。"""
+        self._tick_pattern = idx
+
+    def set_win_pattern(self, idx: int):
+        """決定音の種類を設定する（i370: per-roulette）。"""
+        self._win_pattern = idx
 
     def start_spin(self, duration: float | None = None):
         """spin を開始する（プリセットベース多段階減速）。
@@ -147,10 +166,13 @@ class SpinController(QObject):
                 self._multi_total = 3
             # リプレイ記録開始（シーケンス最初のフェーズのみ）
             if self._replay_mgr is not None:
+                _grp = self._replay_group_id
+                self._replay_group_id = ""  # i352: 使用したら即クリア（単独スピン混入防止）
                 self._replay_mgr.start_recording(
                     self._wheel._segments,
                     self._wheel._pointer_angle,
                     self._wheel._spin_direction,
+                    group_id=_grp,
                 )
 
         self._spinning = True
@@ -289,7 +311,7 @@ class SpinController(QObject):
         if self._sound_tick_enabled and self._sound:
             cur_seg = self._wheel.seg_at_pointer()
             if cur_seg != self._prev_seg_idx:
-                self._sound.play_tick()
+                self._sound.play_tick(self._tick_pattern)
                 self._prev_seg_idx = cur_seg
                 # リプレイ: tick 音記録
                 if self._replay_mgr is not None:
@@ -330,7 +352,7 @@ class SpinController(QObject):
         # マルチスピンの途中フェーズ: 決定音を鳴らして次フェーズへ
         if self._multi_phase < self._multi_total:
             if self._sound_result_enabled and self._sound:
-                self._sound.play_win()
+                self._sound.play_win(self._win_pattern)
                 if self._replay_mgr is not None:
                     self._replay_mgr.record_sound("win")
             self._multi_delay_timer.start()
@@ -340,7 +362,7 @@ class SpinController(QObject):
         self._multi_phase = 0
 
         if self._sound_result_enabled and self._sound:
-            self._sound.play_win()
+            self._sound.play_win(self._win_pattern)
             if self._replay_mgr is not None:
                 self._replay_mgr.record_sound("win")
 

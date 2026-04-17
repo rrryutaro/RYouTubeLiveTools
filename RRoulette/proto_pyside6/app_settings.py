@@ -163,6 +163,12 @@ class AppSettings:
     collapse_anim_ms: int = 150        # 折りたたみアニメーション時間 (ms, 0=無効)
     theme_mode: str = "dark"           # テーマモード ("light" / "dark")
 
+    # グラフ UI 設定:
+    graph_orientation: str = "horizontal"  # グラフ向き ("horizontal" / "vertical")
+
+    # ログ履歴表示設定:
+    log_history_all_patterns: bool = False  # False=選択中パターンのみ, True=全パターン表示
+
     # ============================================================
     #  ファクトリ
     # ============================================================
@@ -253,6 +259,8 @@ class AppSettings:
             collapsed_sections=config.get("collapsed_sections", {}),
             collapse_anim_ms=config.get("collapse_anim_ms", 150),
             theme_mode=config.get("theme_mode", "dark"),
+            graph_orientation=config.get("graph_orientation", "horizontal"),
+            log_history_all_patterns=config.get("log_history_all_patterns", False),
             log_overlay_show=config.get("log_overlay_show", True),
             log_timestamp=config.get("log_timestamp", False),
             log_box_border=config.get("log_box_border", False),
@@ -333,6 +341,8 @@ class AppSettings:
             "collapsed_sections": self.collapsed_sections,
             "collapse_anim_ms": self.collapse_anim_ms,
             "theme_mode": self.theme_mode,
+            "graph_orientation": self.graph_orientation,
+            "log_history_all_patterns": self.log_history_all_patterns,
             "log_overlay_show": self.log_overlay_show,
             "log_timestamp": self.log_timestamp,
             "log_box_border": self.log_box_border,

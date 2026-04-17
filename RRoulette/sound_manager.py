@@ -195,27 +195,41 @@ class SoundManager:
         return SoundManager._make_stereo(np.concatenate(parts) * 24000)
 
     # ── 再生 ──────────────────────────────────────────────────────
-    def play_tick(self):
+    def play_tick(self, pattern: int | None = None):
+        """スピン中ティック音を再生する。
+
+        i370: pattern を指定した場合はそのインデックスで鳴らす（per-roulette パターン対応）。
+        None の場合は self._tick_pattern を使う（後方互換）。
+        """
         if self.muted:
             return
-        if self._tick_pattern == len(TICK_PATTERN_NAMES) - 1:
+        p = pattern if pattern is not None else self._tick_pattern
+        p = max(0, min(p, len(TICK_PATTERN_NAMES) - 1))
+        if p == len(TICK_PATTERN_NAMES) - 1:
             if self._tick_custom_snd:
                 self._tick_custom_snd.play()
             return
-        snd = self._tick_snds[self._tick_pattern] if self._tick_snds else None
+        snd = self._tick_snds[p] if self._tick_snds else None
         if snd:
             snd.play()
 
-    def play_win(self):
+    def play_win(self, pattern: int | None = None):
+        """決定音を再生する。
+
+        i370: pattern を指定した場合はそのインデックスで鳴らす（per-roulette パターン対応）。
+        None の場合は self._win_pattern を使う（後方互換）。
+        """
         if self.muted:
             return
-        if self._win_pattern == len(WIN_PATTERN_NAMES) - 1:
+        p = pattern if pattern is not None else self._win_pattern
+        p = max(0, min(p, len(WIN_PATTERN_NAMES) - 1))
+        if p == len(WIN_PATTERN_NAMES) - 1:
             if self._win_custom_snd:
                 self._win_custom_snd.play()
             return
         if not self._win_snds:
             return
-        snd = self._win_snds[self._win_pattern]
+        snd = self._win_snds[p]
         if snd:
             snd.play()
 

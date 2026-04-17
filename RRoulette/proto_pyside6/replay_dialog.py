@@ -28,13 +28,14 @@ class ReplayDialog(QDialog):
     非モーダルの Tool ウィンドウとして動作する。
     """
 
-    play_requested = Signal(int)          # 再生リクエスト (replay index)
-    delete_requested = Signal(int)        # 削除リクエスト (replay index)
-    rename_requested = Signal(int, str)   # 名称変更リクエスト (replay index, new_name)
-    keep_requested = Signal(int, bool)    # 保持フラグ変更リクエスト (replay index, keep)
-    export_requested = Signal(int, str)   # 書き出しリクエスト (replay index, file_path)
-    export_multi_requested = Signal(list, str)  # 複数書き出しリクエスト (indices, file_path)
-    import_requested = Signal(list)        # 読み込みリクエスト (file_paths)
+    play_requested = Signal(int)               # 再生リクエスト (replay index)
+    constituent_play_requested = Signal(int)   # i354: 個別再生リクエスト (replay index)
+    delete_requested = Signal(int)             # 削除リクエスト (replay index)
+    rename_requested = Signal(int, str)        # 名称変更リクエスト (replay index, new_name)
+    keep_requested = Signal(int, bool)         # 保持フラグ変更リクエスト (replay index, keep)
+    export_requested = Signal(int, str)        # 書き出しリクエスト (replay index, file_path)
+    export_multi_requested = Signal(list, str) # 複数書き出しリクエスト (indices, file_path)
+    import_requested = Signal(list)            # 読み込みリクエスト (file_paths)
 
     def __init__(self, design: DesignSettings, parent=None):
         super().__init__(parent)
@@ -111,6 +112,16 @@ class ReplayDialog(QDialog):
         self._play_btn.setStyleSheet(btn_style)
         self._play_btn.clicked.connect(self._on_play)
         btn_row.addWidget(self._play_btn)
+
+        # i354: [同時] 記録を active roulette 単独で再生するボタン
+        self._constituent_play_btn = QPushButton("個別再生")
+        self._constituent_play_btn.setFont(QFont("Meiryo", 9))
+        self._constituent_play_btn.setStyleSheet(btn_style)
+        self._constituent_play_btn.setToolTip(
+            "[同時] 記録を active roulette 1台だけで個別再生します"
+        )
+        self._constituent_play_btn.clicked.connect(self._on_constituent_play)
+        btn_row.addWidget(self._constituent_play_btn)
 
         self._delete_btn = QPushButton("削除")
         self._delete_btn.setFont(QFont("Meiryo", 9))
@@ -200,6 +211,11 @@ class ReplayDialog(QDialog):
             if keep:
                 display = f"\u2605 {display}"
 
+            # i353: 同時実行グループIDがある場合は [同時] プレフィックスで区別する
+            group_id = rec.get("group_id", "")
+            if group_id:
+                display = f"[同時] {display}"
+
             item = QListWidgetItem(display)
             item.setData(Qt.ItemDataRole.UserRole, i)
             self._list.addItem(item)
@@ -218,6 +234,15 @@ class ReplayDialog(QDialog):
         has_selection = len(selected) >= 1
         single_selection = len(selected) == 1
         self._play_btn.setEnabled(single_selection and not self._playing)
+        # i354: 個別再生は [同時] 記録 (group_id あり) のみ有効
+        is_multi_selected = False
+        if single_selection:
+            idx = self._list.currentItem().data(Qt.ItemDataRole.UserRole)
+            if 0 <= idx < len(self._records):
+                is_multi_selected = bool(self._records[idx].get("group_id", ""))
+        self._constituent_play_btn.setEnabled(
+            is_multi_selected and not self._playing
+        )
         self._delete_btn.setEnabled(single_selection and not self._playing)
         self._rename_btn.setEnabled(single_selection and not self._playing)
         self._keep_btn.setEnabled(single_selection)
@@ -247,6 +272,14 @@ class ReplayDialog(QDialog):
             return
         idx = item.data(Qt.ItemDataRole.UserRole)
         self.play_requested.emit(idx)
+
+    def _on_constituent_play(self):
+        """個別再生ボタン押下。i354: [同時] 記録を active 単独で再生する。"""
+        item = self._list.currentItem()
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        self.constituent_play_requested.emit(idx)
 
     def _on_delete(self):
         """削除ボタン押下。"""
@@ -361,13 +394,19 @@ class ReplayDialog(QDialog):
         idx = item.data(Qt.ItemDataRole.UserRole)
         name = item.text()
 
-        # keep 状態を取得
+        # keep 状態・group_id 状態を取得
         is_keep = False
+        is_multi = False
         if 0 <= idx < len(self._records):
             is_keep = self._records[idx].get("keep", False)
+            is_multi = bool(self._records[idx].get("group_id", ""))
 
         menu = QMenu(self)
         play_action = menu.addAction("再生")
+        # i354: [同時] 記録のみ「個別再生」を追加
+        constituent_action = None
+        if is_multi:
+            constituent_action = menu.addAction("個別再生（このルーレットのみ）")
         rename_action = menu.addAction("名称変更")
         keep_action = menu.addAction("保持解除" if is_keep else "保持")
         menu.addSeparator()
@@ -376,6 +415,8 @@ class ReplayDialog(QDialog):
         # 再生中は再生・名称変更・削除を無効化（保持は操作可能）
         if self._playing:
             play_action.setEnabled(False)
+            if constituent_action:
+                constituent_action.setEnabled(False)
             rename_action.setEnabled(False)
             delete_action.setEnabled(False)
 
@@ -385,6 +426,8 @@ class ReplayDialog(QDialog):
 
         if chosen is play_action:
             self.play_requested.emit(idx)
+        elif constituent_action and chosen is constituent_action:
+            self.constituent_play_requested.emit(idx)
         elif chosen is rename_action:
             self._request_rename(idx, self._get_record_name(idx))
         elif chosen is keep_action:

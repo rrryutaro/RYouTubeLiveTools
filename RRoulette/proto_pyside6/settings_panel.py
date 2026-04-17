@@ -2000,6 +2000,8 @@ class ManagePanel(QFrame):
     roulette_visibility_toggled = Signal(str, bool)
     roulette_delete_requested = Signal(str)
     apply_to_all_changed = Signal(bool)  # i347: 一括適用フラグ
+    roulette_pkg_export_requested = Signal()  # i419: ルーレット package エクスポート
+    roulette_pkg_import_requested = Signal()  # i419: ルーレット package インポート
 
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
@@ -2066,10 +2068,45 @@ class ManagePanel(QFrame):
 
         body_layout.addSpacing(8)
 
-        roulette_title = QLabel("ルーレット管理")
-        roulette_title.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
-        roulette_title.setStyleSheet(f"color: {design.text};")
-        body_layout.addWidget(roulette_title)
+        # i420: 「ルーレット管理」ラベル行に export / import アイコンを並べる
+        _roulette_title_row = QHBoxLayout()
+        _roulette_title_row.setContentsMargins(0, 0, 0, 0)
+        _roulette_title_row.setSpacing(2)
+
+        self._roulette_title_label = QLabel("ルーレット管理")
+        self._roulette_title_label.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        self._roulette_title_label.setStyleSheet(f"color: {design.text};")
+        _roulette_title_row.addWidget(self._roulette_title_label, stretch=1)
+
+        _pkg_icon_style = (
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text};"
+            f"  border: none; padding: 1px 4px;"
+            f"  font-size: 10pt; font-weight: bold;"
+            f"}}"
+            f"QPushButton:hover {{ color: {design.accent}; }}"
+        )
+        self._pkg_export_btn = QPushButton("↑")
+        self._pkg_export_btn.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        self._pkg_export_btn.setStyleSheet(_pkg_icon_style)
+        self._pkg_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pkg_export_btn.setToolTip(
+            "active ルーレットを書き出す\n（他者共有・移行用）"
+        )
+        self._pkg_export_btn.clicked.connect(self.roulette_pkg_export_requested.emit)
+        _roulette_title_row.addWidget(self._pkg_export_btn)
+
+        self._pkg_import_btn = QPushButton("↓")
+        self._pkg_import_btn.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
+        self._pkg_import_btn.setStyleSheet(_pkg_icon_style)
+        self._pkg_import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pkg_import_btn.setToolTip(
+            "ルーレットを読み込む\n（ファイルから新規追加）"
+        )
+        self._pkg_import_btn.clicked.connect(self.roulette_pkg_import_requested.emit)
+        _roulette_title_row.addWidget(self._pkg_import_btn)
+
+        body_layout.addLayout(_roulette_title_row)
 
         # ルーレット一覧（動的に更新）
         self._roulette_list_layout = QVBoxLayout()
@@ -2176,8 +2213,9 @@ class ManagePanel(QFrame):
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(4)
 
-        # アクティブ時は強調色で表示
-        name_btn = QPushButton(label_text)
+        # i423: アクティブ時は "▶ " プレフィックスで編集対象を明示
+        btn_label = f"▶ {label_text}" if is_active else label_text
+        name_btn = QPushButton(btn_label)
         name_btn.setFont(QFont("Meiryo", 9))
         name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         if is_active:
@@ -2186,12 +2224,16 @@ class ManagePanel(QFrame):
                 f" border: none; border-radius: 4px; padding: 4px 8px; text-align: left; }}"
                 f"QPushButton:hover {{ opacity: 0.8; }}"
             )
+            # i423: アクティブ行には現在の役割をツールチップで明示
+            name_btn.setToolTip("現在の編集対象\nクリックで再選択")
         else:
             name_btn.setStyleSheet(
                 f"QPushButton {{ background-color: {self._design.separator}; color: {self._design.text};"
                 f" border: none; border-radius: 4px; padding: 4px 8px; text-align: left; }}"
                 f"QPushButton:hover {{ background-color: {self._design.accent}; }}"
             )
+            # i423: 非アクティブ行には切替操作をツールチップで案内
+            name_btn.setToolTip("クリックで編集対象を切り替え")
         name_btn.clicked.connect(lambda checked=False, r=rid: self.roulette_activate_requested.emit(r))
         row_layout.addWidget(name_btn, stretch=1)
 
@@ -2205,7 +2247,8 @@ class ManagePanel(QFrame):
             f" border: none; border-radius: 4px; }}"
             f"QPushButton:hover {{ background-color: {self._design.accent}; }}"
         )
-        vis_btn.setToolTip("表示/非表示")
+        # i423: 現在状態に合わせたツールチップで操作結果を案内
+        vis_btn.setToolTip("表示中 → クリックで非表示" if is_visible else "非表示 → クリックで表示")
         current_visible = is_visible
         vis_btn.clicked.connect(
             lambda checked=False, r=rid, b=vis_btn, cv=current_visible:
@@ -2235,6 +2278,8 @@ class ManagePanel(QFrame):
         """表示/非表示ボタンのクリック処理。"""
         new_visible = not current_visible
         btn.setText("👁" if new_visible else "🚫")
+        # i423: ツールチップも切替後の状態に更新する
+        btn.setToolTip("表示中 → クリックで非表示" if new_visible else "非表示 → クリックで表示")
         # ボタンのクロージャの cv を更新するため、clicked を再接続する
         try:
             btn.clicked.disconnect()
@@ -2267,6 +2312,17 @@ class ManagePanel(QFrame):
         self._drag_bar.update_design(design)
         self._scroll.setStyleSheet(f"background-color: {design.panel};")
         self._apply_all_cb.setStyleSheet(f"color: {design.text};")
+        self._roulette_title_label.setStyleSheet(f"color: {design.text};")
+        _pkg_icon_style = (
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text};"
+            f"  border: none; padding: 1px 4px;"
+            f"  font-size: 10pt; font-weight: bold;"
+            f"}}"
+            f"QPushButton:hover {{ color: {design.accent}; }}"
+        )
+        self._pkg_export_btn.setStyleSheet(_pkg_icon_style)
+        self._pkg_import_btn.setStyleSheet(_pkg_icon_style)
 
     # ----------------------------------------------------------------
     #  イベント
@@ -2347,10 +2403,12 @@ class SettingsPanel(QFrame):
     pattern_switched = Signal(str)      # パターン切替 (新パターン名)
     pattern_added = Signal(str)         # パターン追加 (新パターン名)
     pattern_deleted = Signal(str)       # パターン削除 (削除パターン名)
+    pattern_renamed = Signal(str, str)  # パターン名変更 (旧名, 新名)
     preview_tick_requested = Signal()   # tick音テスト再生
     preview_win_requested = Signal()    # result音テスト再生
     log_clear_requested = Signal()     # 履歴クリア
     log_export_requested = Signal()    # ログエクスポート
+    log_import_requested = Signal()    # ログインポート
     shuffle_once_requested = Signal()  # 単発ランダム再配置
     arrangement_reset_requested = Signal()  # i284: 並びリセット (v0.4.4 標準配置)
     items_reset_requested = Signal()        # i284: 項目一括リセット (v0.4.4 一括リセット)
@@ -2363,6 +2421,8 @@ class SettingsPanel(QFrame):
     replay_play_requested = Signal()         # 最新リプレイ再生
     replay_stop_requested = Signal()         # リプレイ中断
     replay_manager_requested = Signal()      # リプレイ管理ウィンドウ起動
+    settings_export_requested = Signal()     # i356: 設定全体エクスポート
+    settings_import_requested = Signal()     # i356: 設定全体インポート
     geometry_changed = Signal()
 
     def __init__(self, item_entries: list[ItemEntry], settings: AppSettings,
@@ -2583,6 +2643,31 @@ class SettingsPanel(QFrame):
         bar_layout.addWidget(self._aot_cb)
 
         bar_layout.addStretch(1)
+
+        # 設定全体 export / import ボタン (i356)
+        _cfg_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 22px; max-width: 22px; font-size: 9pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._cfg_export_btn = QPushButton("↑")
+        self._cfg_export_btn.setFont(QFont("Meiryo", 9))
+        self._cfg_export_btn.setStyleSheet(_cfg_btn_style)
+        self._cfg_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cfg_export_btn.setToolTip("設定をエクスポート（設定値一式をJSONに書き出す）")
+        self._cfg_export_btn.clicked.connect(self.settings_export_requested.emit)
+        bar_layout.addWidget(self._cfg_export_btn)
+
+        self._cfg_import_btn = QPushButton("↓")
+        self._cfg_import_btn.setFont(QFont("Meiryo", 9))
+        self._cfg_import_btn.setStyleSheet(_cfg_btn_style)
+        self._cfg_import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cfg_import_btn.setToolTip("設定をインポート（JSONから設定値一式を読み込む）")
+        self._cfg_import_btn.clicked.connect(self.settings_import_requested.emit)
+        bar_layout.addWidget(self._cfg_import_btn)
 
         outer_layout.addWidget(bar)
         self._quick_bar = bar
@@ -3533,6 +3618,18 @@ class SettingsPanel(QFrame):
         )
         sec.addWidget(self._log_on_top_cb)
 
+        self._log_all_patterns_cb = QCheckBox("全パターンのログを表示")
+        self._log_all_patterns_cb.setFont(QFont("Meiryo", 8))
+        self._log_all_patterns_cb.setStyleSheet(f"color: {design.text};")
+        self._log_all_patterns_cb.setChecked(settings.log_history_all_patterns)
+        self._log_all_patterns_cb.setToolTip(
+            "ON: 全パターンのログを表示\nOFF（既定）: 選択中パターンのログのみ表示"
+        )
+        self._log_all_patterns_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("log_history_all_patterns", v)
+        )
+        sec.addWidget(self._log_all_patterns_cb)
+
         # リセット確認
         self._confirm_reset_cb = QCheckBox("リセット確認")
         self._confirm_reset_cb.setFont(QFont("Meiryo", 8))
@@ -3559,6 +3656,19 @@ class SettingsPanel(QFrame):
         )
         self._log_export_btn.clicked.connect(self.log_export_requested.emit)
         log_btn_row.addWidget(self._log_export_btn)
+
+        self._log_import_btn = QPushButton("インポート")
+        self._log_import_btn.setFont(QFont("Meiryo", 8))
+        self._log_import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_import_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 4px 8px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._log_import_btn.clicked.connect(self.log_import_requested.emit)
+        log_btn_row.addWidget(self._log_import_btn)
 
         self._log_clear_btn = QPushButton("履歴クリア")
         self._log_clear_btn.setFont(QFont("Meiryo", 8))
@@ -3713,7 +3823,7 @@ class SettingsPanel(QFrame):
         sec = self._pattern_collapsible.content_layout
         self._layout.addWidget(self._pattern_collapsible)
 
-        # パターン選択行: [コンボ] [＋] [－]
+        # パターン選択行: [コンボ] [✎] [＋] [－] [↑] [↓]
         pat_row = QHBoxLayout()
         pat_row.setSpacing(4)
 
@@ -3735,6 +3845,15 @@ class SettingsPanel(QFrame):
             f"}}"
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
         )
+
+        # i403: 名前変更ボタンをコンボの直後に配置
+        self._pattern_rename_btn = QPushButton("✎")
+        self._pattern_rename_btn.setFont(btn_font)
+        self._pattern_rename_btn.setStyleSheet(btn_style)
+        self._pattern_rename_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pattern_rename_btn.setToolTip("パターン名を変更")
+        self._pattern_rename_btn.clicked.connect(self._on_pattern_rename_btn)
+        pat_row.addWidget(self._pattern_rename_btn)
 
         self._pattern_add_btn = QPushButton("＋")
         self._pattern_add_btn.setFont(btn_font)
@@ -3859,6 +3978,68 @@ class SettingsPanel(QFrame):
     def _update_pattern_del_enabled(self):
         """パターンが1件のみなら削除ボタンを無効化。"""
         self._pattern_del_btn.setEnabled(len(self._pattern_names) > 1)
+
+    def _on_pattern_rename_btn(self):
+        """パターン名変更: 専用ダイアログ (QDialog + QLineEdit) を開く。"""
+        from PySide6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+            QPushButton, QMessageBox,
+        )
+        from PySide6.QtCore import Qt as _Qt
+        old_name = self._current_pattern
+
+        # --- ダイアログ構築 ---
+        dlg = QDialog(self)
+        dlg.setWindowTitle("パターン名の変更")
+        dlg.setWindowFlags(
+            dlg.windowFlags() & ~_Qt.WindowType.WindowContextHelpButtonHint
+        )
+        dlg.setMinimumWidth(280)
+
+        vlay = QVBoxLayout(dlg)
+        vlay.setSpacing(8)
+        vlay.addWidget(QLabel(f"現在の名前: {old_name}"))
+
+        edit = QLineEdit(old_name)
+        edit.selectAll()
+        vlay.addWidget(edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        cancel_btn = QPushButton("キャンセル")
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        vlay.addLayout(btn_row)
+
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        edit.returnPressed.connect(dlg.accept)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_name = edit.text().strip()
+        if not new_name or new_name == old_name:
+            return
+        if new_name in self._pattern_names:
+            QMessageBox.warning(
+                self, "エラー", f"パターン名 '{new_name}' は既に使用されています。"
+            )
+            return
+
+        # UI を先に更新してからシグナルを発火
+        idx = self._pattern_combo.findText(old_name)
+        if idx >= 0:
+            self._pattern_combo.blockSignals(True)
+            self._pattern_combo.setItemText(idx, new_name)
+            self._pattern_combo.setCurrentText(new_name)
+            self._pattern_combo.blockSignals(False)
+        self._pattern_names[self._pattern_names.index(old_name)] = new_name
+        self._current_pattern = new_name
+        self.pattern_renamed.emit(old_name, new_name)
 
     def set_spin_section_visible(self, visible: bool):
         """スピンセクション（操作ボックス相当）の表示/非表示を切り替える。"""
@@ -5097,6 +5278,11 @@ class SettingsPanel(QFrame):
             self._log_on_top_cb.blockSignals(True)
             self._log_on_top_cb.setChecked(value)
             self._log_on_top_cb.blockSignals(False)
+        elif key == "log_history_all_patterns":
+            if hasattr(self, "_log_all_patterns_cb"):
+                self._log_all_patterns_cb.blockSignals(True)
+                self._log_all_patterns_cb.setChecked(value)
+                self._log_all_patterns_cb.blockSignals(False)
         elif key == "confirm_reset":
             self._confirm_reset_cb.blockSignals(True)
             self._confirm_reset_cb.setChecked(value)
@@ -5288,16 +5474,21 @@ class SettingsPanel(QFrame):
         self._log_ts_cb.setStyleSheet(cb_style)
         self._log_border_cb.setStyleSheet(cb_style)
         self._log_on_top_cb.setStyleSheet(cb_style)
+        if hasattr(self, "_log_all_patterns_cb"):
+            self._log_all_patterns_cb.setStyleSheet(cb_style)
         self._confirm_reset_cb.setStyleSheet(cb_style)
         if hasattr(self, "_confirm_item_delete_cb"):
             self._confirm_item_delete_cb.setStyleSheet(cb_style)
-        self._log_export_btn.setStyleSheet(
+        _log_btn_style = (
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
             f"  border: none; border-radius: 3px; padding: 4px 8px;"
             f"}}"
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
         )
+        self._log_export_btn.setStyleSheet(_log_btn_style)
+        if hasattr(self, "_log_import_btn"):
+            self._log_import_btn.setStyleSheet(_log_btn_style)
         self._log_clear_btn.setStyleSheet(
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
@@ -5334,6 +5525,29 @@ class SettingsPanel(QFrame):
         self._replay_max_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._replay_max_spin.setStyleSheet(sb_style)
         self._replay_count_lbl.setStyleSheet(f"color: {design.text_sub};")
+
+        # 設定全体 export / import ボタン (i356)
+        _cfg_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 6px;"
+            f"  min-width: 22px; max-width: 22px; font-size: 9pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+        )
+        self._cfg_export_btn.setStyleSheet(_cfg_btn_style)
+        self._cfg_import_btn.setStyleSheet(_cfg_btn_style)
+
+        # クイックバー background
+        self._quick_bar.setStyleSheet(
+            f"QFrame {{"
+            f"  background-color: {design.panel};"
+            f"  border-bottom: 1px solid {design.separator};"
+            f"}}"
+        )
+        self._window_transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._roulette_transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._aot_cb.setStyleSheet(f"color: {design.text};")
 
         # 検索・フィルター
         self._search_edit.setStyleSheet(

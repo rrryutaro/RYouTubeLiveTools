@@ -123,6 +123,38 @@ class _LogOverlay(QWidget):
         painter.end()
 
 
+class _GraphButton(QWidget):
+    """グラフボタン（左下コーナー）。クリックで graph_requested を発火する。"""
+
+    _W = 42
+    _H = 16
+
+    def __init__(self, panel: "RoulettePanel", parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self.setFixedSize(self._W, self._H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 70))
+        painter.drawRoundedRect(0, 0, self._W, self._H, 3, 3)
+        painter.setPen(QColor(255, 255, 255, 210))
+        painter.setFont(QFont("Meiryo", 7))
+        painter.drawText(0, 0, self._W, self._H,
+                         Qt.AlignmentFlag.AlignCenter, "グラフ")
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panel._toggle_graph_panel()  # i389: in-panel グラフ切替
+            event.accept()
+        else:
+            event.ignore()
+
+
 class _SelectionHandle(QWidget):
     """小さな選択ハンドル（クリックで active 切替、ドラッグでパネル移動）。
 
@@ -147,7 +179,10 @@ class _SelectionHandle(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 120))
+        # i427: active 時はアクティブカラー（水色）で強調
+        is_active = getattr(self._panel, "_is_active", False)
+        color = QColor(79, 195, 247, 220) if is_active else QColor(255, 255, 255, 120)
+        painter.setBrush(color)
         # 3x3 グリッドの点を描画
         dot_r = 2
         for row in range(3):
@@ -191,6 +226,86 @@ class _SelectionHandle(QWidget):
         event.accept()
 
 
+class _TitlePlate(QWidget):
+    """タイトルプレート（multi 時のルーレット名表示と選択/移動導線）。
+
+    i427: クリックで active 切替、ドラッグでパネル移動。
+    active 状態に合わせて背景色を変化させる。
+    title plate 非表示時でも _SelectionHandle が選択導線を担保する。
+    """
+
+    _H = 18
+
+    def __init__(self, panel: "RoulettePanel", parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self._text = ""
+        self._drag_start = QPoint()
+        self._panel_start = QPoint()
+        self._dragging = False
+        self._drag_pending = False
+        self.setFixedHeight(self._H)
+        self.setMinimumWidth(60)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.hide()
+
+    def set_text(self, text: str):
+        """表示テキストを設定し、幅を自動調整する。"""
+        self._text = text
+        fm = QFontMetrics(QFont("Meiryo", 8))
+        w = max(60, fm.horizontalAdvance(text) + 16)
+        self.setFixedWidth(w)
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._text:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        is_active = getattr(self._panel, "_is_active", False)
+        bg = QColor(79, 195, 247, 180) if is_active else QColor(0, 0, 0, 150)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(0, 0, self.width(), self._H, 4, 4)
+        painter.setFont(QFont("Meiryo", 8))
+        painter.setPen(QColor(255, 255, 255, 230))
+        painter.drawText(0, 0, self.width(), self._H,
+                         Qt.AlignmentFlag.AlignCenter, self._text)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panel.activate_requested.emit(self._panel.roulette_id)
+            self._drag_start = event.globalPosition().toPoint()
+            self._panel_start = self._panel.pos()
+            self._drag_pending = True
+            self._dragging = False
+            w = self.window()
+            if w:
+                w.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pending or self._dragging:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            if self._drag_pending and (abs(delta.x()) > 4 or abs(delta.y()) > 4):
+                self._dragging = True
+                self._drag_pending = False
+            if self._dragging:
+                new_pos = self._panel_start + delta
+                parent = self._panel.parentWidget()
+                if parent:
+                    new_x = max(0, min(new_pos.x(), parent.width() - self._panel.width()))
+                    new_y = max(_MW_DRAG_BAR_H, min(new_pos.y(), parent.height() - self._panel.height()))
+                    self._panel.move(new_x, new_y)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pending = False
+        self._dragging = False
+        event.accept()
+
+
 class RoulettePanel(QFrame):
     """独立パネルとしてのルーレット。
 
@@ -208,6 +323,8 @@ class RoulettePanel(QFrame):
     pointer_angle_committed = Signal()
     geometry_changed = Signal()
     activate_requested = Signal(str)
+    graph_requested = Signal(str)        # (roulette_id): グラフを開く要求（後方互換）
+    in_panel_graph_opened = Signal(str)  # i389: in-panel グラフ表示時に emit
     window_drag_delta = Signal(QPoint)   # roulette_only_mode: ウィンドウ移動要求
     window_resize_needed = Signal(QSize) # roulette_only_mode: ウィンドウリサイズ要求
 
@@ -283,6 +400,20 @@ class RoulettePanel(QFrame):
         self._selection_handle.move(2, 2)
         self._selection_handle.show()
 
+        # ── タイトルプレート（multi 時のルーレット名 / 選択・移動導線）──
+        # i427: デフォルト非表示。set_title() で表示制御する。
+        self._title_plate = _TitlePlate(self, parent=self)
+
+        # ── グラフボタン（左下コーナー） ──
+        self._graph_btn = _GraphButton(self, parent=self)
+        self._graph_btn.show()
+
+        # ── in-panel グラフ（i389: 遅延生成） ──
+        self._graph_panel = None  # type: GraphWidget | None
+
+        # ── インスタンス番号の記憶（i391: グラフ非表示後の復帰用） ──
+        self._instance_label_number: int | None = None
+
     # ================================================================
     #  公開プロパティ
     # ================================================================
@@ -333,12 +464,15 @@ class RoulettePanel(QFrame):
         Args:
             number: 表示する番号。None または 0 以下なら非表示。
         """
+        self._instance_label_number = number  # i391: 復帰用に記憶
         if number is not None and number > 0:
             self._instance_label.setText(f"#{number}")
             self._instance_label.adjustSize()
             self._instance_label.move(6, 6)
-            self._instance_label.show()
-            self._instance_label.raise_()
+            # i391: グラフ表示中は見え残りを避けるため show しない
+            if self._graph_panel is None or not self._graph_panel.isVisible():
+                self._instance_label.show()
+                self._instance_label.raise_()
             # _log_overlay.raise_() 削除: z-order は作成順で管理 (i348)
         else:
             self._instance_label.hide()
@@ -361,6 +495,35 @@ class RoulettePanel(QFrame):
             return
         self._is_active = is_active
         self.update()
+        # i427: ハンドル・タイトルプレートの外観も追従する
+        self._selection_handle.update()
+        self._title_plate.update()
+
+    def set_title(self, label: str | None):
+        """タイトルプレートの表示テキストを設定する（i427）。
+
+        multi 時に呼ばれ、ルーレット名をパネル上部中央に表示する。
+        None または空文字なら非表示にする。
+        """
+        if label:
+            self._title_plate.set_text(label)
+            self._title_plate.show()
+            self._reposition_title_plate()
+            self._title_plate.raise_()
+        else:
+            self._title_plate.hide()
+
+    def _reposition_title_plate(self):
+        """タイトルプレートをパネル上部中央に配置する（i427）。"""
+        if not self._title_plate.isVisible():
+            return
+        tw = self._title_plate.width()
+        # 選択ハンドル（左上 _SIZE×_SIZE）と重ならない最小 x
+        min_x = _SelectionHandle._SIZE + 4
+        x = (self.width() - tw) // 2
+        x = max(min_x, x)
+        x = min(x, max(min_x, self.width() - tw - 2))
+        self._title_plate.move(x, 2)
 
     def set_transparent(self, enabled: bool):
         """透過モードを設定する。
@@ -411,7 +574,9 @@ class RoulettePanel(QFrame):
         self._spin_ctrl.start_spin()
 
     def _on_spin_finished(self, winner: str, seg_idx: int):
-        self._result_overlay.show_result(winner)
+        # i391: グラフ表示中は結果オーバーレイをグラフ上に重ねない
+        if self._graph_panel is None or not self._graph_panel.isVisible():
+            self._result_overlay.show_result(winner)
         self.spin_finished.emit(winner, seg_idx)
 
     # ================================================================
@@ -425,17 +590,89 @@ class RoulettePanel(QFrame):
         # i348: ログオーバーレイをパネル全面に広げる。raise_() 不要（作成順で z-order 確定）
         self._log_overlay.setGeometry(0, 0, self.width(), self.height())
         self._refresh_log_overlay()  # i344: ジオメトリ確定後に表示状態を同期
+        self._graph_btn.move(2, self.height() - _GraphButton._H - 2)
+        self._graph_btn.raise_()
+        # i427: タイトルプレートをパネル幅に合わせて再配置
+        self._reposition_title_plate()
+        # i389/i390: in-panel グラフが表示中なら追従リサイズ + z-order 再整頓
+        if self._graph_panel is not None and self._graph_panel.isVisible():
+            self._graph_panel.setGeometry(0, 0, self.width(), self.height())
+            self._graph_panel.raise_()
+            self._grip.raise_()
+            self._selection_handle.raise_()
+            self._title_plate.raise_()
+            self._graph_btn.raise_()
 
     def _refresh_log_overlay(self):
         """WheelWidget のログ状態をオーバーレイに反映する。"""
         w = self._wheel
         self._log_overlay.refresh(
-            entries=w._log_entries,
+            entries=w.get_log_entries(),  # i393: フィルタ済み (ts, text) リスト
             timestamp=w._log_timestamp,
             design=w._design,
             visible=w._log_visible,
             on_top=w._log_on_top,
         )
+
+    # ================================================================
+    #  in-panel グラフ（i389）
+    # ================================================================
+
+    def _toggle_graph_panel(self):
+        """in-panel グラフ表示をトグルする。
+
+        初回呼び出し時にグラフウィジェットを遅延生成する。
+        表示中なら非表示（ホイール復帰）、非表示なら表示（グラフ前面）。
+        """
+        from graph_dialog import GraphWidget
+        if self._graph_panel is None:
+            self._graph_panel = GraphWidget(
+                self._design, show_close_btn=True, parent=self
+            )
+            self._graph_panel.close_requested.connect(self._toggle_graph_panel)
+            self._graph_panel.setGeometry(0, 0, self.width(), self.height())
+            self._graph_panel.hide()
+
+        if self._graph_panel.isVisible():
+            # ── グラフを閉じてホイールへ戻る ──
+            self._graph_panel.hide()
+            self._wheel.show()
+            # i390: ログオーバーレイを元の状態へ復帰させる
+            self._refresh_log_overlay()
+            # i391: インスタンス番号ラベルを記憶状態で復帰させる
+            self.set_instance_label(self._instance_label_number)
+        else:
+            # ── グラフを表示してホイール側 UI を整理する ──
+            # i390: 残留している結果オーバーレイを明示的に退場させる
+            self._result_overlay.dismiss()
+            # i390: ログオーバーレイを明示的に非表示にする（z-order 依存を解消）
+            self._log_overlay.hide()
+            # i391: インスタンス番号ラベルを明示的に非表示にする
+            self._instance_label.hide()
+            # ホイールを非表示
+            self._wheel.hide()
+            # グラフを全面展開
+            self._graph_panel.setGeometry(0, 0, self.width(), self.height())
+            self._graph_panel.show()
+            self._graph_panel.raise_()
+            # i390: リサイズグリップを最前面へ（グラフ表示中もリサイズ可能に）
+            self._grip.raise_()
+            # 選択ハンドル・グラフボタンを最前面へ
+            self._selection_handle.raise_()
+            self._graph_btn.raise_()
+            self.activate_requested.emit(self._roulette_id)
+            self.in_panel_graph_opened.emit(self._roulette_id)
+
+    @property
+    def in_panel_graph_widget(self):
+        """in-panel グラフウィジェットを返す（未生成の場合は None）。"""
+        return self._graph_panel
+
+    def update_in_panel_graph(self, items: list[tuple[str, int, int]],
+                               total: int, pattern_name: str):
+        """in-panel グラフが表示中ならデータを更新する。"""
+        if self._graph_panel is not None and self._graph_panel.isVisible():
+            self._graph_panel.update_graph(items, total, pattern_name)
 
     def _clamp_to_parent(self):
         """パネルをメインウィンドウのクライアント領域内にクランプする。"""
@@ -460,6 +697,8 @@ class RoulettePanel(QFrame):
         super().resizeEvent(event)
         self._sync_wheel()
         self._grip.reposition()
+        self._graph_btn.move(2, self.height() - _GraphButton._H - 2)
+        self._reposition_title_plate()  # i427: リサイズ追従
         # roulette_only_mode 中はウィンドウが後追いでリサイズするため
         # クランプを先に実行すると位置がずれる。ウィンドウ側で吸収する。
         if not self._roulette_only_mode:

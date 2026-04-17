@@ -33,6 +33,7 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
 import sys
 import os
 import json
+import uuid as _uuid
 
 # ── 既存モジュールへのパスを通す ─────────────────────────────────
 _RROULETTE_DIR = os.path.normpath(
@@ -131,6 +132,11 @@ def add_pattern(config: dict, pattern_name: str) -> bool:
     if pattern_name in config["item_patterns"]:
         return False
     config["item_patterns"][pattern_name] = []
+    # i407: pattern_id を生成して登録する
+    if "pattern_ids" not in config:
+        config["pattern_ids"] = {}
+    if pattern_name not in config["pattern_ids"]:
+        config["pattern_ids"][pattern_name] = str(_uuid.uuid4())
     save_config(config)
     return True
 
@@ -150,8 +156,87 @@ def delete_pattern(config: dict, pattern_name: str) -> bool:
     del patterns[pattern_name]
     if config.get("current_pattern") == pattern_name:
         config["current_pattern"] = next(iter(patterns))
+    # i407: pattern_ids からも削除する
+    config.get("pattern_ids", {}).pop(pattern_name, None)
     save_config(config)
     return True
+
+
+def rename_pattern(config: dict, old_name: str, new_name: str) -> bool:
+    """パターン名を変更する。UUID は保持する（i407: 不変ID方針）。
+
+    辞書キーの順序を保持したまま old_name を new_name に置換する。
+    Returns:
+        変更できたら True。old_name が存在しない / new_name が既存なら False。
+    """
+    patterns = config.get("item_patterns", {})
+    if old_name not in patterns:
+        return False
+    if new_name in patterns and new_name != old_name:
+        return False
+    # Python 3.7+ の辞書は挿入順を保持するため、順序を保ちながらキーを置換する
+    config["item_patterns"] = {
+        (new_name if k == old_name else k): v
+        for k, v in patterns.items()
+    }
+    if config.get("current_pattern") == old_name:
+        config["current_pattern"] = new_name
+    # i407: pattern_ids のキー（表示名）を更新するが UUID は維持する
+    pid_map = config.get("pattern_ids", {})
+    if old_name in pid_map:
+        pid_map[new_name] = pid_map.pop(old_name)
+    save_config(config)
+    return True
+
+
+# ── i407: パターン ID 管理 ───────────────────────────────────────────
+
+def get_pattern_ids(config: dict) -> dict:
+    """config からパターン名 → UUID のマップを返す。"""
+    return config.get("pattern_ids", {})
+
+
+def get_pattern_id(config: dict, pattern_name: str) -> str:
+    """指定パターン名の UUID を返す。存在しなければ生成して登録・保存する。
+
+    Args:
+        config: config dict
+        pattern_name: パターン名
+    Returns:
+        そのパターンの不変 UUID 文字列
+    """
+    if "pattern_ids" not in config:
+        config["pattern_ids"] = {}
+    pid_map = config["pattern_ids"]
+    if pattern_name not in pid_map:
+        pid_map[pattern_name] = str(_uuid.uuid4())
+        save_config(config)
+    return pid_map[pattern_name]
+
+
+def ensure_pattern_ids(config: dict) -> dict:
+    """全パターンに pattern_id が付いていることを保証する。
+
+    旧フォーマット（pattern_ids なし）から呼ばれた場合、全パターンに UUID を生成して保存する。
+    Returns:
+        {pattern_name: uuid} の dict
+    """
+    patterns = config.get("item_patterns", {})
+    if "pattern_ids" not in config:
+        config["pattern_ids"] = {}
+    pid_map = config["pattern_ids"]
+    changed = False
+    for name in patterns:
+        if name not in pid_map:
+            pid_map[name] = str(_uuid.uuid4())
+            changed = True
+    # item_patterns が空の場合: "デフォルト" 単一パターンとして ID を確保
+    if not patterns and "デフォルト" not in pid_map:
+        pid_map["デフォルト"] = str(_uuid.uuid4())
+        changed = True
+    if changed:
+        save_config(config)
+    return pid_map
 
 
 def load_app_settings(config: dict | None = None) -> AppSettings:

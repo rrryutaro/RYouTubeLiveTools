@@ -63,12 +63,16 @@ class WheelWidget(QWidget):
         self._donut_hole: bool = False
 
         # --- ログオーバーレイ ---
-        self._log_entries: list[tuple[str, str]] = []  # (時刻, テキスト) 新しい順
+        # i407: _log_entries の 3 番目要素は pattern_id（UUID）。旧形式の pattern 名は使わない。
+        self._log_entries: list[tuple[str, str, str]] = []  # (時刻, テキスト, pattern_id) 新しい順
         self._log_max: int = 8             # 最大表示件数
         self._log_visible: bool = True     # 表示ON/OFF
         self._log_timestamp: bool = False  # タイムスタンプ表示
         self._log_box_border: bool = False # 枠線表示
         self._log_on_top: bool = False     # 前面表示
+        self._current_pattern: str = ""    # 現在選択中パターン（表示用）
+        self._current_pattern_id: str = "" # i407: 現在選択中パターンの UUID（フィルタ用）
+        self._log_all_patterns: bool = False  # True=全パターン表示
 
         # --- リプレイ中表示 ---
         self._replay_indicator: bool = False  # 再生中フラグ
@@ -144,11 +148,39 @@ class WheelWidget(QWidget):
 
     # ── ログオーバーレイ ──
 
-    def add_log_entry(self, text: str):
-        """履歴エントリを先頭に追加する（時刻付き）。"""
+    def set_current_pattern(self, pattern: str, pattern_id: str = ""):
+        """現在選択中パターンを設定する。
+
+        i407: pattern_id（UUID）を指定した場合はIDベースでフィルタリングする。
+        pattern_id 未指定の場合は表示名のみ保持（後方互換用; フィルタは機能しない）。
+
+        Args:
+            pattern: 表示用パターン名
+            pattern_id: パターンの不変UUID（i407）
+        """
+        self._current_pattern = pattern or ""
+        self._current_pattern_id = pattern_id or ""
+        self.update()           # i399: 他の set_log_* と同様に即時再描画
+        self.log_changed.emit()
+
+    def set_log_all_patterns(self, enabled: bool):
+        """ログ全パターン表示モードを設定する。"""
+        self._log_all_patterns = enabled
+        self.update()           # i399: 他の set_log_* と同様に即時再描画
+        self.log_changed.emit()
+
+    def add_log_entry(self, text: str, pattern_id: str = ""):
+        """履歴エントリを先頭に追加する（時刻・pattern_id付き）。
+
+        i407: 3番目要素は pattern_id（UUID）。パターン表示名ではなくIDで保持する。
+
+        Args:
+            text: 当選テキスト
+            pattern_id: パターンの不変UUID
+        """
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
-        self._log_entries.insert(0, (ts, text))
+        self._log_entries.insert(0, (ts, text, pattern_id))
         if len(self._log_entries) > self._log_max:
             self._log_entries = self._log_entries[:self._log_max]
         self.update()
@@ -182,19 +214,43 @@ class WheelWidget(QWidget):
         self.log_changed.emit()  # i343: RoulettePanel の前面オーバーレイに通知
 
     def get_log_entries(self) -> list[tuple[str, str]]:
-        """ログ履歴を返す（新しい順の (時刻, テキスト) リスト）。"""
-        return list(self._log_entries)
+        """ログ履歴を返す（新しい順の (時刻, テキスト) リスト）。
+
+        i407: フィルタは _current_pattern_id（UUID）基準。
+        - _current_pattern_id が未設定の場合は空リストを返す。
+          パターン未確定状態で全エントリを表示すると情報不足のエントリが混入する。
+        - log_all_patterns=True の場合も、pattern_id="" のエントリは除外する。
+          全パターン表示は "どのパターンか確定しているデータ" の一覧であり、
+          IDなし旧エントリは filtered 表示へ混入させない。
+        """
+        if not self._current_pattern_id:
+            # i407: パターンID未確定時は何も表示しない
+            return []
+        if self._log_all_patterns:
+            # i407: 全パターン表示でも pattern_id="" エントリは除外
+            return [(ts, text) for ts, text, pid in self._log_entries if pid]
+        pid = self._current_pattern_id
+        return [(ts, text) for ts, text, p in self._log_entries if p == pid]
 
     def save_log(self, path: str):
-        """ログ履歴をJSONファイルに保存する。"""
+        """ログ履歴をJSONファイルに保存する。
+
+        i407: エントリは pattern_id（UUID）で保存する。
+        """
         import json
         # 古い順で保存
-        data = [{"ts": ts, "text": text} for ts, text in reversed(self._log_entries)]
+        data = [{"ts": ts, "text": text, "pattern_id": pid}
+                for ts, text, pid in reversed(self._log_entries)]
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load_log(self, path: str):
-        """JSONファイルからログ履歴を復元する。"""
+        """JSONファイルからログ履歴を復元する。
+
+        i407: pattern_id フィールドがないエントリは旧フォーマットとして破棄する。
+        旧フォーマット（"pattern" キーのみ）のデータは安全側で除外し、
+        クリーンな状態から再スタートする。
+        """
         import json
         import os
         if not os.path.exists(path):
@@ -205,10 +261,18 @@ class WheelWidget(QWidget):
             if not isinstance(data, list):
                 return
             # 古い順で保存されている → 新しい順に変換
+            # i407: pattern_id が存在しないエントリは旧フォーマットとして除外する
             entries = []
             for item in data:
-                if isinstance(item, dict) and "ts" in item and "text" in item:
-                    entries.append((item["ts"], item["text"]))
+                if not isinstance(item, dict):
+                    continue
+                if "ts" not in item or "text" not in item:
+                    continue
+                pid = item.get("pattern_id", "")
+                if not pid:
+                    # 旧フォーマット（pattern_id なし）: 安全側で除外
+                    continue
+                entries.append((item["ts"], item["text"], pid))
             self._log_entries = list(reversed(entries[-self._log_max:]))
             self.update()
         except Exception:
@@ -390,7 +454,7 @@ class WheelWidget(QWidget):
         # --- ログオーバーレイ（背景モード: セグメントより後ろに描画）---
         # i348: log_on_top OFF のとき、セグメントより先に描画することでセグメントの後ろに見える。
         # log_on_top ON のときは _LogOverlay widget（RoulettePanel の子）が担当する。
-        if self._log_visible and not self._log_on_top and self._log_entries:
+        if self._log_visible and not self._log_on_top and self.get_log_entries():
             self._draw_log_overlay(painter, d)
 
         # --- セグメント描画 ---
@@ -598,7 +662,7 @@ class WheelWidget(QWidget):
         padding = 6
         margin = 8
 
-        entries = self._log_entries
+        entries = self.get_log_entries()  # i393: フィルタ済み (ts, text) リスト
         n = len(entries)
         if n == 0:
             return
