@@ -28,7 +28,7 @@ VERSION_HINTS = {
 # 既定の spec_base 一致ロジックでは拾えない場所にエントリスクリプトがある場合に指定する。
 # 値は os.path.join 用のパス要素タプル。
 ENTRY_OVERRIDES = {
-    "RRoulette": ("proto_pyside6", "run_proto.py"),
+    "RRoulette": ("pyside6", "run_proto.py"),
 }
 
 

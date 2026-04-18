@@ -21,7 +21,7 @@ i407 の修正:
 5. _sync_settings_to_active → set_current_pattern(name, pid)
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_startup_log_init_sequence.py
 """
 

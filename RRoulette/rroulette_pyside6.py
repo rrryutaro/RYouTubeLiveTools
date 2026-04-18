@@ -1,9 +1,9 @@
 """
-RRoulette PySide6 プロトタイプ — 起動スクリプト
+RRoulette — PySide6 版エントリーポイント
 
 使い方:
-  cd RRoulette/proto_pyside6
-  python run_proto.py
+  cd RRoulette
+  python rroulette_pyside6.py
 
 操作:
   - 左ドラッグ: ウィンドウ移動
@@ -16,6 +16,13 @@ RRoulette PySide6 プロトタイプ — 起動スクリプト
 """
 
 import sys
+import os
+
+# pyside6/ ディレクトリを sys.path に追加（main_window 等のフラットな import を有効化）
+_pyside6_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyside6")
+if _pyside6_dir not in sys.path:
+    sys.path.insert(0, _pyside6_dir)
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont

@@ -18,7 +18,7 @@ i408 テスト: ログ入出力の roulette 単位保証 / ファイルダイア
     pattern export / import / log export / import が共通で参照していること
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_log_io_roulette_scope.py
 """
 

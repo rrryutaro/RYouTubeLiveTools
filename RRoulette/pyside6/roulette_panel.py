@@ -31,7 +31,7 @@ from bridge import (
 from wheel_widget import WheelWidget
 from spin_controller import SpinController
 from result_overlay import ResultOverlay
-from settings_panel import _PanelGrip
+from panel_widgets import _PanelGrip
 
 
 # ホイール + ポインター + 余白を含むパネル最小サイズ

@@ -13,7 +13,7 @@ i414 テスト: ログアーカイブ同一 roulette 専用化
 テスト8: pattern export/import の挙動が壊れていないこと（回帰）
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_log_archive.py
 """
 

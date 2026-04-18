@@ -11,7 +11,7 @@ i412 テスト: log import 時の pattern_id 再マップ
 テスト6: pid_remap=None の場合は変換なしで従来通り動くこと（後方互換）
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_pid_remap.py
 """
 

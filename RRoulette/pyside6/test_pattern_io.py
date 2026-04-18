@@ -27,7 +27,7 @@ i410 テスト: 項目パネル import / export の正常性確認
   - _on_pattern_export / _on_pattern_import の両方で EXPORT_DIR が参照されること
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_pattern_io.py
 """
 

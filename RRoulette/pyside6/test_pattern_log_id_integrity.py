@@ -21,7 +21,7 @@ i411 テスト: pattern 識別整合と log 重複判定修正
   - 正しい重複判定が維持されていること
 
 実行方法:
-  cd RRoulette/proto_pyside6
+  cd RRoulette/pyside6
   set QT_QPA_PLATFORM=offscreen && python test_pattern_log_id_integrity.py
 """
 

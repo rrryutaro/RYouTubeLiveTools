@@ -150,7 +150,7 @@
 ### Python で起動する場合
 
 ```bash
-python rroulette.py
+python rroulette_pyside6.py
 ```
 
 ### 実行ファイル（exe）を使う場合
