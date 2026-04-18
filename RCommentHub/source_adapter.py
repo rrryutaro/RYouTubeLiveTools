@@ -107,13 +107,19 @@ class YouTubeSourceAdapter(SourceAdapter):
         self._live_chat_id  = result.get("live_chat_id", "")
         self._verify_result = result
 
-    def connect(self, on_comment, on_status, on_fallback_confirm=None, **kwargs):
+    def connect(self, on_comment, on_status, on_fallback_confirm=None,
+                polling_fallback_allowed: bool = False,
+                on_system_message=None,
+                notify_overlay: bool = False,
+                **kwargs):
         self._client.set_auth_service(self._auth_service)
         self._client.start(
             live_chat_id=self._live_chat_id,
             on_comment=on_comment,
             on_status=on_status,
-            on_fallback_confirm=on_fallback_confirm,
+            polling_fallback_allowed=polling_fallback_allowed,
+            on_system_message=on_system_message,
+            notify_overlay=notify_overlay,
         )
 
     def disconnect(self):

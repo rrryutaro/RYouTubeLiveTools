@@ -92,6 +92,7 @@ class CommentItem:
         self.source_id: str       = raw.get("_source_id", "conn1")
         self.source_name: str     = raw.get("_source_name", "")
         self.tts_source_name: str = raw.get("_tts_source_name", self.source_name)
+        self.is_system_message: bool = raw.get("_is_system_message", False)
 
         self.author_display_name_tts: str  = make_tts_name(self.author_name)
         self.filter_match:            bool  = False
@@ -161,6 +162,7 @@ class CommentItem:
         return (b[:max_len] + "…") if len(b) > max_len else b
 
     def row_tag(self) -> str:
+        if self.is_system_message:                 return "system"
         if self.is_owner:                          return "owner"
         if self.is_moderator:                      return "moderator"
         if self.kind == "superChatEvent":          return "superchat"
@@ -409,9 +411,10 @@ class CommentController:
         self._last_recv_time = item.recv_time
         self._user_mgr.on_comment(item)
         self.apply_tts_from_settings()
-        # 接続直後の初回取得分（バックログ）は TTS 対象外とする
-        is_backlog = raw.get("_is_backlog", False)
-        if not is_backlog:
+        # バックログ・システムメッセージは TTS 対象外
+        is_backlog  = raw.get("_is_backlog", False)
+        is_system   = raw.get("_is_system_message", False)
+        if not is_backlog and not is_system:
             item.tts_target = self._tts.should_read(item)
             self._tts.enqueue_comment(item)
         else:
@@ -505,10 +508,15 @@ class CommentController:
         def _on_status(status, msg, pid=profile_id):
             self._root.after(0, lambda: self._on_adapter_status(pid, status, msg))
 
+        def _on_system_message(text, pid=profile_id):
+            self._root.after(0, lambda: self._inject_system_message(pid, text))
+
         adapter.connect(
             on_comment=_on_comment,
             on_status=_on_status,
-            on_fallback_confirm=self._ask_fallback_permission,
+            polling_fallback_allowed=bool(self._sm.get("youtube_polling_fallback_enabled", False)),
+            on_system_message=_on_system_message,
+            notify_overlay=bool(self._sm.get("youtube_disconnect_notify_overlay", False)),
         )
 
     def _create_adapter(self, platform: str):
@@ -606,7 +614,40 @@ class CommentController:
             for cb in self._on_connect_ui_cbs:
                 cb(None, None, f"[{profile_id}] 受信中", "#88FF88")
 
-    # ─── fallback 許可確認（ワーカースレッドからブロック呼び出し） ────────────
+    # ─── システムメッセージ注入 ───────────────────────────────────────────────
+
+    def _inject_system_message(self, profile_id: str, text: str):
+        """
+        切断通知などのシステムメッセージをコメントリストへ注入する（メインスレッドで呼ぶ）。
+        TTS 対象外、バックログ扱い外。Overlay への表示は呼び出し元設定で制御する。
+        """
+        import time as _time
+        raw = {
+            "id": f"_sys_{int(_time.time() * 1000)}",
+            "_source_id":         profile_id,
+            "_source_name":       "System",
+            "_tts_source_name":   "",
+            "_is_system_message": True,
+            "_is_backlog":        False,
+            "snippet": {
+                "type":           "systemMessageEvent",
+                "displayMessage": text,
+                "publishedAt":    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+            "authorDetails": {
+                "displayName":    "[System]",
+                "channelId":      "_system",
+                "channelUrl":     "",
+                "profileImageUrl": "",
+                "isChatOwner":    False,
+                "isChatModerator": False,
+                "isChatSponsor":  False,
+                "isVerified":     False,
+            },
+        }
+        self.add_comment(raw)
+
+    # ─── fallback 許可確認（後方互換保持・現在は connect_profile から呼ばれない） ──
 
     def _ask_fallback_permission(self, reason: str) -> bool:
         """

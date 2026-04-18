@@ -560,6 +560,43 @@ class SettingsWindow:
     def _build_conn_tab(self, parent):
         C = UI_COLORS
 
+        # ── YouTube 接続オプション ─────────────────────────────────────────────
+        self._section(parent, "YouTube 接続オプション")
+
+        yt_frame = tk.Frame(parent, bg=C["bg_main"])
+        yt_frame.pack(fill=tk.X, padx=14, pady=4)
+
+        self._yt_polling_fallback_var = tk.BooleanVar(
+            value=self._sm.get("youtube_polling_fallback_enabled", False))
+        tk.Checkbutton(
+            yt_frame,
+            text="streamList 失敗時に list ポーリングへ切り替える（デフォルト OFF）",
+            variable=self._yt_polling_fallback_var,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg=C["fg_main"], bg=C["bg_main"],
+            activebackground=C["bg_main"], selectcolor=C["bg_list"],
+        ).pack(anchor=tk.W, pady=2)
+
+        self._yt_notify_overlay_var = tk.BooleanVar(
+            value=self._sm.get("youtube_disconnect_notify_overlay", False))
+        tk.Checkbutton(
+            yt_frame,
+            text="YouTube 切断通知を配信用 Overlay にも表示する（デフォルト OFF）",
+            variable=self._yt_notify_overlay_var,
+            font=(FONT_FAMILY, FONT_SIZE_S),
+            fg=C["fg_main"], bg=C["bg_main"],
+            activebackground=C["bg_main"], selectcolor=C["bg_list"],
+        ).pack(anchor=tk.W, pady=2)
+
+        tk.Label(
+            yt_frame,
+            text="※ 切断通知はアプリ内コメントリスト・ログへは常に表示されます。\n"
+                 "※ Overlay への表示はデフォルト OFF です（配信映像に映り込まないよう設計）。\n"
+                 "※ ポーリング切替は streamList 再試行 5 回後に有効になります。",
+            font=(FONT_FAMILY, FONT_SIZE_S - 1),
+            fg=C["fg_label"], bg=C["bg_main"], wraplength=480, justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
         self._section(parent, "接続プロファイル")
 
         tk.Label(
@@ -1276,6 +1313,9 @@ class SettingsWindow:
 
         updates = {
             "auth_mode": self._auth_mode_var.get(),
+            # YouTube 接続オプション
+            "youtube_polling_fallback_enabled":  self._yt_polling_fallback_var.get(),
+            "youtube_disconnect_notify_overlay": self._yt_notify_overlay_var.get(),
             "display_rows":       int(self._display_rows_var.get()),
             "font_size_name":     int(self._font_name_var.get()),
             "font_size_body":     int(self._font_body_var.get()),
@@ -1390,6 +1430,13 @@ class SettingsWindow:
         # Twitch クライアントID
         if hasattr(self, "_twitch_client_id_var"):
             self._twitch_client_id_var.set(self._sm.get("twitch_client_id", ""))
+        # YouTube 接続オプション
+        if hasattr(self, "_yt_polling_fallback_var"):
+            self._yt_polling_fallback_var.set(
+                self._sm.get("youtube_polling_fallback_enabled", False))
+        if hasattr(self, "_yt_notify_overlay_var"):
+            self._yt_notify_overlay_var.set(
+                self._sm.get("youtube_disconnect_notify_overlay", False))
         # 接続設定プロファイルリスト
         if hasattr(self, "_profile_listbox"):
             self._refresh_profile_list()

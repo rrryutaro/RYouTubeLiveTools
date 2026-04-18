@@ -69,6 +69,20 @@ _route_logger.info(
     "[route-check] session_start ts=%s",
     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 )
+
+# ─── YouTube 接続異常解析用ログファイル (youtube_error.log) ─────────────────
+YT_ERROR_LOG_PATH = os.path.join(_route_log_dir, "youtube_error.log")
+
+_yt_error_fh = logging.FileHandler(YT_ERROR_LOG_PATH, encoding="utf-8")
+_yt_error_fh.setLevel(logging.INFO)
+_yt_error_fh.setFormatter(logging.Formatter(
+    "%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+_yt_error_logger = logging.getLogger("youtube_error")
+_yt_error_logger.addHandler(_yt_error_fh)
+_yt_error_logger.propagate = False  # route_check.log への混入を防ぐ
+# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 
 CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILENAME)
@@ -340,7 +354,11 @@ class RCommentHubApp:
         コントローラからのコメント追加通知 → Overlay に反映。
         TTS が有効な場合は TTS の読み上げタイミングで Overlay を更新するため、
         ここでは TTS が無効のときのみ即時表示する。
+        システムメッセージは設定 youtube_disconnect_notify_overlay が OFF の場合は Overlay に出さない。
         """
+        if item.is_system_message:
+            if not self._sm.get("youtube_disconnect_notify_overlay", False):
+                return
         if self._overlay_win and not self._ctrl.tts_enabled:
             self._overlay_win.show_comment(item)
 
