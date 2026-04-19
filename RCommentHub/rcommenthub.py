@@ -82,6 +82,19 @@ _yt_error_fh.setFormatter(logging.Formatter(
 _yt_error_logger = logging.getLogger("youtube_error")
 _yt_error_logger.addHandler(_yt_error_fh)
 _yt_error_logger.propagate = False  # route_check.log への混入を防ぐ
+
+# ─── API 使用量診断ログ (youtube_api_usage.log) ─────────────────────────────
+YT_API_USAGE_LOG_PATH = os.path.join(_route_log_dir, "youtube_api_usage.log")
+
+_yt_api_usage_fh = logging.FileHandler(YT_API_USAGE_LOG_PATH, encoding="utf-8")
+_yt_api_usage_fh.setLevel(logging.INFO)
+_yt_api_usage_fh.setFormatter(logging.Formatter(
+    "%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+_yt_api_usage_logger = logging.getLogger("youtube_api_usage")
+_yt_api_usage_logger.addHandler(_yt_api_usage_fh)
+_yt_api_usage_logger.propagate = False  # route_check.log への混入を防ぐ
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 
