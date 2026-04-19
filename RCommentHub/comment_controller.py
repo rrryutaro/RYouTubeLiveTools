@@ -182,9 +182,13 @@ class CommentController:
     """
     コメント処理の中核。UI 非依存のビジネスロジック層。
     v0.3.x: 接続プロファイル配列管理 + SourceAdapter 層 (YouTube / Twitch 対応)
+    v0.4.0: dispatch_to_main 注入方式へ変更（Tk 直接依存を排除）
     """
-    def __init__(self, root, settings_mgr, base_dir: str):
-        self._root = root   # tk.Tk: root.after() によるスレッドセーフ実行用
+    def __init__(self, dispatch_to_main, settings_mgr, base_dir: str):
+        # メインスレッドへのディスパッチ関数（ワーカースレッドからの安全な呼び出し用）
+        # Tk: lambda cb: root.after(0, cb)
+        # PySide6: lambda cb: QTimer.singleShot(0, cb)
+        self._dispatch = dispatch_to_main
         self._sm   = settings_mgr
 
         # データ
@@ -503,13 +507,13 @@ class CommentController:
             raw["_source_id"]       = pid
             raw["_source_name"]     = sname
             raw["_tts_source_name"] = tname
-            self._root.after(0, lambda r=raw: self.add_comment(r))
+            self._dispatch(lambda r=raw: self.add_comment(r))
 
         def _on_status(status, msg, pid=profile_id):
-            self._root.after(0, lambda: self._on_adapter_status(pid, status, msg))
+            self._dispatch(lambda: self._on_adapter_status(pid, status, msg))
 
         def _on_system_message(text, pid=profile_id):
-            self._root.after(0, lambda: self._inject_system_message(pid, text))
+            self._dispatch(lambda: self._inject_system_message(pid, text))
 
         adapter.connect(
             on_comment=_on_comment,
@@ -572,10 +576,9 @@ class CommentController:
                 result = self.verify_target(platform, url)
                 result["_source_name"]    = name
                 result["_tts_source_name"] = tts_name
-                self._root.after(0, lambda r=result: self.connect_profile(profile_id, r))
+                self._dispatch(lambda r=result: self.connect_profile(profile_id, r))
             except Exception as e:
-                self._root.after(
-                    0,
+                self._dispatch(
                     lambda msg=str(e): self._notify_log(f"[{profile_id}] 自動接続失敗: {msg}")
                 )
 
@@ -675,7 +678,7 @@ class CommentController:
             result[0] = bool(answer)
             event.set()
 
-        self._root.after(0, _show_dialog)
+        self._dispatch(_show_dialog)
         event.wait(timeout=60)   # 60秒応答なし → 拒否扱い
         return result[0]
 

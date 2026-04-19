@@ -5,3 +5,5 @@ pywin32>=306
 # OAuth 2.0 認証（標準認証方式）
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
+# GUI フレームワーク（Phase 1〜: PySide6 移行用）
+PySide6>=6.5.0

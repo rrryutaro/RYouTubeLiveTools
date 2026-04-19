@@ -165,7 +165,8 @@ class RCommentHubApp:
         root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
 
         # コントローラ（処理の中核）
-        self._ctrl = CommentController(root, self._sm, BASE_DIR)
+        # dispatch_to_main: ワーカースレッドからメインスレッドへのディスパッチ（Tk 互換）
+        self._ctrl = CommentController(lambda cb: root.after(0, cb), self._sm, BASE_DIR)
 
         _topmost_getter = lambda: bool(self._sm.get("cw_topmost", False))
 
