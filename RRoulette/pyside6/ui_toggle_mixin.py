@@ -106,6 +106,11 @@ class UIToggleMixin:
                     "settings": (self._settings_panel.x(), self._settings_panel.y()),
                     "manage":   (self._manage_panel.x(),   self._manage_panel.y()),
                 },
+                # i462: ルーレットパネル内の補助 UI 表示状態を保存
+                "rp_selection_handle": panel._selection_handle.isVisible(),
+                "rp_title_plate": panel._title_plate.isVisible(),
+                "rp_graph_btn": panel._graph_btn.isVisible(),
+                "rp_grip": panel._grip.isVisible(),
             }
             # パネルを非表示
             self._item_panel.hide()
@@ -115,6 +120,17 @@ class UIToggleMixin:
             # ドラッグバーを非表示
             if hasattr(self, "_mw_drag_bar"):
                 self._mw_drag_bar.hide()
+            # i462/i463/i464/i465: ルーレットパネル内の補助 UI を設定に従い非表示
+            # show=True → 表示維持、show=False → 非表示
+            _s = self._settings
+            if not _s.roulette_only_show_selection_handle:
+                panel._selection_handle.hide()
+            if not _s.roulette_only_show_title_plate:
+                panel._title_plate.hide()
+            if not _s.roulette_only_show_graph_btn:
+                panel._graph_btn.hide()
+            if not _s.roulette_only_show_grip:
+                panel._grip.hide()
             # ウィンドウ背景とルーレットパネルを透過
             self._apply_window_transparent(True)
             self._apply_roulette_transparent(True)
@@ -123,6 +139,11 @@ class UIToggleMixin:
             panel._grip._skip_parent_clamp = True
             panel.move(0, 0)
             self.resize(panel.width(), panel.height())
+            # i469: roulette_only_active/log_show フラグを設定して _refresh_log_overlay で一括判定。
+            # show() → resizeEvent → _sync_wheel() → _refresh_log_overlay() の流れで
+            # visible_eff が正しく計算されるよう、show() 前にフラグを立てておく。
+            panel._roulette_only_active = True
+            panel._roulette_only_log_show = _s.roulette_only_show_log
             # ウィンドウから外枠・影を OS/Qt レベルで完全に除去
             was_visible = self.isVisible()
             flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
@@ -179,6 +200,19 @@ class UIToggleMixin:
                 sp.move(new_x, new_y)
             if saved.get("settings", False):
                 self._settings_panel_visible = True
+            # i462/i463: ルーレットパネル内の補助 UI を復元
+            if saved.get("rp_selection_handle", True):
+                panel._selection_handle.show()
+            if saved.get("rp_title_plate", True):
+                panel._title_plate.show()
+            if saved.get("rp_graph_btn", True):
+                panel._graph_btn.show()
+            if saved.get("rp_grip", True):
+                panel._grip.show()
+            # i469: roulette_only 状態をリセットしてからログオーバーレイを復元
+            panel._roulette_only_active = False
+            panel._roulette_only_log_show = True
+            panel._refresh_log_overlay()
 
     def _apply_roulette_only_mode_multi(self, enabled: bool):
         """multi 時の `ルーレット以外非表示` 処理。
@@ -191,6 +225,18 @@ class UIToggleMixin:
         """
         if enabled:
             # ON 前の状態を保存
+            # i462: 各ルーレットパネルの補助 UI 表示状態も保存する
+            _rp_ui_saved = {}
+            for _rid in self._manager.ids():
+                _ctx = self._manager.get(_rid)
+                if _ctx and _ctx.panel:
+                    _p = _ctx.panel
+                    _rp_ui_saved[_rid] = {
+                        "selection_handle": _p._selection_handle.isVisible(),
+                        "title_plate": _p._title_plate.isVisible(),
+                        "graph_btn": _p._graph_btn.isVisible(),
+                        "grip": _p._grip.isVisible(),
+                    }
             self._roulette_only_saved_visibility = {
                 "item": self._item_panel.isVisible(),
                 "settings": self._settings_panel.isVisible(),
@@ -198,6 +244,7 @@ class UIToggleMixin:
                 "window_transparent": self._settings.window_transparent,
                 "roulette_transparent": self._settings.roulette_transparent,
                 "window_size": self.size(),
+                "rp_ui": _rp_ui_saved,
             }
             # 非ルーレット系パネルのみ非表示
             self._item_panel.hide()
@@ -206,9 +253,31 @@ class UIToggleMixin:
             self._manage_panel.hide()
             if hasattr(self, "_mw_drag_bar"):
                 self._mw_drag_bar.hide()
+            # i462/i463/i464/i465: 各ルーレットパネル内の補助 UI を設定に従い非表示
+            # show=True → 表示維持、show=False → 非表示
+            _s = self._settings
+            for _rid in self._manager.ids():
+                _ctx = self._manager.get(_rid)
+                if _ctx and _ctx.panel:
+                    _p = _ctx.panel
+                    if not _s.roulette_only_show_selection_handle:
+                        _p._selection_handle.hide()
+                    if not _s.roulette_only_show_title_plate:
+                        _p._title_plate.hide()
+                    if not _s.roulette_only_show_graph_btn:
+                        _p._graph_btn.hide()
+                    if not _s.roulette_only_show_grip:
+                        _p._grip.hide()
             # ウィンドウ・ルーレットを透過
             self._apply_window_transparent(True)
             self._apply_roulette_transparent(True)
+            # i469: roulette_only_active/log_show フラグを設定（single と同様）
+            for _rid_log in self._manager.ids():
+                _ctx_log = self._manager.get(_rid_log)
+                if _ctx_log and _ctx_log.panel:
+                    _p_log = _ctx_log.panel
+                    _p_log._roulette_only_active = True
+                    _p_log._roulette_only_log_show = _s.roulette_only_show_log
             # ウィンドウフラグ: 外枠・影を除去
             was_visible = self.isVisible()
             flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
@@ -250,6 +319,25 @@ class UIToggleMixin:
                     sp.show()
             if saved.get("settings", False):
                 self._settings_panel_visible = True
+            # i462/i463/i465: 各ルーレットパネルの補助 UI を復元
+            _rp_ui_saved = saved.get("rp_ui", {})
+            for _rid in self._manager.ids():
+                _ctx = self._manager.get(_rid)
+                if _ctx and _ctx.panel:
+                    _p = _ctx.panel
+                    _ui = _rp_ui_saved.get(_rid, {})
+                    if _ui.get("selection_handle", True):
+                        _p._selection_handle.show()
+                    if _ui.get("title_plate", True):
+                        _p._title_plate.show()
+                    if _ui.get("graph_btn", True):
+                        _p._graph_btn.show()
+                    if _ui.get("grip", True):
+                        _p._grip.show()
+                    # i469: roulette_only 状態をリセットしてからログオーバーレイを復元
+                    _p._roulette_only_active = False
+                    _p._roulette_only_log_show = True
+                    _p._refresh_log_overlay()
 
     def _recalc_multi_roulette_only_bounds(self):
         """i335: multi 時の動的ウィンドウ境界追従は無効化。
@@ -332,6 +420,115 @@ class UIToggleMixin:
         self._settings_panel.update_setting("settings_panel_float", new_val)
         self._save_config()
 
+    def _toggle_manage_panel_float(self):
+        """管理パネルのフローティング独立化を切り替える。"""
+        new_val = not self._settings.manage_panel_float
+        self._settings.manage_panel_float = new_val
+        self._apply_manage_panel_float(new_val)
+        self._manage_panel.set_manage_float(new_val)
+        self._save_config()
+
+    def _apply_manage_panel_float(self, floating: bool):
+        """管理パネルの埋め込み/フローティングを切り替える。"""
+        mp = self._manage_panel
+        was_visible = mp.isVisible()
+
+        cur_w, cur_h = mp.width(), mp.height()
+        if floating:
+            global_pos = mp.mapToGlobal(QPoint(0, 0))
+            cur_x, cur_y = global_pos.x(), global_pos.y()
+        else:
+            parent = self.centralWidget()
+            if parent:
+                local_pos = parent.mapFromGlobal(mp.pos())
+                cur_x, cur_y = local_pos.x(), local_pos.y()
+            else:
+                cur_x, cur_y = mp.x(), mp.y()
+
+        mp.hide()
+
+        if floating:
+            mp.setParent(None)
+            # i469: Tool は OS レベルでメインウィンドウに owned され z-order が下になる。
+            # Window にして真の独立トップレベルウィンドウにする。
+            mp.setWindowFlags(
+                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+            )
+            mp._floating = True
+            mp.setGeometry(cur_x, cur_y, cur_w, cur_h)
+        else:
+            central = self.centralWidget()
+            mp.setParent(central)
+            mp.setWindowFlags(Qt.WindowType.Widget)
+            mp._floating = False
+            pw = central.width() if central else self.width()
+            ph = central.height() if central else self.height()
+            cur_x = max(0, min(cur_x, pw - cur_w))
+            cur_y = max(0, min(cur_y, ph - cur_h))
+            mp.setGeometry(cur_x, cur_y, cur_w, cur_h)
+
+        if was_visible:
+            mp.show()
+            if floating:
+                mp.raise_()
+                mp.activateWindow()
+            else:
+                mp.raise_()
+
+    def _toggle_items_panel_float(self):
+        """項目パネルのフローティング独立化を切り替える。"""
+        new_val = not self._settings.items_panel_float
+        self._settings.items_panel_float = new_val
+        self._apply_items_panel_float(new_val)
+        self._item_panel.set_items_float(new_val)
+        self._save_config()
+
+    def _apply_items_panel_float(self, floating: bool):
+        """項目パネルの埋め込み/フローティングを切り替える。"""
+        ip = self._item_panel
+        was_visible = ip.isVisible()
+
+        cur_w, cur_h = ip.width(), ip.height()
+        if floating:
+            global_pos = ip.mapToGlobal(QPoint(0, 0))
+            cur_x, cur_y = global_pos.x(), global_pos.y()
+        else:
+            parent = self.centralWidget()
+            if parent:
+                local_pos = parent.mapFromGlobal(ip.pos())
+                cur_x, cur_y = local_pos.x(), local_pos.y()
+            else:
+                cur_x, cur_y = ip.x(), ip.y()
+
+        ip.hide()
+
+        if floating:
+            ip.setParent(None)
+            # i469: Tool → Window（manage パネルと同様の理由）
+            ip.setWindowFlags(
+                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+            )
+            ip._floating = True
+            ip.setGeometry(cur_x, cur_y, cur_w, cur_h)
+        else:
+            central = self.centralWidget()
+            ip.setParent(central)
+            ip.setWindowFlags(Qt.WindowType.Widget)
+            ip._floating = False
+            pw = central.width() if central else self.width()
+            ph = central.height() if central else self.height()
+            cur_x = max(0, min(cur_x, pw - cur_w))
+            cur_y = max(0, min(cur_y, ph - cur_h))
+            ip.setGeometry(cur_x, cur_y, cur_w, cur_h)
+
+        if was_visible:
+            ip.show()
+            if floating:
+                ip.raise_()
+                ip.activateWindow()
+            else:
+                ip.raise_()
+
     def _apply_settings_panel_float(self, floating: bool):
         """設定パネルの埋め込み/フローティングを切り替える。"""
         sp = self._settings_panel
@@ -364,8 +561,9 @@ class UIToggleMixin:
         if floating:
             # フローティング化: 親から切り離し
             sp.setParent(None)
+            # i469: Tool → Window（manage パネルと同様の理由）
             sp.setWindowFlags(
-                Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
             )
             sp._floating = True
             # スクリーン座標で配置
@@ -386,7 +584,11 @@ class UIToggleMixin:
         # 表示復元
         if was_visible:
             sp.show()
-            sp.raise_()
+            if floating:
+                sp.raise_()
+                sp.activateWindow()
+            else:
+                sp.raise_()
 
         # 保存座標を更新
         self._last_sp_w = cur_w

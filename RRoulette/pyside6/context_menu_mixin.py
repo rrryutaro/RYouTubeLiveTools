@@ -48,20 +48,36 @@ class ContextMenuMixin:
             }}
         """)
 
-        # ルーレット以外非表示
-        ro_mark = "\u25cf" if s.roulette_only_mode else "  "
-        action = menu.addAction(f"{ro_mark} ルーレット以外非表示    ")
-        action.triggered.connect(self._toggle_roulette_only_mode)
+        # i462: パネル表示（最上段・サブメニュー）
+        _submenu_style = menu.styleSheet()
+        panel_menu = menu.addMenu("  パネル表示    ")
+        panel_menu.setStyleSheet(_submenu_style)
 
-        # 常に最前面
+        mp_mark = "\u25cf" if self._manage_panel.isVisible() else "  "
+        a = panel_menu.addAction(f"{mp_mark} 管理パネル (F1)")
+        a.triggered.connect(self._toggle_manage_panel)
+
+        ip_mark = "\u25cf" if self._item_panel.isVisible() else "  "
+        a = panel_menu.addAction(f"{ip_mark} 項目パネル (F2)")
+        a.triggered.connect(self._toggle_item_panel)
+
+        sp_mark = "\u25cf" if self._settings_panel_visible else "  "
+        a = panel_menu.addAction(f"{sp_mark} 設定パネル (F3)")
+        a.triggered.connect(self._toggle_settings_panel_v2)
+
+        menu.addSeparator()
+
+        # 常に最前面 (i463: ルーレット以外非表示より上に配置)
         aot_mark = "\u25cf" if s.always_on_top else "  "
         action = menu.addAction(f"{aot_mark} 常に最前面    ")
         action.triggered.connect(self._toggle_always_on_top)
 
-        # リサイズグリップ表示
-        grip_mark = "\u25cf" if s.grip_visible else "  "
-        action = menu.addAction(f"{grip_mark} リサイズグリップ表示    ")
-        action.triggered.connect(self._toggle_grip_visible)
+        # ルーレット以外非表示 (Tab キー) — i463: 括弧付き表記に統一
+        ro_mark = "\u25cf" if s.roulette_only_mode else "  "
+        action = menu.addAction(f"{ro_mark} ルーレット以外非表示 (Tab)")
+        action.triggered.connect(self._toggle_roulette_only_mode)
+
+        # i463: リサイズグリップ表示項目を削除（管理パネル側で個別設定可能になったため）
 
         menu.addSeparator()
 
@@ -77,7 +93,9 @@ class ContextMenuMixin:
         self._settings.profile_idx = idx
         self._wheel_base_w = w
         self._wheel_base_h = h
-        self.resize(w, h)
+        # i467: アクティブなルーレットパネルを即時リサイズする。
+        if not self._settings.roulette_only_mode:
+            self._active_panel.resize(w, h)
         self._settings_panel.update_setting("profile_idx", idx)
         self._save_config()
 

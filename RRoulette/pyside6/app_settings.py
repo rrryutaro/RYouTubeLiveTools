@@ -105,6 +105,14 @@ class AppSettings:
     # 項目パネル表示モード (i289): 0=詳細表示, 1=シンプル表示
     item_panel_display_mode: int = 1  # i315: デフォルトはシンプルモード
 
+    # ルーレット以外非表示時の個別表示設定 (i463/i464/i465):
+    # True = ルーレット以外非表示モード ON 時にも「表示する」（残す）
+    roulette_only_show_selection_handle: bool = True  # 左上の選択つまみ
+    roulette_only_show_title_plate: bool = True        # タイトル
+    roulette_only_show_graph_btn: bool = True          # グラフ
+    roulette_only_show_grip: bool = True               # リサイズグリップ
+    roulette_only_show_log: bool = True                # ログオーバーレイ
+
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
     replay_show_indicator: bool = True  # リプレイ中インジケーター表示
@@ -151,6 +159,8 @@ class AppSettings:
     ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
     float_win_show_instance: bool = True  # インスタンス番号表示
     settings_panel_float: bool = False   # 設定パネルフローティング独立化
+    manage_panel_float: bool = False     # 管理パネルフローティング独立化 (i465)
+    items_panel_float: bool = False      # 項目パネルフローティング独立化 (i465)
     roulette_only_mode: bool = False     # ルーレット以外非表示モード
 
     # 各パネルの移動バー表示状態 (E: i294)
@@ -272,6 +282,13 @@ class AppSettings:
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
+            roulette_only_show_selection_handle=config.get("roulette_only_show_selection_handle", True),
+            roulette_only_show_title_plate=config.get("roulette_only_show_title_plate", True),
+            roulette_only_show_graph_btn=config.get("roulette_only_show_graph_btn", True),
+            roulette_only_show_grip=config.get("roulette_only_show_grip", True),
+            roulette_only_show_log=config.get("roulette_only_show_log", True),
+            manage_panel_float=config.get("manage_panel_float", False),
+            items_panel_float=config.get("items_panel_float", False),
         )
 
     def to_config_patch(self) -> dict:
@@ -354,4 +371,11 @@ class AppSettings:
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
             "item_panel_display_mode": self.item_panel_display_mode,
+            "roulette_only_show_selection_handle": self.roulette_only_show_selection_handle,
+            "roulette_only_show_title_plate": self.roulette_only_show_title_plate,
+            "roulette_only_show_graph_btn": self.roulette_only_show_graph_btn,
+            "roulette_only_show_grip": self.roulette_only_show_grip,
+            "roulette_only_show_log": self.roulette_only_show_log,
+            "manage_panel_float": self.manage_panel_float,
+            "items_panel_float": self.items_panel_float,
         }

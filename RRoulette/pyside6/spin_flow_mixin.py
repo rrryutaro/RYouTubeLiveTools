@@ -56,14 +56,16 @@ class SpinFlowMixin:
         _spin_rp_mgr = self._replay_mgrs.get(ctx.roulette_id)
         if _spin_rp_mgr and _spin_rp_mgr.is_playing:
             return False
-        # auto_shuffle: スピン前に項目順をランダム化してセグメント再構築
-        if self._settings.auto_shuffle:
-            entries = list(ctx.item_entries)
-            random.shuffle(entries)
-            ctx.item_entries = entries
-            ctx.segments, _ = build_segments_from_entries(
-                entries, self._config
-            )
+        # i465: auto_shuffle: スピン前にセグメントをランダム化（item_index保持で色維持）
+        # v0.4.4 同様、entries ではなく segments を直接シャッフルする
+        if self._settings.auto_shuffle and ctx.segments:
+            segs = list(ctx.segments)
+            random.shuffle(segs)
+            angle = 0.0
+            for seg in segs:
+                seg.start_angle = angle
+                angle += seg.arc
+            ctx.segments = segs
             panel.set_segments(ctx.segments)
         self._settings_panel.set_spinning(True)
         panel.start_spin()

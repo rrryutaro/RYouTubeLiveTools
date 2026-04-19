@@ -233,6 +233,7 @@ class ItemPanel(QFrame):
     """
 
     geometry_changed = Signal()
+    items_panel_float_changed = Signal(bool)  # i465: 項目パネル独立化
 
     # シンプルモード用確率モード定数（SettingsPanel と同値）
     _PROB_MODE_LABELS = ["変更なし", "重み係数", "固定確率"]
@@ -241,7 +242,8 @@ class ItemPanel(QFrame):
     def __init__(self, design: DesignSettings, items_widget: QWidget,
                  pattern_widget: QWidget,
                  api: "_ItemPanelAPI",
-                 *, on_drag_bar_changed=None, parent=None):
+                 *, on_drag_bar_changed=None, items_panel_float: bool = False,
+                 parent=None):
         super().__init__(parent)
         self._design = design
         self._floating = False
@@ -371,6 +373,17 @@ class ItemPanel(QFrame):
         self._register_hint(self._mode_btn,
                             "表示モード: シンプル表示 ⇄ 詳細表示を切り替える")
         title_layout.addWidget(self._mode_btn)
+
+        # i465: 項目パネル独立化トグルボタン
+        self._items_float_btn = QPushButton("独")
+        self._items_float_btn.setFont(QFont("Meiryo", 8))
+        self._items_float_btn.setCheckable(True)
+        self._items_float_btn.setChecked(items_panel_float)
+        self._items_float_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._items_float_btn.setStyleSheet(icon_btn_style)
+        self._items_float_btn.setToolTip("独立化: 項目パネルをメインウィンドウから独立したフローティングウィンドウにします")
+        self._items_float_btn.toggled.connect(self.items_panel_float_changed.emit)
+        title_layout.addWidget(self._items_float_btn)
 
         outer.addWidget(self._title_bar)
 
@@ -1358,6 +1371,12 @@ class ItemPanel(QFrame):
                 entry = entries[self._simple_selected_idx]
                 win_count = counts.get(entry.text, 0)
                 self._simple_win_disp_lbl.setText(str(win_count) if win_count > 0 else "")
+
+    def set_items_float(self, value: bool) -> None:
+        """独立化ボタン状態を外部から同期する（シグナルなし）。"""
+        self._items_float_btn.blockSignals(True)
+        self._items_float_btn.setChecked(value)
+        self._items_float_btn.blockSignals(False)
 
     def update_design(self, design: DesignSettings):
         """デザイン変更時に配色を更新する。"""

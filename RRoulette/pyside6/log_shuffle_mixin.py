@@ -31,39 +31,46 @@ class LogShuffleMixin:
     # ================================================================
 
     def _on_shuffle_once(self):
-        """単発ランダム再配置。item_entries をシャッフルしてセグメント再構築。
+        """単発ランダム再配置。セグメントをシャッフルして start_angle を更新する。
 
-        i284: シャッフル直前のエントリ並びをスナップショットとして
-        ctx に保持し、`_on_arrangement_reset` から復元できるようにする。
-        既にスナップショットがある場合は上書きしない（複数回シャッフルしても
-        最初の標準並びを記憶しておくため）。
+        i465: v0.4.4 同様、セグメントを直接シャッフルすることで
+        item_index（＝セグメント色）を元の項目に紐づいたまま維持する。
+        entries を再構築すると item_index が shuffled 位置基準になり
+        色が崩れる（回帰不具合）。
+        また分割の並びも均等固定にならずランダム化される。
+        item_entries は変更しないため、表示は一時的なもの。
         """
         import random
         ctx = self._active_context
-        # i284: 並びリセット用スナップショット
+        if not ctx.segments:
+            return
+        # i284: 並びリセット用スナップショット（標準並びを記憶）
         if getattr(ctx, "_pre_shuffle_entries", None) is None:
             ctx._pre_shuffle_entries = list(ctx.item_entries)
-        entries = list(ctx.item_entries)
-        random.shuffle(entries)
-        ctx.item_entries = entries
-        ctx.segments, _ = build_segments_from_entries(entries, self._config)
+        # セグメントをシャッフル（item_index は不変 → 色を維持）
+        segs = list(ctx.segments)
+        random.shuffle(segs)
+        angle = 0.0
+        for seg in segs:
+            seg.start_angle = angle
+            angle += seg.arc
+        ctx.segments = segs
         ctx.panel.set_segments(ctx.segments)
-        self._settings_panel.set_active_entries(entries)
+        # 項目パネルは元の順序を維持（shuffle は一時的な視覚変更）
+        self._settings_panel.set_active_entries(ctx.item_entries)
         # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
         self._refresh_panel_tracking()
-        self._save_item_entries()
 
     def _on_arrangement_reset(self):
         """i284: 並びリセット。
 
-        v0.4.4 の「標準配置に戻す」相当。直前のシャッフル前 snapshot へ
-        並び順を戻す。snapshot が無い（一度もシャッフルしていない）場合は何もしない。
+        v0.4.4 の「標準配置に戻す」相当。i465: item_entries は変更して
+        いないため、そのまま segments を再構築して標準配置に戻す。
+        snapshot が無い（一度もシャッフルしていない）場合は何もしない。
         """
         ctx = self._active_context
-        snap = getattr(ctx, "_pre_shuffle_entries", None)
-        if snap is None:
+        if getattr(ctx, "_pre_shuffle_entries", None) is None:
             return
-        ctx.item_entries = list(snap)
         ctx._pre_shuffle_entries = None
         ctx.segments, _ = build_segments_from_entries(
             ctx.item_entries, self._config
@@ -72,7 +79,6 @@ class LogShuffleMixin:
         self._settings_panel.set_active_entries(ctx.item_entries)
         # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
         self._refresh_panel_tracking()
-        self._save_item_entries()
 
     def _on_items_reset(self):
         """i284: 項目一括リセット（v0.4.4 「一括リセット」相当）。

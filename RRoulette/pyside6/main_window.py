@@ -91,7 +91,7 @@ from window_frame_mixin import WindowFrameMixin
 from action_dispatch_mixin import ActionDispatchMixin
 from save_load_mixin import SaveLoadMixin
 from accessor_helper_mixin import AccessorHelperMixin
-from main_window_helpers import _SpaceSpinFilter, _MainWindowDragBar
+from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar
 
 
 
@@ -389,7 +389,11 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             pattern_widget=pattern_widget,
             api=_ItemPanelAPI(self._settings_panel),
             on_drag_bar_changed=lambda vis: self._on_item_panel_drag_bar_changed(vis),
+            items_panel_float=self._settings.items_panel_float,
             parent=central,
+        )
+        self._item_panel.items_panel_float_changed.connect(
+            self._toggle_items_panel_float
         )
         self._item_panel.hide()  # restore で表示判定する
         # 移動バー表示状態の復元 (E: i294)
@@ -406,6 +410,12 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             items_visible=self._settings.items_panel_visible,
             settings_visible=self._settings.settings_panel_visible,
             on_drag_bar_changed=lambda vis: self._on_manage_panel_drag_bar_changed(vis),
+            roulette_only_show_selection_handle=self._settings.roulette_only_show_selection_handle,
+            roulette_only_show_title_plate=self._settings.roulette_only_show_title_plate,
+            roulette_only_show_graph_btn=self._settings.roulette_only_show_graph_btn,
+            roulette_only_show_grip=self._settings.roulette_only_show_grip,
+            roulette_only_show_log=self._settings.roulette_only_show_log,
+            manage_panel_float=self._settings.manage_panel_float,
             parent=central,
         )
 
@@ -460,6 +470,12 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.roulette_pkg_import_requested.connect(  # i419
             self._on_roulette_pkg_import
         )
+        self._manage_panel.roulette_only_hide_changed.connect(  # i463
+            self._on_roulette_only_hide_changed
+        )
+        self._manage_panel.manage_panel_float_changed.connect(  # i465
+            self._toggle_manage_panel_float
+        )
 
     def _connect_panel_geometry_signals(self):
         """全パネルの geometry_changed と panel_save_timer を接続する。
@@ -505,6 +521,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # i344: Space キー同時スピン用フィルタ（QApplication 全体にインストール）
         self._space_spin_filter = _SpaceSpinFilter(self)
         QApplication.instance().installEventFilter(self._space_spin_filter)
+
+        # i462: Tab キーでルーレット以外非表示を切り替えるフィルタ
+        self._tab_roulette_filter = _TabRouletteFilter(self)
+        QApplication.instance().installEventFilter(self._tab_roulette_filter)
 
         # i346: 設定適用先（False = 選択中のみ / True = 全ルーレット）
         self._apply_to_all: bool = False

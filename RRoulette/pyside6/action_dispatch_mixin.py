@@ -105,16 +105,12 @@ class ActionDispatchMixin:
         self._update_title_active_id()
 
     def _base_window_title(self) -> str:
-        """インスタンス番号を考慮した基本ウィンドウタイトルを返す。
+        """基本ウィンドウタイトルを返す。
 
-        旧 v0.4.4 の `window_manager.py` と同じ規則:
-          1個目          → "RRoulette"
-          2個目以降      → "RRoulette #N"
+        i462: 複数起動を廃止したためインスタンス番号は不要。
+        常に "RRoulette" を返す。
         """
-        from config_utils import INSTANCE_NUM
-        if INSTANCE_NUM == 1:
-            return "RRoulette"
-        return f"RRoulette #{INSTANCE_NUM}"
+        return "RRoulette"
 
     def _update_title_active_id(self):
         """ウィンドウタイトルに recording / playback 状態のみを反映する。

@@ -100,6 +100,31 @@ class _SectionsMixin:
         )
         bar_layout.addWidget(self._aot_cb)
 
+        # i468: 設定パネル独立化トグルボタン（項目パネルと同スタイル）
+        _sp_float_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 5px;"
+            f"  min-width: 22px; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+            f"QPushButton:checked {{ background-color: {design.accent}; }}"
+        )
+        self._settings_float_btn = QPushButton("独")
+        self._settings_float_btn.setFont(QFont("Meiryo", 8))
+        self._settings_float_btn.setCheckable(True)
+        self._settings_float_btn.setChecked(settings.settings_panel_float)
+        self._settings_float_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._settings_float_btn.setStyleSheet(_sp_float_btn_style)
+        self._settings_float_btn.setToolTip(
+            "独立化: 設定パネルをメインウィンドウから独立した\n"
+            "フローティングウィンドウにします"
+        )
+        self._settings_float_btn.toggled.connect(
+            lambda v: self.setting_changed.emit("settings_panel_float", v)
+        )
+        bar_layout.addWidget(self._settings_float_btn)
+
         bar_layout.addStretch(1)
 
         # 設定全体 export / import ボタン (i356)
@@ -440,26 +465,6 @@ class _SectionsMixin:
         # 透過モード はクイック設定バー（パネル上部）に常設化したため
         # ここには配置しない。
 
-        # リサイズグリップ表示
-        self._grip_visible_cb = QCheckBox("リサイズグリップ表示")
-        self._grip_visible_cb.setFont(QFont("Meiryo", 8))
-        self._grip_visible_cb.setStyleSheet(f"color: {design.text};")
-        self._grip_visible_cb.setChecked(settings.grip_visible)
-        self._grip_visible_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("grip_visible", v)
-        )
-        sec.addWidget(self._grip_visible_cb)
-
-        # コントロールボックス表示（ドラッグバー）
-        self._ctrl_box_visible_cb = QCheckBox("コントロールボックス表示")
-        self._ctrl_box_visible_cb.setFont(QFont("Meiryo", 8))
-        self._ctrl_box_visible_cb.setStyleSheet(f"color: {design.text};")
-        self._ctrl_box_visible_cb.setChecked(settings.ctrl_box_visible)
-        self._ctrl_box_visible_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("ctrl_box_visible", v)
-        )
-        sec.addWidget(self._ctrl_box_visible_cb)
-
         # インスタンス番号表示
         self._instance_label_cb = QCheckBox("インスタンス番号表示")
         self._instance_label_cb.setFont(QFont("Meiryo", 8))
@@ -470,22 +475,15 @@ class _SectionsMixin:
         )
         sec.addWidget(self._instance_label_cb)
 
-        # 設定パネルフローティング
-        self._float_panel_cb = QCheckBox("設定パネル独立化")
-        self._float_panel_cb.setFont(QFont("Meiryo", 8))
-        self._float_panel_cb.setStyleSheet(f"color: {design.text};")
-        self._float_panel_cb.setChecked(settings.settings_panel_float)
-        self._float_panel_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("settings_panel_float", v)
-        )
-        sec.addWidget(self._float_panel_cb)
+        # i468: 設定パネル独立化はクイック設定バーの「独」ボタンに移動済み
 
-        # サイズプロファイル
+        # サイズプロファイル（アクティブなルーレットパネルのサイズを即時変更）
         prof_row = QHBoxLayout()
         prof_row.setSpacing(4)
-        prof_lbl = QLabel("サイズ:")
+        prof_lbl = QLabel("ルーレットサイズ:")
         prof_lbl.setFont(QFont("Meiryo", 8))
         prof_lbl.setStyleSheet(f"color: {design.text_sub};")
+        prof_lbl.setToolTip("アクティブなルーレットパネルのサイズを変更します。")
         self._prof_lbl = prof_lbl
         prof_row.addWidget(prof_lbl)
 
@@ -565,32 +563,6 @@ class _SectionsMixin:
         ptr_row.addWidget(self._ptr_combo, stretch=1)
         sec.addLayout(ptr_row)
 
-        # 折りたたみアニメーション時間
-        anim_row = QHBoxLayout()
-        anim_row.setSpacing(4)
-        anim_lbl = QLabel("アニメ速度:")
-        anim_lbl.setFont(QFont("Meiryo", 8))
-        anim_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._anim_lbl = anim_lbl
-        anim_row.addWidget(anim_lbl)
-
-        self._anim_spin = QSpinBox()
-        self._anim_spin.setFont(QFont("Meiryo", 8))
-        self._anim_spin.setRange(0, 500)
-        self._anim_spin.setSingleStep(50)
-        self._anim_spin.setSuffix(" ms")
-        self._anim_spin.setValue(settings.collapse_anim_ms)
-        self._anim_spin.setStyleSheet(
-            f"QSpinBox {{"
-            f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
-            f"}}"
-        )
-        self._anim_spin.valueChanged.connect(self._on_anim_duration_changed)
-        anim_row.addWidget(self._anim_spin, stretch=1)
-        sec.addLayout(anim_row)
-
         # i289: 項目削除確認（項目パネルから移動）
         self._confirm_item_delete_cb = QCheckBox("項目削除時に確認する")
         self._confirm_item_delete_cb.setFont(QFont("Meiryo", 8))
@@ -624,12 +596,6 @@ class _SectionsMixin:
         )
         arr_row.addWidget(self._arr_combo, stretch=1)
         sec.addLayout(arr_row)
-
-    def _on_anim_duration_changed(self, value: int):
-        """アニメーション時間変更時: 全セクションへ即時反映 + 保存。"""
-        for cs in self._collapsible_map.values():
-            cs.set_anim_duration(value)
-        self.setting_changed.emit("collapse_anim_ms", value)
 
     @staticmethod
     def _angle_to_preset_idx(angle: float) -> int:

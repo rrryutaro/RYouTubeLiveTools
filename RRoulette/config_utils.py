@@ -46,33 +46,27 @@ def _acquire_instance_number(max_instances: int = 9) -> int:
 
 INSTANCE_NUM: int = _acquire_instance_number()
 
-# ─── インスタンスごとのファイル名 ─────────────────────────────────────
-# 1個目は従来ファイル名を維持（既存環境との互換性）
-# 2個目以降はインスタンス番号のサフィックスを付与
-if INSTANCE_NUM == 1:
-    CONFIG_FILE   = os.path.join(BASE_DIR, "roulette_settings.json")
-else:
-    CONFIG_FILE   = os.path.join(BASE_DIR, f"roulette_settings_{INSTANCE_NUM}.json")
+# ─── 設定ファイル名 ──────────────────────────────────────────────────
+# i463: 単一起動前提のためインスタンス番号によるファイル分岐を廃止する。
+# 常に固定ファイル名を使用する。
+CONFIG_FILE = os.path.join(BASE_DIR, "roulette_settings.json")
 
 # ─── エクスポート保存先 ───────────────────────────────────────────────
 # Python/EXE共通で BASE_DIR（dist/）を使う
 EXPORT_DIR = BASE_DIR
 
 # ─── 自動保存ログファイル ──────────────────────────────────────────────
-if INSTANCE_NUM == 1:
-    AUTO_LOG_FILE = os.path.join(EXPORT_DIR, "roulette_autosave_log.json")
-else:
-    AUTO_LOG_FILE = os.path.join(EXPORT_DIR, f"roulette_autosave_log_{INSTANCE_NUM}.json")
+# i463: 単一起動前提のため固定名を使用する。
+AUTO_LOG_FILE = os.path.join(EXPORT_DIR, "roulette_autosave_log.json")
 
 # ─── レガシー設定ファイルの1回移行 ────────────────────────────────────
 # Python実行時の旧保存先（RRoulette/roulette_settings.json）が存在し、
 # 新保存先（dist/roulette_settings.json）がまだない場合のみ1回だけ移行する。
 # 新保存先が既に存在する場合はレガシーファイルを無視する。
 # geometry 系キーは環境依存で壊れている可能性があるため移行しない。
-# インスタンス1のみ対象（2個目以降は別ファイルを使用するため移行不要）。
 _LEGACY_GEO_KEYS = ("geometry", "item_list_float_geo", "cfg_panel_float_geo")
 
-if not getattr(sys, "frozen", False) and INSTANCE_NUM == 1:
+if not getattr(sys, "frozen", False):
     _legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "roulette_settings.json")
     if os.path.exists(_legacy) and not os.path.exists(CONFIG_FILE):
         try:

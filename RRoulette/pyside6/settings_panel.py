@@ -564,22 +564,14 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             self._replay_indicator_cb.blockSignals(True)
             self._replay_indicator_cb.setChecked(value)
             self._replay_indicator_cb.blockSignals(False)
-        elif key == "grip_visible":
-            self._grip_visible_cb.blockSignals(True)
-            self._grip_visible_cb.setChecked(value)
-            self._grip_visible_cb.blockSignals(False)
-        elif key == "ctrl_box_visible":
-            self._ctrl_box_visible_cb.blockSignals(True)
-            self._ctrl_box_visible_cb.setChecked(value)
-            self._ctrl_box_visible_cb.blockSignals(False)
         elif key == "float_win_show_instance":
             self._instance_label_cb.blockSignals(True)
             self._instance_label_cb.setChecked(value)
             self._instance_label_cb.blockSignals(False)
         elif key == "settings_panel_float":
-            self._float_panel_cb.blockSignals(True)
-            self._float_panel_cb.setChecked(value)
-            self._float_panel_cb.blockSignals(False)
+            self._settings_float_btn.blockSignals(True)
+            self._settings_float_btn.setChecked(value)
+            self._settings_float_btn.blockSignals(False)
         elif key == "always_on_top":
             self._aot_cb.blockSignals(True)
             self._aot_cb.setChecked(value)
@@ -695,8 +687,6 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._window_transparent_cb.setStyleSheet(cb_style)
         self._roulette_transparent_cb.setStyleSheet(cb_style)
         self._aot_cb.setStyleSheet(cb_style)
-        self._grip_visible_cb.setStyleSheet(cb_style)
-        self._ctrl_box_visible_cb.setStyleSheet(cb_style)
         self._instance_label_cb.setStyleSheet(cb_style)
         self._float_panel_cb.setStyleSheet(cb_style)
         self._sound_tick_cb.setStyleSheet(cb_style)

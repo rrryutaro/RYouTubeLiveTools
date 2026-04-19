@@ -146,8 +146,8 @@ class PanelGeometryMixin:
         bar_h = PANEL_BAR_HEIGHT  # ドラッグバーの高さ (パネルはこの下から配置)
         panel_top = bar_h + 4  # パネル配置の上端 y 座標
 
-        # ManagePanel: 左上（i348: 高さを増やしスクロール込みで十分な初期サイズに）
-        mp_w, mp_h = 260, 320
+        # ManagePanel: 左上（i465: ログ表示項目追加で高さを確保）
+        mp_w, mp_h = 260, 460
         mp_x = 12
         mp_y = panel_top
 
@@ -214,6 +214,15 @@ class PanelGeometryMixin:
     def _restore_all_panel_geometries(self):
         """全パネルの位置・表示状態を AppSettings から復元する。"""
         s = self._settings
+
+        # i465: roulette_only_mode が ON のまま終了していた場合は、
+        # 一時的に OFF として通常状態を復元し、その通常状態をスナップショットに
+        # 取り込んだ後で改めて ON を適用する。これにより、OFF 操作で正しく
+        # ON 前の状態へ戻れるようになる。
+        _was_roulette_only = s.roulette_only_mode
+        if _was_roulette_only:
+            s.roulette_only_mode = False
+
         defaults = self._default_panel_positions()
 
         # ItemPanel
@@ -239,15 +248,19 @@ class PanelGeometryMixin:
             self._settings_panel_visible = True
 
         # ManagePanel
+        # i462: 初回起動（位置が未保存）のとき管理パネルを表示し、パネル構成を把握できるようにする
+        _is_first_launch = (s.manage_panel_x is None and s.manage_panel_y is None)
         mp_x = s.manage_panel_x if s.manage_panel_x is not None else defaults["manage"][0]
         mp_y = s.manage_panel_y if s.manage_panel_y is not None else defaults["manage"][1]
         mp_w = s.manage_panel_width if s.manage_panel_width is not None else defaults["manage"][2]
         mp_h = s.manage_panel_height if s.manage_panel_height is not None else defaults["manage"][3]
         self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 240, 220)
-        if s.manage_panel_visible:
+        if s.manage_panel_visible or _is_first_launch:
             self._manage_panel.show()
             self._manage_panel.raise_()
             self._manage_panel_visible = True
+            if _is_first_launch:
+                self._settings.manage_panel_visible = True
 
         # i336: 追加ルーレットの位置復元
         for rid, (rx, ry, rw, rh) in getattr(self, "_roulette_saved_geometries", {}).items():
@@ -258,6 +271,18 @@ class PanelGeometryMixin:
                 ctx.panel, rx, ry, rw, rh,
                 RoulettePanel._MIN_W, RoulettePanel._MIN_H,
             )
+
+        # i465: 管理/項目パネルのフローティング状態を復元
+        if s.manage_panel_float:
+            self._apply_manage_panel_float(True)
+        if s.items_panel_float:
+            self._apply_items_panel_float(True)
+
+        # i465: roulette_only_mode が ON だった場合、通常状態をスナップショットに
+        # 取り込み、改めて ON を適用する（OFF 操作で正しく通常状態へ戻るため）
+        if _was_roulette_only:
+            s.roulette_only_mode = True
+            self._apply_roulette_only_mode(True)
 
         # ManagePanel のチェックボックスを実状態と同期
         self._sync_manage_panel_checks()
@@ -618,8 +643,17 @@ class PanelGeometryMixin:
                 if not preserve_pos:
                     s.window_x = pos.x()
                     s.window_y = pos.y()
-                s.window_width = self.width()
-                s.window_height = self.height()
+                # i464: ルーレット以外非表示中は一時サイズを保存しない
+                # 保存済みの通常サイズを _roulette_only_saved_visibility から使う
+                if getattr(self._settings, "roulette_only_mode", False):
+                    _saved = getattr(self, "_roulette_only_saved_visibility", {})
+                    _normal_size = _saved.get("window_size")
+                    if _normal_size:
+                        s.window_width = _normal_size.width()
+                        s.window_height = _normal_size.height()
+                else:
+                    s.window_width = self.width()
+                    s.window_height = self.height()
 
         # ルーレットパネル
         rp = self._active_panel
@@ -685,7 +719,12 @@ class PanelGeometryMixin:
             s.settings_panel_height = sp.height()
             s.settings_panel_x = sp.x()
             s.settings_panel_y = sp.y()
-        s.settings_panel_visible = self._settings_panel.isVisible()
+        # i465: roulette_only_mode 中は settings も非表示のためスナップショットから取得
+        if getattr(self._settings, "roulette_only_mode", False):
+            _saved = getattr(self, "_roulette_only_saved_visibility", {})
+            s.settings_panel_visible = _saved.get("settings", self._settings_panel.isVisible())
+        else:
+            s.settings_panel_visible = self._settings_panel.isVisible()
 
         # ItemPanel
         if self._item_panel.isVisible():
@@ -694,7 +733,13 @@ class PanelGeometryMixin:
             s.items_panel_y = ip.y()
             s.items_panel_width = ip.width()
             s.items_panel_height = ip.height()
-        s.items_panel_visible = self._item_panel.isVisible()
+        # i465: roulette_only_mode 中はパネルが非表示のため、スナップショットの
+        # visible 値（ON 前の通常状態）を使って保存する
+        if getattr(self._settings, "roulette_only_mode", False):
+            _saved = getattr(self, "_roulette_only_saved_visibility", {})
+            s.items_panel_visible = _saved.get("item", self._item_panel.isVisible())
+        else:
+            s.items_panel_visible = self._item_panel.isVisible()
 
         # ManagePanel
         if self._manage_panel.isVisible():
@@ -703,7 +748,12 @@ class PanelGeometryMixin:
             s.manage_panel_y = mp.y()
             s.manage_panel_width = mp.width()
             s.manage_panel_height = mp.height()
-        s.manage_panel_visible = self._manage_panel.isVisible()
+        # i465: roulette_only_mode 中は manage も非表示のためスナップショットから取得
+        if getattr(self._settings, "roulette_only_mode", False):
+            _saved = getattr(self, "_roulette_only_saved_visibility", {})
+            s.manage_panel_visible = _saved.get("manage", self._manage_panel.isVisible())
+        else:
+            s.manage_panel_visible = self._manage_panel.isVisible()
 
         self._save_config()
 
@@ -806,6 +856,10 @@ class PanelGeometryMixin:
         if not getattr(self, "_init_complete", False):
             return
         if self.isMinimized():
+            return
+        # i464: ルーレット以外非表示中はリサイズで一時サイズを上書きしない
+        if getattr(self._settings, "roulette_only_mode", False):
+            self._panel_save_timer.start()
             return
         s = self._settings
         s.window_width = self.width()

@@ -49,6 +49,34 @@ class _SpaceSpinFilter(QObject):
         return False
 
 
+class _TabRouletteFilter(QObject):
+    """i462: Tab キーでルーレット以外非表示を切り替える QApplication レベルイベントフィルタ。
+
+    テキスト入力系ウィジェットにフォーカスがある場合は素通しし、
+    それ以外は _toggle_roulette_only_mode() を呼んでイベントを消費する。
+    """
+
+    _TEXT_INPUT_TYPES = (
+        QLineEdit, QPlainTextEdit, QTextEdit,
+        QSpinBox, QDoubleSpinBox,
+    )
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._mw = main_window
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.KeyPress
+                and event.key() == Qt.Key.Key_Tab
+                and not event.isAutoRepeat()):
+            fw = QApplication.focusWidget()
+            if isinstance(fw, self._TEXT_INPUT_TYPES):
+                return False  # テキスト入力系はスルー
+            self._mw._toggle_roulette_only_mode()
+            return True  # イベント消費
+        return False
+
+
 class _MainWindowDragBar(QWidget):
     """メインウィンドウ上部のドラッグバー。ドラッグでウィンドウ全体を移動する。"""
 

@@ -86,7 +86,10 @@ class SettingsDispatchMixin:
             _, w, h = SIZE_PROFILES[idx]
             self._wheel_base_w = w
             self._wheel_base_h = h
-            self.resize(w, h)
+            # i467: アクティブなルーレットパネルを即時リサイズする。
+            # roulette_only_mode 中はパネルがウィンドウ全体を占めているため除外。
+            if not self._settings.roulette_only_mode:
+                rp.resize(w, h)
         elif key == "result_close_mode":
             rp.result_overlay.set_close_mode(value)
         elif key == "result_hold_sec":

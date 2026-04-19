@@ -432,6 +432,35 @@ class RouletteLifecycleMixin:
         """ManagePanel の一括適用チェックボックスから: _apply_to_all フラグを更新する（i347）。"""
         self._apply_to_all = value
 
+    def _on_roulette_only_hide_changed(self, key: str, value: bool) -> None:
+        """管理パネルのルーレット以外非表示時個別設定変更ハンドラ（i463/i464/i466）。"""
+        _key_map = {
+            "selection_handle": "roulette_only_show_selection_handle",
+            "title_plate":      "roulette_only_show_title_plate",
+            "graph_btn":        "roulette_only_show_graph_btn",
+            "grip":             "roulette_only_show_grip",
+            "log":              "roulette_only_show_log",
+        }
+        attr = _key_map.get(key)
+        if not attr:
+            return
+        setattr(self._settings, attr, value)
+        self._save_config()
+        # i466: roulette_only_mode 中にチェックボックスが変更された場合は即時反映する
+        if not self._settings.roulette_only_mode:
+            return
+        if key == "log":
+            # i469: _roulette_only_log_show を更新して _refresh_log_overlay に委ねる。
+            # visible_eff の計算は _refresh_log_overlay 内で一括判定する。
+            # settings panel の log OFF は _log_visible=False で自動的に優先される。
+            for rid in self._manager.ids():
+                ctx = self._manager.get(rid)
+                if ctx is None or not ctx.panel.isVisible():
+                    continue
+                panel = ctx.panel
+                panel._roulette_only_log_show = value
+                panel._refresh_log_overlay()
+
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。
 
