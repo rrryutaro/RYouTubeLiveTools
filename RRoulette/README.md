@@ -150,7 +150,8 @@
 ### Python で起動する場合
 
 ```bash
-python rroulette_pyside6.py
+cd RRoulette/pyside6
+python run_proto.py
 ```
 
 ### 実行ファイル（exe）を使う場合

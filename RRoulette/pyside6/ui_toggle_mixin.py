@@ -366,11 +366,49 @@ class UIToggleMixin:
         self._apply_window_flags()
         if was_visible:
             self.show()  # setWindowFlags 後に再表示が必要
+        # i471: floating 中の全パネルにも always_on_top を同期する
+        self._reapply_floating_panel_flags()
         # クイック設定バーのチェックボックスを同期
         self._settings_panel.update_setting(
             "always_on_top", self._settings.always_on_top
         )
         self._save_config()
+
+    def _floating_panel_flags(self):
+        """独立化パネルに適用する windowFlags を返す。always_on_top と同期する。
+
+        i471: メインウィンドウが WindowStaysOnTopHint を持つ場合、
+        独立化パネルも同じ hint を持たないとメインウィンドウの裏に隠れる。
+        """
+        flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+        if self._settings.always_on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        return flags
+
+    def _reapply_floating_panel_flags(self):
+        """floating 中の全パネルの windowFlags を always_on_top と同期する。
+
+        i471: _toggle_always_on_top 時に呼び出す。
+        hide → setWindowFlags → show の手順を踏むことで flags が確実に反映される。
+        """
+        flags = self._floating_panel_flags()
+        for panel in (self._manage_panel, self._item_panel):
+            if getattr(panel, '_floating', False):
+                was_vis = panel.isVisible()
+                panel.hide()
+                panel.setWindowFlags(flags)
+                if was_vis:
+                    panel.show()
+                    panel.raise_()
+        # 設定パネルは _settings_panel_visible で可視状態を管理する
+        sp = self._settings_panel
+        if getattr(sp, '_floating', False):
+            was_vis = self._settings_panel_visible
+            sp.hide()
+            sp.setWindowFlags(flags)
+            if was_vis:
+                sp.show()
+                sp.raise_()
 
     def _toggle_grip_visible(self):
         """リサイズグリップの表示/非表示を切り替える。"""
@@ -449,12 +487,10 @@ class UIToggleMixin:
 
         if floating:
             mp.setParent(None)
-            # i469: Tool は OS レベルでメインウィンドウに owned され z-order が下になる。
-            # Window にして真の独立トップレベルウィンドウにする。
-            mp.setWindowFlags(
-                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            )
+            # i471: always_on_top と同期した flags を適用する（WindowStaysOnTopHint を含む）
+            mp.setWindowFlags(self._floating_panel_flags())
             mp._floating = True
+            mp.setWindowTitle("RRoulette - 管理パネル")
             mp.setGeometry(cur_x, cur_y, cur_w, cur_h)
         else:
             central = self.centralWidget()
@@ -504,11 +540,10 @@ class UIToggleMixin:
 
         if floating:
             ip.setParent(None)
-            # i469: Tool → Window（manage パネルと同様の理由）
-            ip.setWindowFlags(
-                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            )
+            # i471: always_on_top と同期した flags を適用する
+            ip.setWindowFlags(self._floating_panel_flags())
             ip._floating = True
+            ip.setWindowTitle("RRoulette - 項目パネル")
             ip.setGeometry(cur_x, cur_y, cur_w, cur_h)
         else:
             central = self.centralWidget()
@@ -561,11 +596,10 @@ class UIToggleMixin:
         if floating:
             # フローティング化: 親から切り離し
             sp.setParent(None)
-            # i469: Tool → Window（manage パネルと同様の理由）
-            sp.setWindowFlags(
-                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            )
+            # i471: always_on_top と同期した flags を適用する
+            sp.setWindowFlags(self._floating_panel_flags())
             sp._floating = True
+            sp.setWindowTitle("RRoulette - 設定パネル")
             # スクリーン座標で配置
             sp.setGeometry(cur_x, cur_y, cur_w, cur_h)
         else:

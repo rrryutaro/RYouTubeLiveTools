@@ -610,17 +610,16 @@ class RoulettePanel(QFrame):
     def _refresh_log_overlay(self):
         """WheelWidget のログ状態をオーバーレイに反映する。"""
         w = self._wheel
-        # i469: roulette_only_mode 中は _roulette_only_log_show も考慮して可視性を決定。
-        # settings panel で log OFF → _log_visible=False → 常に非表示（優先）。
-        # roulette_only_mode 中かつ管理パネルでログ OFF → visible_eff=False。
-        visible_eff = w._log_visible and (
-            not self._roulette_only_active or self._roulette_only_log_show
-        )
+        # i471: roulette_only 状態を WheelWidget に同期してから log_effective_visible() を使う。
+        # WheelWidget.paintEvent (log_on_top=False) と _LogOverlay (log_on_top=True) の
+        # 両経路が同じ最終条件を参照するため、条件の一元化が成立する。
+        w._roulette_only_active = self._roulette_only_active
+        w._roulette_only_log_show = self._roulette_only_log_show
         self._log_overlay.refresh(
             entries=w.get_log_entries(),  # i393: フィルタ済み (ts, text) リスト
             timestamp=w._log_timestamp,
             design=w._design,
-            visible=visible_eff,
+            visible=w.log_effective_visible(),
             on_top=w._log_on_top,
         )
 

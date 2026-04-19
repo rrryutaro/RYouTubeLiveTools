@@ -70,6 +70,9 @@ class WheelWidget(QWidget):
         self._log_timestamp: bool = False  # タイムスタンプ表示
         self._log_box_border: bool = False # 枠線表示
         self._log_on_top: bool = False     # 前面表示
+        # i471: roulette_only_mode 中のログ抑制状態（RoulettePanel._refresh_log_overlay から同期）
+        self._roulette_only_active: bool = False
+        self._roulette_only_log_show: bool = True
         self._current_pattern: str = ""    # 現在選択中パターン（表示用）
         self._current_pattern_id: str = "" # i407: 現在選択中パターンの UUID（フィルタ用）
         self._log_all_patterns: bool = False  # True=全パターン表示
@@ -212,6 +215,19 @@ class WheelWidget(QWidget):
         self._log_on_top = enabled
         self.update()
         self.log_changed.emit()  # i343: RoulettePanel の前面オーバーレイに通知
+
+    def log_effective_visible(self) -> bool:
+        """ログを今表示すべきか最終判定して返す。
+
+        i471: log_on_top の有無に関わらず共通の最終条件を一箇所で計算する。
+        - _log_visible=False なら常に非表示（設定パネル OFF が最優先）
+        - roulette_only_mode 中かつ管理パネル側でログ OFF なら非表示
+        _roulette_only_active / _roulette_only_log_show は
+        RoulettePanel._refresh_log_overlay から同期される。
+        """
+        return self._log_visible and (
+            not self._roulette_only_active or self._roulette_only_log_show
+        )
 
     def get_log_entries(self) -> list[tuple[str, str]]:
         """ログ履歴を返す（新しい順の (時刻, テキスト) リスト）。
@@ -454,7 +470,8 @@ class WheelWidget(QWidget):
         # --- ログオーバーレイ（背景モード: セグメントより後ろに描画）---
         # i348: log_on_top OFF のとき、セグメントより先に描画することでセグメントの後ろに見える。
         # log_on_top ON のときは _LogOverlay widget（RoulettePanel の子）が担当する。
-        if self._log_visible and not self._log_on_top and self.get_log_entries():
+        # i471: log_effective_visible() で両描画経路の最終条件を統一する。
+        if self.log_effective_visible() and not self._log_on_top and self.get_log_entries():
             self._draw_log_overlay(painter, d)
 
         # --- セグメント描画 ---
