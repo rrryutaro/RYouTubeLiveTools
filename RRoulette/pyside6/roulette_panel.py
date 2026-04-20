@@ -26,7 +26,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QFontMetrics
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from app_constants import WHEEL_OUTER_MARGIN, MIN_R, POINTER_OVERHANG
-from bridge import DesignSettings
+from design_models import DesignSettings
 from wheel_widget import WheelWidget
 from spin_controller import SpinController
 from result_overlay import ResultOverlay

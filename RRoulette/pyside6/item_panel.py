@@ -23,7 +23,7 @@ from item_text_helpers import serialize_items_text, parse_items_text, enforce_it
 from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu
 from settings_panel import _calc_item_probs, _populate_weight_combo
 
-from bridge import DesignSettings
+from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
 

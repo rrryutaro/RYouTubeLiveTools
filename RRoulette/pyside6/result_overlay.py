@@ -26,7 +26,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QRectF
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 
-from bridge import DesignSettings
+from design_models import DesignSettings
 
 # close_mode 定数
 CLOSE_CLICK = 0    # クリックで閉じる

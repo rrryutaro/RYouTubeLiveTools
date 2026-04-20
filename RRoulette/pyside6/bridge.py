@@ -4,27 +4,20 @@ bridge.py — 既存ロジック橋渡し層（互換層）
 既存 RRoulette のロジック資産（constants, design_settings, geometry,
 layout_search, config_utils）と PySide6 UI 層を接続する。
 
-責務:
-  - sys.path を通して既存モジュールを import 可能にする
-  - layout_search の tkinter.font 依存を QtFontAdapter でモンキーパッチ
-  - デザイン設定クラス / geometry 関数 / レイアウト検索の re-export
-  - 設定読み込みラッパー（load_app_settings / load_design）
-  - 後方互換のための定数 re-export（純定数は app_constants.py を優先）
+bridge に残る主な責務:
+  - layout_search の tkinter.font モンキーパッチ（PySide6 互換化）
+  - build_all_sector_layouts / LayoutResult / LinePlacement（monkey-patch 後に有効）
+  - geometry 関数の re-export（SafeSector / polar_to_canvas 等）
+  - load_app_settings（AppSettings 構築ラッパー）
+  - 後方互換のための各種 re-export
 
 切り出し済みの専用モジュール:
   - app_constants.py   — 純定数（SIZE_PROFILES / MIN_W / ITEM_MAX_* 等）
+  - design_models.py   — デザイン設定クラス / プリセット / load_design
   - config_io.py       — load_config / save_config
   - pattern_store.py   — パターン管理純ロジック
   - item_data_io.py    — 項目データ I/O（load_item_entries 等）
   - segment_builder.py — セグメント構築純ロジック
-
-bridge に残る主な責務:
-  - layout_search の tkinter.font モンキーパッチ（PySide6 互換化）
-  - DesignSettings / DesignPresetManager / design_settings 系の re-export
-  - geometry 関数の re-export（SafeSector / polar_to_canvas 等）
-  - build_all_sector_layouts / LayoutResult（monkey-patch 後に有効）
-  - load_app_settings / load_design（AppSettings 構築ラッパー）
-  - 後方互換のための純定数 re-export（SIZE_PROFILES 等）
 
 データの流れ（2系統）:
 
@@ -135,11 +128,5 @@ def load_app_settings(config: dict | None = None) -> AppSettings:
         config = load_config()
     return AppSettings.from_config(config)
 
-
-def load_design(config: dict | None = None) -> DesignSettings:
-    """設定辞書からデザイン設定を復元する。"""
-    if config is None:
-        config = load_config()
-    return DesignSettings.from_dict(config.get("design", {}))
 
 

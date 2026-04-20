@@ -22,7 +22,7 @@ from item_text_helpers import serialize_items_text, parse_items_text, enforce_it
 from panel_widgets import _SectionHeader, CollapsibleSection, _PlaceholderSection
 
 from app_constants import ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES
-from bridge import DesignSettings
+from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
 from dark_theme import dark_checkbox_style, dark_spinbox_style, get_header_colors

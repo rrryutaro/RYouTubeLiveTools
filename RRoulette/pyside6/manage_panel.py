@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app_constants import VERSION
-from bridge import DesignSettings
+from design_models import DesignSettings
 from panel_widgets import _PanelDragBar, install_panel_context_menu
 
 

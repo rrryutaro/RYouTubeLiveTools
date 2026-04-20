@@ -22,7 +22,7 @@ from app_constants import (
     SIDEBAR_W, SIZE_PROFILES,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
 )
-from bridge import DesignSettings
+from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME

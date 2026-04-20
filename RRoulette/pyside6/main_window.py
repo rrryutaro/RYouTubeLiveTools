@@ -45,11 +45,12 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
 import os
 
 from app_constants import SIZE_PROFILES, MIN_W, MIN_H, VERSION
-from bridge import (
+from design_models import (
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
-    DesignPresetManager,
-    load_config, load_design, load_app_settings,
+    DesignPresetManager, load_design,
 )
+from config_io import load_config
+from bridge import load_app_settings
 from segment_builder import build_segments_from_config
 from item_data_io import load_all_item_entries, save_item_entries
 from pattern_store import (

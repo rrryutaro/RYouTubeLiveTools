@@ -32,8 +32,8 @@ from app_constants import (
     DONUT_DRAW_RADIUS, DONUT_HIT_RADIUS,
     Segment,
 )
+from design_models import DesignSettings
 from bridge import (
-    DesignSettings,
     build_all_sector_layouts, LayoutResult,
 )
 

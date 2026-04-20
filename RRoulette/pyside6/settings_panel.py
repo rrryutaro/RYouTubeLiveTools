@@ -47,7 +47,7 @@ from app_constants import (
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
     ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
 )
-from bridge import DesignSettings
+from design_models import DesignSettings
 
 from app_settings import AppSettings
 from item_entry import ItemEntry
