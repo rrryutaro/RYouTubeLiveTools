@@ -77,6 +77,31 @@ class _TabRouletteFilter(QObject):
         return False
 
 
+class _IdleResetFilter(QObject):
+    """i485: アイドル検出用 QApplication レベルイベントフィルタ。
+
+    マウス・キー・ホイール操作を検知して on_activity コールバックを呼ぶ。
+    これによりアイドルタイマーがリセットされ、自動全面非表示が延期される。
+    """
+
+    _ACTIVITY_TYPES = frozenset({
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.MouseButtonRelease,
+        QEvent.Type.MouseMove,
+        QEvent.Type.KeyPress,
+        QEvent.Type.Wheel,
+    })
+
+    def __init__(self, on_activity, parent=None):
+        super().__init__(parent)
+        self._on_activity = on_activity
+
+    def eventFilter(self, obj, event):
+        if event.type() in self._ACTIVITY_TYPES:
+            self._on_activity()
+        return False
+
+
 class _MainWindowDragBar(QWidget):
     """メインウィンドウ上部のドラッグバー。ドラッグでウィンドウ全体を移動する。"""
 

@@ -117,6 +117,12 @@ class AppSettings:
     replay_max_count: int = 5        # リプレイ保存上限
     replay_show_indicator: bool = True  # リプレイ中インジケーター表示
 
+    # 全面非表示 (i485):
+    auto_hide_enabled: bool = True   # 自動全面非表示 ON/OFF (デフォルト: ON)
+    auto_hide_seconds: int = 10      # 自動非表示までの秒数 (デフォルト: 10秒)
+    auto_hide_fade_enabled: bool = True  # 自動非表示時フェードアウト ON/OFF (デフォルト: ON)
+    auto_hide_fade_seconds: float = 0.6  # フェードアウト時間（秒, デフォルト: 0.6秒）
+
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
     #    対応: MainWindow
@@ -279,6 +285,10 @@ class AppSettings:
             confirm_item_delete=config.get("confirm_item_delete", True),
             replay_max_count=config.get("replay_max_count", 5),
             replay_show_indicator=config.get("replay_show_indicator", True),
+            auto_hide_enabled=config.get("auto_hide_enabled", True),
+            auto_hide_seconds=config.get("auto_hide_seconds", 10),
+            auto_hide_fade_enabled=config.get("auto_hide_fade_enabled", True),
+            auto_hide_fade_seconds=float(config.get("auto_hide_fade_seconds", 0.6)),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
@@ -368,6 +378,10 @@ class AppSettings:
             "confirm_item_delete": self.confirm_item_delete,
             "replay_max_count": self.replay_max_count,
             "replay_show_indicator": self.replay_show_indicator,
+            "auto_hide_enabled": self.auto_hide_enabled,
+            "auto_hide_seconds": self.auto_hide_seconds,
+            "auto_hide_fade_enabled": self.auto_hide_fade_enabled,
+            "auto_hide_fade_seconds": self.auto_hide_fade_seconds,
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
             "item_panel_display_mode": self.item_panel_display_mode,

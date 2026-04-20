@@ -19,7 +19,7 @@ i448: main_window.py から分離。
   class MainWindow(UIToggleMixin, PackageIOMixin, SettingsIOMixin, ..., QMainWindow)
 """
 
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QPropertyAnimation, QParallelAnimationGroup
 
 
 class UIToggleMixin:
@@ -644,6 +644,152 @@ class UIToggleMixin:
         その表示/非表示を制御する。
         """
         self._settings_panel.set_spin_section_visible(visible)
+
+    # ================================================================
+    #  全面非表示 (i485)
+    # ================================================================
+
+    def _hide_all(self):
+        """RRoulette 全体を全面非表示にする（手動 Esc・自動アイドル共通）。
+
+        メインウィンドウを最小化し（タスクバーに残る）、フローティング中の
+        パネルは hide する。再アクティブ化（showNormal / changeEvent）で復元。
+        フェード完了後から呼ばれる場合は opacity はすでに 0 になっているが、
+        minimize/hide 後に復元時に 1.0 に戻す。
+        """
+        if getattr(self, '_is_all_hidden', False):
+            return
+        # フェード中フラグをクリア（フェード完了後の呼び出しに備える）
+        self._auto_hide_fading = False
+        # フローティングパネルの可視状態を保存して hide
+        saved = {}
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False) and panel.isVisible():
+                saved[id(panel)] = panel
+                panel.hide()
+        self._all_hidden_saved_panels = saved
+        self._is_all_hidden = True
+        # アイドルタイマーを停止
+        if hasattr(self, '_idle_timer'):
+            self._idle_timer.stop()
+        # メインウィンドウを最小化（タスクバー・Alt+Tab から復帰可能）
+        self.showMinimized()
+
+    def _restore_all(self):
+        """全面非表示を復元する（changeEvent での WindowStateChange 復帰時に呼ぶ）。
+
+        メインウィンドウは既に showNormal になった後に呼ばれる前提。
+        hide していたフローティングパネルを再表示し、opacity を 1.0 に戻す。
+        """
+        if not getattr(self, '_is_all_hidden', False):
+            return
+        self._is_all_hidden = False
+        # opacity を確実に 1.0 に戻す（フェードアウト後に残留している場合に備える）
+        self.setWindowOpacity(1.0)
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False):
+                panel.setWindowOpacity(1.0)
+        # フローティングパネル復元
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if id(panel) in getattr(self, '_all_hidden_saved_panels', {}):
+                panel.show()
+                panel.raise_()
+        self._all_hidden_saved_panels = {}
+        # アイドルタイマー再開
+        self._reset_idle_timer()
+
+    def _reset_idle_timer(self):
+        """アイドルタイマーをリセットする（ユーザー操作・復元時に呼ぶ）。
+
+        フェード中であれば中断して opacity を復元する。
+        全面非表示中・auto_hide_enabled=False・seconds<=0 のときはタイマー停止のみ。
+        """
+        if not hasattr(self, '_idle_timer'):
+            return
+        if getattr(self, '_is_all_hidden', False):
+            return
+        # フェード中なら中断して opacity を元に戻す
+        if getattr(self, '_auto_hide_fading', False):
+            self._cancel_auto_hide_fade()
+        if self._settings.auto_hide_enabled and self._settings.auto_hide_seconds > 0:
+            self._idle_timer.start(self._settings.auto_hide_seconds * 1000)
+        else:
+            self._idle_timer.stop()
+
+    def _start_auto_hide_fade(self):
+        """自動全面非表示のフェードアウトを開始する（アイドルタイマー満了時に呼ぶ）。
+
+        フェード有効時: 200ms かけて全関連ウィンドウをフェードアウト → `_hide_all()`。
+        フェード無効時: 即座に `_hide_all()`。
+        """
+        if getattr(self, '_is_all_hidden', False):
+            return
+        if getattr(self, '_auto_hide_fading', False):
+            return
+
+        if not self._settings.auto_hide_fade_enabled:
+            self._hide_all()
+            return
+
+        # フェード対象: 現在表示中のウィンドウを収集
+        targets = [self]
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False) and panel.isVisible():
+                targets.append(panel)
+
+        self._auto_hide_fading = True
+        # フェード時間: 設定値（秒）をミリ秒に変換。範囲は 100〜2000ms にクランプ
+        fade_ms = int(max(0.1, min(10.0, self._settings.auto_hide_fade_seconds)) * 1000)
+        group = QParallelAnimationGroup(self)
+        for w in targets:
+            anim = QPropertyAnimation(w, b"windowOpacity", group)
+            anim.setDuration(fade_ms)
+            anim.setStartValue(1.0)
+            anim.setEndValue(0.0)
+        group.finished.connect(self._on_auto_hide_fade_done)
+        self._auto_hide_anim_group = group  # GC 防止のため参照保持
+        group.start()
+
+    def _on_auto_hide_fade_done(self):
+        """フェード完了コールバック — 全面非表示処理へ移行する。"""
+        self._auto_hide_anim_group = None
+        # 二重呼び出し防止（_hide_all 内でフラグをクリア）
+        self._hide_all()
+
+    def _cancel_auto_hide_fade(self):
+        """フェード中断 — アニメーションを止めて opacity を 1.0 に戻す。"""
+        self._auto_hide_fading = False
+        group = getattr(self, '_auto_hide_anim_group', None)
+        if group is not None:
+            group.stop()
+            self._auto_hide_anim_group = None
+        # 全ウィンドウの opacity を確実にリセット
+        self.setWindowOpacity(1.0)
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False):
+                panel.setWindowOpacity(1.0)
+
+    def _on_auto_hide_fade_changed(self, enabled: bool):
+        """管理パネルのフェードアウト ON/OFF 変更を受け取る。"""
+        self._settings.auto_hide_fade_enabled = enabled
+        self._save_config()
+
+    def _on_auto_hide_fade_seconds_changed(self, seconds: float):
+        """管理パネルのフェードアウト時間変更を受け取る。"""
+        self._settings.auto_hide_fade_seconds = max(0.1, min(10.0, seconds))
+        self._save_config()
+
+    def _on_auto_hide_enabled_changed(self, enabled: bool):
+        """管理パネルの自動全面非表示 ON/OFF 変更を受け取る。"""
+        self._settings.auto_hide_enabled = enabled
+        self._reset_idle_timer()
+        self._save_config()
+
+    def _on_auto_hide_seconds_changed(self, seconds: int):
+        """管理パネルの自動全面非表示秒数変更を受け取る。"""
+        self._settings.auto_hide_seconds = max(1, seconds)
+        self._reset_idle_timer()
+        self._save_config()
 
     def _toggle_settings_panel(self):
         if self._settings_panel_visible:

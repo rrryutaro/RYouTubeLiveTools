@@ -91,7 +91,7 @@ from window_frame_mixin import WindowFrameMixin
 from action_dispatch_mixin import ActionDispatchMixin
 from save_load_mixin import SaveLoadMixin
 from accessor_helper_mixin import AccessorHelperMixin
-from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar
+from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar, _IdleResetFilter
 
 
 
@@ -416,6 +416,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             roulette_only_show_grip=self._settings.roulette_only_show_grip,
             roulette_only_show_log=self._settings.roulette_only_show_log,
             manage_panel_float=self._settings.manage_panel_float,
+            auto_hide_enabled=self._settings.auto_hide_enabled,
+            auto_hide_seconds=self._settings.auto_hide_seconds,
+            auto_hide_fade_enabled=self._settings.auto_hide_fade_enabled,
+            auto_hide_fade_seconds=self._settings.auto_hide_fade_seconds,
             parent=central,
         )
 
@@ -476,6 +480,18 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.manage_panel_float_changed.connect(  # i465
             self._toggle_manage_panel_float
         )
+        self._manage_panel.auto_hide_enabled_changed.connect(  # i485
+            self._on_auto_hide_enabled_changed
+        )
+        self._manage_panel.auto_hide_seconds_changed.connect(  # i485
+            self._on_auto_hide_seconds_changed
+        )
+        self._manage_panel.auto_hide_fade_changed.connect(  # i486
+            self._on_auto_hide_fade_changed
+        )
+        self._manage_panel.auto_hide_fade_seconds_changed.connect(  # i487
+            self._on_auto_hide_fade_seconds_changed
+        )
 
     def _connect_panel_geometry_signals(self):
         """全パネルの geometry_changed と panel_save_timer を接続する。
@@ -526,6 +542,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._tab_roulette_filter = _TabRouletteFilter(self)
         QApplication.instance().installEventFilter(self._tab_roulette_filter)
 
+        # i485: アイドル検出フィルタ（全ユーザー操作でアイドルタイマーをリセット）
+        self._idle_reset_filter = _IdleResetFilter(self._reset_idle_timer)
+        QApplication.instance().installEventFilter(self._idle_reset_filter)
+
         # i346: 設定適用先（False = 選択中のみ / True = 全ルーレット）
         self._apply_to_all: bool = False
 
@@ -554,6 +574,23 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # --- コンテキストメニュー ---
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # --- 全面非表示状態 (i485) ---
+        self._is_all_hidden = False
+        self._all_hidden_saved_panels = {}
+
+        # --- 自動全面非表示タイマー (i485) ---
+        # i486: フェードアウト状態フラグと参照
+        self._auto_hide_fading = False
+        self._auto_hide_anim_group = None
+
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        # i486: タイマー満了時はフェード経由（フェード無効時は _start_auto_hide_fade が即 _hide_all を呼ぶ）
+        self._idle_timer.timeout.connect(self._start_auto_hide_fade)
+        # _idle_reset_filter は _init_input_filters で既にインストール済みのため
+        # ここでタイマーを開始する
+        self._reset_idle_timer()
 
         # --- OS テーマ変更の定期監視 (system モード用) ---
         self._last_os_theme = resolve_theme_mode("system")

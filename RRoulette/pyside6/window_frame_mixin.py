@@ -136,10 +136,12 @@ class WindowFrameMixin:
         )
 
         if event.key() == Qt.Key.Key_Escape:
-            # テキスト編集モード中ならキャンセル（ESC でのアプリ終了は廃止）
+            # テキスト編集モード中ならキャンセル、それ以外は全面非表示 (i485)
             if (hasattr(self, '_item_panel')
                     and self._item_panel.is_text_edit_mode()):
                 self._item_panel.cancel_text_edit()
+            else:
+                self._hide_all()
         elif event.key() == Qt.Key.Key_F1:
             self._toggle_manage_panel()
         elif event.key() == Qt.Key.Key_F2:
@@ -183,6 +185,15 @@ class WindowFrameMixin:
             super().keyPressEvent(event)
             return
         super().keyPressEvent(event)
+
+    def changeEvent(self, event):
+        """i485: 最小化解除時に全面非表示を復元する。"""
+        from PySide6.QtCore import QEvent
+        if (event.type() == QEvent.Type.WindowStateChange
+                and not self.isMinimized()
+                and getattr(self, '_is_all_hidden', False)):
+            self._restore_all()
+        super().changeEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

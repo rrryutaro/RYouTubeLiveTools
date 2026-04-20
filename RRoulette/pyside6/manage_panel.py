@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QCheckBox, QScrollArea, QWidget,
-    QSizePolicy,
+    QSizePolicy, QSpinBox, QDoubleSpinBox,
 )
 
 from bridge import DesignSettings, VERSION
@@ -49,6 +49,10 @@ class ManagePanel(QFrame):
     roulette_pkg_import_requested = Signal()  # i419: ルーレット package インポート
     roulette_only_hide_changed = Signal(str, bool)  # i463: key, value
     manage_panel_float_changed = Signal(bool)        # i465: 管理パネル独立化
+    auto_hide_enabled_changed = Signal(bool)         # i485: 自動全面非表示 ON/OFF
+    auto_hide_seconds_changed = Signal(int)          # i485: 自動非表示秒数
+    auto_hide_fade_changed = Signal(bool)            # i486: 自動非表示フェードアウト ON/OFF
+    auto_hide_fade_seconds_changed = Signal(float)   # i487: フェードアウト時間（秒）
 
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
@@ -60,6 +64,10 @@ class ManagePanel(QFrame):
                  roulette_only_show_grip: bool = True,
                  roulette_only_show_log: bool = True,
                  manage_panel_float: bool = False,
+                 auto_hide_enabled: bool = True,
+                 auto_hide_seconds: int = 10,
+                 auto_hide_fade_enabled: bool = True,
+                 auto_hide_fade_seconds: float = 0.6,
                  parent=None):
         super().__init__(parent)
         self._design = design
@@ -315,6 +323,114 @@ class ManagePanel(QFrame):
         self._ro_only_content.setVisible(False)  # デフォルト折りたたみ
         body_layout.addWidget(self._ro_only_content)
 
+        # i485: アプリ設定セクション（折りたたみ式）
+        self._app_settings_toggle_btn = QPushButton("▶ アプリ設定")
+        self._app_settings_toggle_btn.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._app_settings_toggle_btn.setCheckable(True)
+        self._app_settings_toggle_btn.setChecked(False)
+        self._app_settings_toggle_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text};"
+            f"  border: none; text-align: left; padding: 2px 0px;"
+            f"}}"
+            f"QPushButton:hover {{ color: {design.accent}; }}"
+        )
+        self._app_settings_toggle_btn.toggled.connect(self._on_app_settings_toggle)
+        body_layout.addWidget(self._app_settings_toggle_btn)
+
+        self._app_settings_content = QWidget()
+        _app_content_layout = QVBoxLayout(self._app_settings_content)
+        _app_content_layout.setContentsMargins(12, 2, 0, 2)
+        _app_content_layout.setSpacing(6)
+
+        # Esc キー案内ラベル
+        _esc_hint = QLabel("Esc キー: 全面非表示")
+        _esc_hint.setFont(QFont("Meiryo", 8))
+        _esc_hint.setStyleSheet(f"color: {design.text_sub};")
+        _esc_hint.setToolTip("Esc キーを押すと RRoulette 全体を非表示にします\nタスクバーや Alt+Tab で再表示されます")
+        _app_content_layout.addWidget(_esc_hint)
+
+        # 自動全面非表示チェックボックス
+        self._auto_hide_cb = QCheckBox("自動全面非表示")
+        self._auto_hide_cb.setFont(QFont("Meiryo", 9))
+        self._auto_hide_cb.setStyleSheet(f"color: {design.text};")
+        self._auto_hide_cb.setChecked(auto_hide_enabled)
+        self._auto_hide_cb.setToolTip("ON: 無操作が続くと自動で全面非表示にします")
+        self._auto_hide_cb.toggled.connect(self.auto_hide_enabled_changed.emit)
+        _app_content_layout.addWidget(self._auto_hide_cb)
+
+        # 秒数設定行
+        _sec_row = QHBoxLayout()
+        _sec_row.setContentsMargins(0, 0, 0, 0)
+        _sec_row.setSpacing(6)
+        _sec_lbl = QLabel("非表示まで")
+        _sec_lbl.setFont(QFont("Meiryo", 9))
+        _sec_lbl.setStyleSheet(f"color: {design.text};")
+        _sec_row.addWidget(_sec_lbl)
+
+        self._auto_hide_spin = QSpinBox()
+        self._auto_hide_spin.setFont(QFont("Meiryo", 9))
+        self._auto_hide_spin.setRange(1, 300)
+        self._auto_hide_spin.setValue(max(1, auto_hide_seconds))
+        self._auto_hide_spin.setSuffix(" 秒")
+        self._auto_hide_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 60px;"
+            f"}}"
+        )
+        self._auto_hide_spin.setToolTip("無操作の経過秒数で全面非表示にします (1〜300秒)")
+        self._auto_hide_spin.valueChanged.connect(self.auto_hide_seconds_changed.emit)
+        _sec_row.addWidget(self._auto_hide_spin)
+        _sec_row.addStretch()
+        _app_content_layout.addLayout(_sec_row)
+
+        # フェードアウト ON/OFF チェックボックス (i486)
+        self._auto_hide_fade_cb = QCheckBox("自動非表示時にフェードアウト")
+        self._auto_hide_fade_cb.setFont(QFont("Meiryo", 9))
+        self._auto_hide_fade_cb.setStyleSheet(f"color: {design.text};")
+        self._auto_hide_fade_cb.setChecked(auto_hide_fade_enabled)
+        self._auto_hide_fade_cb.setToolTip("ON: 自動全面非表示時にゆっくりフェードアウトします")
+        self._auto_hide_fade_cb.toggled.connect(self._on_fade_cb_toggled)
+        _app_content_layout.addWidget(self._auto_hide_fade_cb)
+
+        # フェード時間スピンボックス (i487)
+        _fade_sec_row = QHBoxLayout()
+        _fade_sec_row.setContentsMargins(12, 0, 0, 0)
+        _fade_sec_row.setSpacing(6)
+        _fade_sec_lbl = QLabel("フェード時間")
+        _fade_sec_lbl.setFont(QFont("Meiryo", 9))
+        _fade_sec_lbl.setStyleSheet(f"color: {design.text};")
+        _fade_sec_row.addWidget(_fade_sec_lbl)
+
+        self._auto_hide_fade_spin = QDoubleSpinBox()
+        self._auto_hide_fade_spin.setFont(QFont("Meiryo", 9))
+        self._auto_hide_fade_spin.setRange(0.1, 10.0)
+        self._auto_hide_fade_spin.setSingleStep(0.1)
+        self._auto_hide_fade_spin.setDecimals(1)
+        _fade_sec = max(0.1, min(10.0, auto_hide_fade_seconds))
+        self._auto_hide_fade_spin.setValue(_fade_sec)
+        self._auto_hide_fade_spin.setSuffix(" 秒")
+        self._auto_hide_fade_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"  min-width: 65px;"
+            f"}}"
+        )
+        self._auto_hide_fade_spin.setToolTip("フェードアウトにかける時間 (0.1〜10.0秒)")
+        self._auto_hide_fade_spin.setEnabled(auto_hide_fade_enabled)
+        self._auto_hide_fade_spin.valueChanged.connect(self.auto_hide_fade_seconds_changed.emit)
+        _fade_sec_row.addWidget(self._auto_hide_fade_spin)
+        _fade_sec_row.addStretch()
+        _app_content_layout.addLayout(_fade_sec_row)
+
+        self._app_settings_content.setVisible(False)
+        body_layout.addWidget(self._app_settings_content)
+
+        body_layout.addSpacing(4)
+
         # i467: バージョン表示（管理パネル下部）
         _ver_lbl = QLabel(f"RRoulette  v{VERSION}")
         _ver_lbl.setFont(QFont("Meiryo", 8))
@@ -356,6 +472,18 @@ class ManagePanel(QFrame):
         self._ro_only_toggle_btn.setText(
             ("▼ ルーレット以外非表示時" if expanded else "▶ ルーレット以外非表示時")
         )
+
+    def _on_app_settings_toggle(self, expanded: bool):
+        """アプリ設定セクションの展開/折りたたみ。"""
+        self._app_settings_content.setVisible(expanded)
+        self._app_settings_toggle_btn.setText(
+            ("▼ アプリ設定" if expanded else "▶ アプリ設定")
+        )
+
+    def _on_fade_cb_toggled(self, enabled: bool):
+        """フェードアウト ON/OFF — シグナル発火 + スピンボックス有効/無効切替。"""
+        self._auto_hide_fade_spin.setEnabled(enabled)
+        self.auto_hide_fade_changed.emit(enabled)
 
     def set_settings_visible(self, visible: bool):
         """設定パネルチェック状態を外部から同期する (シグナルなし)。"""
@@ -511,6 +639,24 @@ class ManagePanel(QFrame):
         self._manage_float_btn.blockSignals(True)
         self._manage_float_btn.setChecked(value)
         self._manage_float_btn.blockSignals(False)
+
+    def set_auto_hide(self, enabled: bool, seconds: int,
+                      fade_enabled: bool = True,
+                      fade_seconds: float = 0.6) -> None:
+        """自動全面非表示設定を外部から同期する（シグナルなし）。"""
+        self._auto_hide_cb.blockSignals(True)
+        self._auto_hide_cb.setChecked(enabled)
+        self._auto_hide_cb.blockSignals(False)
+        self._auto_hide_spin.blockSignals(True)
+        self._auto_hide_spin.setValue(max(1, seconds))
+        self._auto_hide_spin.blockSignals(False)
+        self._auto_hide_fade_cb.blockSignals(True)
+        self._auto_hide_fade_cb.setChecked(fade_enabled)
+        self._auto_hide_fade_cb.blockSignals(False)
+        self._auto_hide_fade_spin.blockSignals(True)
+        self._auto_hide_fade_spin.setValue(max(0.1, min(10.0, fade_seconds)))
+        self._auto_hide_fade_spin.setEnabled(fade_enabled)
+        self._auto_hide_fade_spin.blockSignals(False)
 
     def update_design(self, design: DesignSettings):
         self._design = design
