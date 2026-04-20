@@ -8,11 +8,11 @@ bridge に残る主な責務:
   - layout_search の tkinter.font モンキーパッチ（PySide6 互換化）
   - build_all_sector_layouts / LayoutResult / LinePlacement（monkey-patch 後に有効）
   - geometry 関数の re-export（SafeSector / polar_to_canvas 等）
-  - load_app_settings（AppSettings 構築ラッパー）
   - 後方互換のための各種 re-export
 
 切り出し済みの専用モジュール:
   - app_constants.py   — 純定数（SIZE_PROFILES / MIN_W / ITEM_MAX_* 等）
+  - app_settings.py    — AppSettings dataclass / AppSettings.load() ラッパー
   - design_models.py   — デザイン設定クラス / プリセット / load_design
   - config_io.py       — load_config / save_config
   - pattern_store.py   — パターン管理純ロジック
@@ -116,17 +116,5 @@ layout_search._make_font = make_qt_font
 
 from app_settings import AppSettings
 from item_entry import ItemEntry
-
-
-def load_app_settings(config: dict | None = None) -> AppSettings:
-    """config dict から型付き AppSettings を構築する。
-
-    MainWindow は raw config dict ではなくこの関数経由で設定を取得する。
-    将来設定の追加時は AppSettings.from_config() のみ修正すればよい。
-    """
-    if config is None:
-        config = load_config()
-    return AppSettings.from_config(config)
-
 
 

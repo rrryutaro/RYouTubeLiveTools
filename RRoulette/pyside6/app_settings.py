@@ -301,6 +301,18 @@ class AppSettings:
             items_panel_float=config.get("items_panel_float", False),
         )
 
+    @classmethod
+    def load(cls, config: dict | None = None) -> "AppSettings":
+        """config dict から AppSettings を構築する。
+
+        bridge.py から移動。config が None の場合は load_config() を呼ぶ。
+        将来設定の追加時は from_config() のみ修正すればよい。
+        """
+        if config is None:
+            from config_io import load_config
+            config = load_config()
+        return cls.from_config(config)
+
     def to_config_patch(self) -> dict:
         """AppSettings の値を config dict にマージ可能な差分として返す。
 

@@ -50,7 +50,6 @@ from design_models import (
     DesignPresetManager, load_design,
 )
 from config_io import load_config
-from bridge import load_app_settings
 from segment_builder import build_segments_from_config
 from item_data_io import load_all_item_entries, save_item_entries
 from pattern_store import (
@@ -152,7 +151,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         """設定・デザイン・プリセット・マネージャー・パネル一覧の初期化。"""
         # --- 既存設定の読み込み ---
         self._config = load_config()
-        self._settings = load_app_settings(self._config)
+        self._settings = AppSettings.load(self._config)
         self._design = load_design(self._config)
 
         # --- デザインプリセットマネージャー ---
