@@ -113,7 +113,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         """操作・設定パネル。
 
         Args:
-            item_entries: 項目データ（bridge.load_item_entries() の戻り値）。
+            item_entries: 項目データ（load_item_entries() の戻り値）。
                 設定データ（AppSettings）とは別管理。各項目のテキスト・
                 確率・分割等を保持する ItemEntry のリスト。
             settings: アプリ設定データ（AppSettings）。

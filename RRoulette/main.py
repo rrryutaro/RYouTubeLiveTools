@@ -28,8 +28,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-# bridge を import する前に QApplication を作成する必要がある
-# （QFontMetrics は QApplication が存在しないと動作しない）
+# main_window → wheel_widget → layout_search_adapter → font_adapter (QFontMetrics) の
+# import チェーンより先に QApplication を作成する必要がある
 QApplication.setHighDpiScaleFactorRoundingPolicy(
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 )

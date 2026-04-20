@@ -16,13 +16,22 @@ RRoulette PySide6 — 開発用起動スクリプト
 """
 
 import sys
+import os
 import ctypes
+
+# RRoulette ルートを sys.path に追加（pyside6 モジュールから ../constants.py 等を参照するため）
+# 各モジュールにも同等のガードがあるが、エントリーポイントで明示することで
+# 起動経路に依存しない初期化順序を保証する。
+_RROULETTE_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+if _RROULETTE_DIR not in sys.path:
+    sys.path.insert(0, _RROULETTE_DIR)
+
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-# bridge を import する前に QApplication を作成する必要がある
-# （QFontMetrics は QApplication が存在しないと動作しない）
+# main_window → wheel_widget → layout_search_adapter → font_adapter (QFontMetrics) の
+# import チェーンより先に QApplication を作成する必要がある
 QApplication.setHighDpiScaleFactorRoundingPolicy(
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 )

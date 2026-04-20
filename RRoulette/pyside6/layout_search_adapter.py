@@ -17,7 +17,7 @@ font 計測境界（FontAdapter Protocol）:
     font.metrics("linespace") → int  行高さ (px)
   QtFontAdapter が Qt (QFontMetrics) でこのインターフェースを実装する。
 
-PySide6 側のコードは bridge を経由せず、このモジュールを直接使うこと。
+PySide6 側のコードはこのモジュールを直接使うこと。
 """
 
 import sys

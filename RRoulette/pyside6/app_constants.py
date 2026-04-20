@@ -4,11 +4,7 @@ app_constants.py — PySide6 側から直接参照できる純定数層
 RRoulette ルート (../constants.py) の定数を PySide6 側に提供する。
 tkinter / PySide6 ウィジェットに依存しない純データのみ。
 
-bridge.py を経由せずに定数を参照したい PySide6 モジュールはこちらを使う。
-bridge.py がまだ re-export しているものとの二重参照は問題なく共存できる
-（どちらも RRoulette ルートの同一 constants.py を読む）。
-
-bridge.py が先に import されている場合は sys.path 設定は no-op になる。
+PySide6 モジュールは定数をこのモジュールから直接参照すること。
 """
 
 import sys

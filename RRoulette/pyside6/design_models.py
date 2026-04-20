@@ -5,7 +5,7 @@ RRoulette ルート (../design_settings.py) のデザイン設定クラス・プ
 PySide6 側に提供する。
 tkinter / PySide6 ウィジェットに依存しない純データのみ。
 
-bridge.py を経由せずにデザイン設定を参照したい PySide6 モジュールはこちらを使う。
+PySide6 モジュールはデザイン設定をこのモジュールから直接参照すること。
 
 公開 API:
   クラス:

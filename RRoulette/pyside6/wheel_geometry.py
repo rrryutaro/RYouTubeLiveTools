@@ -4,7 +4,7 @@ wheel_geometry.py — PySide6 側から直接参照できる幾何計算層
 RRoulette ルート (../geometry.py) の純幾何関数・型を PySide6 側に提供する。
 tkinter / PySide6 ウィジェットに依存しない純数値ロジックのみ。
 
-bridge.py を経由せずに幾何関数を参照したい PySide6 モジュールはこちらを使う。
+PySide6 モジュールは幾何関数をこのモジュールから直接参照すること。
 
 公開 API:
   データクラス:

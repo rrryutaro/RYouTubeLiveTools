@@ -1,12 +1,13 @@
 """
-PySide6 プロトタイプ — フォントアダプター
+PySide6 フォントアダプター
 
-既存の layout_search.py は tkinter.font.Font のインターフェースに依存:
+layout_search.py は FontAdapter(Protocol) を自己定義しており、
+次の 2 メソッドを持つオブジェクトを _make_font() が返すことを要求する:
   - font.measure(text) → テキスト幅 (px)
   - font.metrics("linespace") → 行高さ (px)
 
-このモジュールは QFontMetrics で同等の機能を提供するアダプタークラスを提供し、
-layout_search.py を PySide6 環境で利用可能にする。
+このモジュールは QFontMetrics でその Protocol を実装する QtFontAdapter を提供する。
+_make_font への注入は layout_search_adapter.py が行う。
 """
 
 from PySide6.QtGui import QFont, QFontMetrics
