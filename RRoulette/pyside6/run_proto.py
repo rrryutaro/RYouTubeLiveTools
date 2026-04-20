@@ -39,7 +39,11 @@ app.setFont(QFont("Meiryo", 9))
 # OS が自動解放するため stale 問題は発生しない。
 # モジュール変数 _instance_mutex に保持することで、プロセス生存中は
 # ミューテックスが解放されず、確実に二重起動を防ぐ。
-_INSTANCE_MUTEX_NAME = "Local\\RRoulette_RunProto_SingleInstance_v1"
+#
+# i489: ミューテックス名を rroulette_pyside6.py (EXE エントリー) と統一。
+# Python 実行と EXE 実行で同じ名前を使うことで、どちらが起動中でも
+# もう一方の多重起動を防ぐ。
+_INSTANCE_MUTEX_NAME = "Local\\RRoulette_SingleInstance_v1"
 _ERROR_ALREADY_EXISTS = 183
 _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
 if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
