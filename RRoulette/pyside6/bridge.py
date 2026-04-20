@@ -1,30 +1,29 @@
 """
 bridge.py — 既存ロジック橋渡し層（互換層）
 
-既存 RRoulette のロジック資産（constants, design_settings, geometry,
-layout_search, config_utils）と PySide6 UI 層を接続する。
+既存 RRoulette のロジック資産（layout_search 等）と PySide6 UI 層を接続する。
 
 bridge に残る主な責務:
   - layout_search の tkinter.font モンキーパッチ（PySide6 互換化）
   - build_all_sector_layouts / LayoutResult / LinePlacement（monkey-patch 後に有効）
-  - geometry 関数の re-export（SafeSector / polar_to_canvas 等）
   - 後方互換のための各種 re-export
 
 切り出し済みの専用モジュール:
-  - app_constants.py   — 純定数（SIZE_PROFILES / MIN_W / ITEM_MAX_* 等）
-  - app_settings.py    — AppSettings dataclass / AppSettings.load() ラッパー
-  - design_models.py   — デザイン設定クラス / プリセット / load_design
-  - config_io.py       — load_config / save_config
-  - pattern_store.py   — パターン管理純ロジック
-  - item_data_io.py    — 項目データ I/O（load_item_entries 等）
-  - segment_builder.py — セグメント構築純ロジック
+  - app_constants.py    — 純定数（SIZE_PROFILES / MIN_W / ITEM_MAX_* 等）
+  - app_settings.py     — AppSettings dataclass / AppSettings.load() ラッパー
+  - design_models.py    — デザイン設定クラス / プリセット / load_design
+  - wheel_geometry.py   — 幾何関数（SafeSector / polar_to_canvas 等）
+  - config_io.py        — load_config / save_config
+  - pattern_store.py    — パターン管理純ロジック
+  - item_data_io.py     — 項目データ I/O（load_item_entries 等）
+  - segment_builder.py  — セグメント構築純ロジック
 
 データの流れ（2系統）:
 
   【アプリ設定】AppSettings — 表示・スピン・デザイン等のアプリ全体設定
     config file → load_config() → raw dict
-                                    ├→ load_app_settings() → AppSettings
-                                    └→ load_design()       → DesignSettings
+                                    ├→ AppSettings.load() → AppSettings
+                                    └→ load_design()      → DesignSettings
 
   【項目データ】ItemEntry — 各項目固有のテキスト・確率・分割等
     config file → load_config() → raw dict
@@ -47,8 +46,8 @@ _RROULETTE_DIR = os.path.normpath(
 if _RROULETTE_DIR not in sys.path:
     sys.path.append(_RROULETTE_DIR)
 
-# ── 既存モジュールの import ───────────────────────────────────────
-# tkinter 非依存モジュール: そのまま import
+# ── 後方互換 re-export: 純定数 / 設定 / geometry ─────────────────
+# 各専用モジュールから切り出し済み。bridge 経由での参照は後方互換のみ。
 from constants import (
     SEGMENT_COLORS, BG, PANEL, ACCENT, DARK2, WHITE, GOLD,
     SIZE_PROFILES, MIN_W, MIN_H, MIN_R,
@@ -67,13 +66,12 @@ from design_settings import (
     DESIGN_PRESETS, DESIGN_PRESET_NAMES,
     SEGMENT_COLOR_PRESETS, SEGMENT_PRESET_NAMES,
 )
+# geometry は wheel_geometry.py へ切り出し済み。後方互換のため残す。
 from geometry import (
     SafeSector, get_sector_safe_area,
     get_radial_width_at_tangential_offset,
     polar_to_canvas, normalize_angle_deg,
 )
-# ── 設定 I/O / パターン管理 / 項目データ — 専用モジュールから re-export ──
-# これらは bridge から切り出し済み。後方互換のため bridge 経由でも参照可能。
 from config_io import load_config, save_config
 from pattern_store import (
     get_pattern_names, get_current_pattern_name, set_current_pattern,
@@ -116,5 +114,3 @@ layout_search._make_font = make_qt_font
 
 from app_settings import AppSettings
 from item_entry import ItemEntry
-
-
