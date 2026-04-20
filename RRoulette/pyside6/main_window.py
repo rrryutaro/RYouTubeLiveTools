@@ -44,8 +44,8 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
 
 import os
 
+from app_constants import SIZE_PROFILES, MIN_W, MIN_H, VERSION
 from bridge import (
-    SIZE_PROFILES, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
     DesignPresetManager,
     load_config, load_design, load_app_settings,

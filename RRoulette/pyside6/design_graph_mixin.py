@@ -17,7 +17,8 @@ i443: main_window.py から分離。
 
 from PySide6.QtWidgets import QApplication
 
-from bridge import DESIGN_PRESETS, DesignSettings, get_current_pattern_name
+from bridge import DESIGN_PRESETS, DesignSettings
+from pattern_store import get_current_pattern_name
 from dark_theme import get_app_stylesheet, resolve_theme_mode
 from roulette_actions import SetActiveRoulette
 

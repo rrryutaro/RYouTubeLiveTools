@@ -13,7 +13,7 @@ i436: main_window.py から分離。
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
-from bridge import MIN_W, MIN_H
+from app_constants import MIN_W, MIN_H
 from roulette_panel import RoulettePanel
 from panel_input_filter import PANEL_BAR_HEIGHT
 

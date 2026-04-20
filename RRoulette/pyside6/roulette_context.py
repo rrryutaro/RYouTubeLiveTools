@@ -17,7 +17,7 @@ from per_roulette_settings import PerRouletteSettings
 if TYPE_CHECKING:
     from roulette_panel import RoulettePanel
     from item_entry import ItemEntry
-    from bridge import Segment
+    from app_constants import Segment
 
 
 @dataclass

@@ -42,11 +42,12 @@ from panel_widgets import (
 )
 from manage_panel import ManagePanel
 
-from bridge import (
-    SIDEBAR_W, SIZE_PROFILES, DesignSettings,
+from app_constants import (
+    SIDEBAR_W, SIZE_PROFILES,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
     ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
 )
+from bridge import DesignSettings
 
 from app_settings import AppSettings
 from item_entry import ItemEntry

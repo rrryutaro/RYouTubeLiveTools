@@ -15,7 +15,7 @@ i439: main_window.py から分離。
                    RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow)
 """
 
-from bridge import SIZE_PROFILES
+from app_constants import SIZE_PROFILES
 from segment_builder import build_segments_from_entries
 from dark_theme import resolve_theme_mode
 from per_roulette_settings import PER_ROULETTE_KEYS

@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QDoubleSpinBox,
 )
 
-from bridge import DesignSettings, VERSION
+from app_constants import VERSION
+from bridge import DesignSettings
 from panel_widgets import _PanelDragBar, install_panel_context_menu
 
 

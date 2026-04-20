@@ -27,10 +27,13 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, Q
 from PySide6.QtWidgets import QWidget
 
 # 既存ロジックは bridge 経由で import
-from bridge import (
+from app_constants import (
     MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG,
     DONUT_DRAW_RADIUS, DONUT_HIT_RADIUS,
-    Segment, DesignSettings,
+    Segment,
+)
+from bridge import (
+    DesignSettings,
     build_all_sector_layouts, LayoutResult,
 )
 
