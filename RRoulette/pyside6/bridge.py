@@ -16,7 +16,7 @@ bridge の残る責務:
   - pattern_store.py          — パターン管理純ロジック
   - item_data_io.py           — 項目データ I/O（load_item_entries 等）
   - segment_builder.py        — セグメント構築純ロジック
-  - layout_search_adapter.py  — tkinter.font monkey-patch + layout_search 接続層
+  - layout_search_adapter.py  — layout_search への font 実装注入と re-export（monkey-patch 不要化済み）
 
 データの流れ（2系統）:
 
