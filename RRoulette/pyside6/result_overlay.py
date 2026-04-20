@@ -87,15 +87,27 @@ class ResultOverlay(QLabel):
         self._outline_color = QColor("#000000")    # アウトライン色
         self._outline_width: float = 2.0           # アウトライン幅
 
+        # i022: 被りなし連続抽選用 prefix ("N/M回目: " など)
+        self._result_prefix: str = ""
+
     # ================================================================
     #  公開 API
     # ================================================================
+
+    def set_result_prefix(self, prefix: str):
+        """次の show_result に付加するプレフィックスを設定する。
+
+        i022: 被りなし連続抽選で "N/M回目: " のような前置きを表示するために使用。
+        空文字列を設定するとプレフィックスなし（通常状態）に戻る。
+        """
+        self._result_prefix = prefix
 
     def show_result(self, winner: str):
         """結果テキストを表示し、安定表示する。"""
         self._stop_auto_timer()
         self._stop_flash()
-        self.setText(f"  \U0001f3af {winner}  ")
+        display = (self._result_prefix + winner) if self._result_prefix else winner
+        self.setText(f"  \U0001f3af {display}  ")
         self.show()
         self.raise_()
         self.update_position()

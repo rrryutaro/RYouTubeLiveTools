@@ -81,6 +81,13 @@ class ContextMenuMixin:
 
         menu.addSeparator()
 
+        # i021: 被りなし連続抽選
+        menu.addAction("  被りなし連続抽選...    ").triggered.connect(
+            self._open_sequential_spin_dialog
+        )
+
+        menu.addSeparator()
+
         menu.addAction("  終了    ").triggered.connect(self.close)
 
         menu.exec(self.mapToGlobal(pos))

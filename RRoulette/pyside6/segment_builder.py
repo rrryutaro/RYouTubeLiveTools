@@ -33,13 +33,16 @@ def build_segments_from_entries(
     """
     if config is None:
         config = {}
-    raw_entries = [e.to_dict() for e in entries if e.enabled]
-    if not raw_entries:
+    # i022: 元リストのインデックスを保持して色割り当てを維持する
+    enabled_pairs = [(e, i) for i, e in enumerate(entries) if e.enabled]
+    if not enabled_pairs:
         return [], []
 
-    probs = _calc_probs(raw_entries)
+    enabled_raw = [e.to_dict() for e, _ in enabled_pairs]
+    orig_indices = [i for _, i in enabled_pairs]
+    probs = _calc_probs(enabled_raw)
     entries_with_probs = [
-        (raw_entries[j], j, probs[j]) for j in range(len(raw_entries))
+        (enabled_raw[j], orig_indices[j], probs[j]) for j in range(len(enabled_raw))
     ]
     raw_segs = _apply_split(entries_with_probs)
     ordered = _standard_order(raw_segs)

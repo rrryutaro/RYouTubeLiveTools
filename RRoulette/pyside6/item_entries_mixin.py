@@ -47,6 +47,10 @@ class ItemEntriesMixin:
         Returns:
             置換できたら True。
         """
+        # i021: 被りなし連続抽選中に項目編集が来たら安全に中断する
+        _seq = getattr(self, '_seq_runner', None)
+        if _seq is not None and _seq.is_running:
+            _seq.abort()
         if roulette_id:
             ctx = self._manager.get(roulette_id)
         else:

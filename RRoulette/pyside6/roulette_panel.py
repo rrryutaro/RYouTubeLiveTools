@@ -27,7 +27,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from app_constants import WHEEL_OUTER_MARGIN, MIN_R, POINTER_OVERHANG
 from design_models import DesignSettings
-from wheel_widget import WheelWidget
+from wheel_widget import WheelWidget, _CHUNK_PREFIX
 from spin_controller import SpinController
 from result_overlay import ResultOverlay
 from panel_widgets import _PanelGrip
@@ -63,13 +63,16 @@ class _LogOverlay(QWidget):
         self.setAutoFillBackground(False)
         self._entries: list[tuple[str, str]] = []
         self._timestamp: bool = False
+        self._box_border: bool = False  # i023: 通常エントリの枠線表示
         self._design = None
         self.hide()
 
-    def refresh(self, entries, timestamp: bool, design, visible: bool, on_top: bool):
+    def refresh(self, entries, timestamp: bool, design, visible: bool, on_top: bool,
+                box_border: bool = False):
         """ログ状態に合わせて表示を更新する。"""
         self._entries = list(entries)
         self._timestamp = timestamp
+        self._box_border = box_border
         self._design = design
         show = visible and on_top and bool(entries)
         self.setVisible(show)
@@ -85,39 +88,56 @@ class _LogOverlay(QWidget):
         fm = QFontMetrics(log_font)
         line_h = fm.height() + 2
         padding = 6
+        gap = 3  # ボックス間隔
         mx = self._LOG_MARGIN_X
-        my = self._LOG_MARGIN_Y
-
-        lines = []
-        for ts, text in self._entries:
-            if self._timestamp:
-                lines.append(f"[{ts}] {text}")
-            else:
-                lines.append(text)
-
-        max_w = max((fm.horizontalAdvance(ln) for ln in lines), default=0)
-        box_w = max_w + padding * 2
-        box_h = line_h * len(lines) + padding * 2
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box_y = self._LOG_MARGIN_Y
 
         bg = QColor(d.log.box_bg_color)
         bg.setAlpha(180)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(bg))
-        painter.drawRoundedRect(QRectF(mx, my, box_w, box_h), 4, 4)
-
-        painter.setFont(log_font)
         text_color = QColor(d.log.text_color)
         shadow_color = QColor(d.log.shadow_color)
-        for i, ln in enumerate(lines):
-            y = my + padding + (i + 1) * line_h - fm.descent()
-            x = mx + padding
-            painter.setPen(shadow_color)
-            painter.drawText(QPointF(x + 1, y + 1), ln)
-            painter.setPen(text_color)
-            painter.drawText(QPointF(x, y), ln)
+        outline_color = QColor(d.log.box_outline_color)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setFont(log_font)
+
+        # i023: 1実行 = 1ボックス で統一描画
+        for ts, text in self._entries:
+            if text.startswith(_CHUNK_PREFIX):
+                # チャンクエントリ: 枠線付き複数行ボックス（常に枠線あり）
+                parts = text[len(_CHUNK_PREFIX):].split("\x00")
+                chunk_lines = parts if parts else ["(空)"]
+                max_w = max((fm.horizontalAdvance(ln) for ln in chunk_lines), default=0)
+                bw = max_w + padding * 2
+                bh = line_h * len(chunk_lines) + padding * 2
+                painter.setPen(QPen(outline_color, 1))
+                painter.setBrush(QBrush(bg))
+                painter.drawRoundedRect(QRectF(mx, box_y, bw, bh), 4, 4)
+                for i, ln in enumerate(chunk_lines):
+                    y = box_y + padding + (i + 1) * line_h - fm.descent()
+                    x = mx + padding
+                    painter.setPen(shadow_color)
+                    painter.drawText(QPointF(x + 1, y + 1), ln)
+                    painter.setPen(text_color)
+                    painter.drawText(QPointF(x, y), ln)
+                box_y += bh + gap
+            else:
+                # 通常エントリ: 1件ごとに独立したボックス
+                display = f"[{ts}] {text}" if self._timestamp else text
+                bw = fm.horizontalAdvance(display) + padding * 2
+                bh = line_h + padding * 2
+                painter.setPen(QPen(outline_color, 1) if self._box_border
+                               else Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(bg))
+                painter.drawRoundedRect(QRectF(mx, box_y, bw, bh), 4, 4)
+                y = box_y + padding + line_h - fm.descent()
+                x = mx + padding
+                painter.setPen(shadow_color)
+                painter.drawText(QPointF(x + 1, y + 1), display)
+                painter.setPen(text_color)
+                painter.drawText(QPointF(x, y), display)
+                box_y += bh + gap
 
         painter.end()
 
@@ -620,7 +640,20 @@ class RoulettePanel(QFrame):
             design=w._design,
             visible=w.log_effective_visible(),
             on_top=w._log_on_top,
+            box_border=w._log_box_border,  # i023: 通常エントリの枠線設定を伝播
         )
+
+    # ================================================================
+    #  被りなし連続抽選 状態表示（i023）
+    # ================================================================
+
+    def update_seq_status(self, text: str):
+        """被りなし連続抽選の状態テキストを更新する。
+
+        i023: WheelWidget.paintEvent 内で描画することで OBS キャプチャを保証する。
+        空文字列を指定すると非表示（描画なし）になる。
+        """
+        self._wheel.set_seq_status(text)
 
     # ================================================================
     #  in-panel グラフ（i389）

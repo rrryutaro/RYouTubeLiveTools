@@ -83,6 +83,7 @@ from pattern_management_mixin import PatternManagementMixin
 from replay_management_mixin import ReplayManagementMixin
 from design_graph_mixin import DesignGraphMixin
 from macro_flow_mixin import MacroFlowMixin
+from sequential_spin_mixin import SequentialSpinMixin
 from log_shuffle_mixin import LogShuffleMixin
 from settings_io_mixin import SettingsIOMixin
 from package_io_mixin import PackageIOMixin
@@ -96,7 +97,7 @@ from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindo
 
 
 
-class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
+class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, SequentialSpinMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
     """PySide6 プロトタイプのメインウィンドウ。
 
     独立パネル群（RoulettePanel, SettingsPanel）を載せる土台。

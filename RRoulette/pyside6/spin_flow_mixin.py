@@ -73,6 +73,10 @@ class SpinFlowMixin:
     # ------------------------------------------------------------------
 
     def _start_spin(self):
+        # i021: 被りなし連続抽選中は手動 spin をブロック
+        if getattr(self, '_seq_runner', None) is not None:
+            if self._seq_runner.is_running:
+                return
         # 手動 spin → auto advance を安全側で停止
         if self._macro_auto_advancing:
             print("[dev] auto advance stopped — manual spin requested")
@@ -167,7 +171,11 @@ class SpinFlowMixin:
             pattern_id = self._get_current_pattern_id(ctx)
             pattern_name = (ctx.current_pattern if ctx and ctx.current_pattern
                             else get_current_pattern_name(self._config))
-            if ctx:
+            # i022: 被りなし連続抽選中は個別ログエントリを追加しない（チャンクで一括表示）
+            _seq = getattr(self, '_seq_runner', None)
+            _in_seq = (_seq is not None and _seq.is_running
+                       and roulette_id == getattr(self, '_seq_runner_roulette_id', None))
+            if ctx and not _in_seq:
                 ctx.panel.wheel.add_log_entry(winner, pattern_id)  # i407: UUID 渡し
                 # i345: ルーレットごとに独立したログファイルへ保存し、
                 # #3 のスピン結果が #1 のログファイルを上書きしないようにする
@@ -186,6 +194,11 @@ class SpinFlowMixin:
             self._refresh_replay_dialog()
         # auto advance の再開は ResultOverlay.closed で行う（spin_finished 直後ではなく
         # 結果表示の hold 完了後に再開するため）
+        # i021: 被りなし連続抽選への通知（SequentialSpinMixin が組み込まれている場合のみ）
+        _seq = getattr(self, '_seq_runner', None)
+        if (_seq is not None and _seq.is_running
+                and roulette_id == getattr(self, '_seq_runner_roulette_id', None)):
+            _seq.on_spin_finished(winner)
 
     # ------------------------------------------------------------------
     #  ポインタ角度
