@@ -201,7 +201,7 @@ class WheelWidget(QWidget):
 
         i022: 連続抽選の全結果を1件のエントリとして記録する。
         text フィールドに _CHUNK_PREFIX + "\\x00".join([header, line1, ...]) を格納する。
-        このエントリは save_log では永続化されない（表示のみ）。
+        i026: save_log の永続化対象に含まれる（再起動後も復元される）。
 
         Args:
             header: チャンク見出し（例: "被りなし連続抽選 5回"）
@@ -290,12 +290,25 @@ class WheelWidget(QWidget):
         """ログ履歴をJSONファイルに保存する。
 
         i407: エントリは pattern_id（UUID）で保存する。
+        i026: チャンクエントリも永続化対象に含める。
+        i027: チャンクエントリは type="chunk" + header + lines の明示フォーマットで保存する。
+              単発エントリは type="single" + text で保存する。
         """
         import json
-        # 古い順で保存。i022: チャンクエントリは永続化対象外
-        data = [{"ts": ts, "text": text, "pattern_id": pid}
-                for ts, text, pid in reversed(self._log_entries)
-                if not text.startswith(_CHUNK_PREFIX)]
+        data = []
+        for ts, text, pid in reversed(self._log_entries):
+            if text.startswith(_CHUNK_PREFIX):
+                # チャンクエントリ: 構造化データとして保存（null バイト不要な形式）
+                parts = text[len(_CHUNK_PREFIX):].split("\x00")
+                header = parts[0] if parts else ""
+                lines = parts[1:] if len(parts) > 1 else []
+                data.append({
+                    "ts": ts, "type": "chunk",
+                    "header": header, "lines": lines,
+                    "pattern_id": pid,
+                })
+            else:
+                data.append({"ts": ts, "type": "single", "text": text, "pattern_id": pid})
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -303,8 +316,9 @@ class WheelWidget(QWidget):
         """JSONファイルからログ履歴を復元する。
 
         i407: pattern_id フィールドがないエントリは旧フォーマットとして破棄する。
-        旧フォーマット（"pattern" キーのみ）のデータは安全側で除外し、
-        クリーンな状態から再スタートする。
+        i027: type="chunk" エントリは header+lines から _CHUNK_PREFIX 形式に復元する。
+              type="single" / 旧フォーマット（type なし）は text フィールドを使う。
+              load 完了後に log_changed を emit してオーバーレイを即時更新する。
         """
         import json
         import os
@@ -316,20 +330,30 @@ class WheelWidget(QWidget):
             if not isinstance(data, list):
                 return
             # 古い順で保存されている → 新しい順に変換
-            # i407: pattern_id が存在しないエントリは旧フォーマットとして除外する
             entries = []
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                if "ts" not in item or "text" not in item:
-                    continue
                 pid = item.get("pattern_id", "")
                 if not pid:
-                    # 旧フォーマット（pattern_id なし）: 安全側で除外
+                    # pattern_id なし: 旧フォーマット or 不正エントリ → 除外
                     continue
-                entries.append((item["ts"], item["text"], pid))
+                ts = item.get("ts", "")
+                t = item.get("type", "single")
+                if t == "chunk":
+                    # i027: 構造化チャンク → _CHUNK_PREFIX 形式に復元
+                    header = item.get("header", "")
+                    lines = item.get("lines", [])
+                    text = _CHUNK_PREFIX + "\x00".join([header] + lines)
+                else:
+                    # "single" または type なし旧フォーマット
+                    text = item.get("text", "")
+                    if not text:
+                        continue
+                entries.append((ts, text, pid))
             self._log_entries = list(reversed(entries[-self._log_max:]))
             self.update()
+            self.log_changed.emit()  # i027: load 後にオーバーレイを即時更新する
         except Exception:
             pass
 

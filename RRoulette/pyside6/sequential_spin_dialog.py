@@ -1,8 +1,13 @@
 """
-sequential_spin_dialog.py — 被りなし連続抽選 専用ダイアログ
+sequential_spin_dialog.py — 被りなし連続抽選 専用パネル
 
 i021: 被りなし連続抽選機能の専用 UI。
-      既存のマクロエディタとは独立した専用 UI として実装する（§5-1）。
+i026: QDialog（別ウィンドウ）から QWidget（同一ウィンドウ内 child widget）へ変更。
+i027: _PanelDragBar を追加しドラッグ移動を可能にする。
+      マウスイベント伝播を遮断して RoulettePanel / MainWindow へのドラッグ誤伝播を防ぐ。
+i028: WA_StyledBackground で不透明背景を確保。
+      実行回数上限を ON 項目数 - 1 に修正。
+      update_target() でパターン変更時の即時更新に対応。
 
 機能:
   - 対象ルーレット / パターン / ON 項目数の表示
@@ -12,20 +17,25 @@ i021: 被りなし連続抽選機能の専用 UI。
   - 最終抽選順リストの表示（§4-5）
 
 設計:
-  - モードレスダイアログ（show() で起動、exec() ではない）
-  - 実行中は入力 UI を無効化（§5-2）
-  - ダイアログを閉じると実行中断（closeEvent で abort 通知）
+  - メインウィンドウの centralWidget を parent とした child widget
+  - _PanelDragBar による移動（上部ドラッグバーのみで移動）
+  - mousePressEvent 等を override してマウスイベントが親へ伝播しないよう遮断
+  - close() / hide() で UI を隠す（実行中なら abort 通知）
 """
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QDoubleSpinBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QDoubleSpinBox,
     QPushButton, QProgressBar, QTextEdit, QGroupBox, QMessageBox,
 )
 
 
-class SequentialSpinDialog(QDialog):
-    """被りなし連続抽選の専用 UI ダイアログ（モードレス）。
+class SequentialSpinDialog(QWidget):
+    """被りなし連続抽選の専用 UI パネル（メインウィンドウ内 child widget）。
+
+    i026: QDialog から QWidget に変更。同一ウィンドウ内に描画されるため
+          OBS のウィンドウキャプチャに映る。
+    i027: _PanelDragBar 追加。マウスイベント遮断で親側誤伝播を防ぐ。
 
     Signals:
         start_requested(int, float): 開始要求 (n, hold_sec)
@@ -38,15 +48,14 @@ class SequentialSpinDialog(QDialog):
     def __init__(self, roulette_label: str, pattern_label: str,
                  max_n: int, design=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("被りなし連続抽選")
         self.setMinimumWidth(360)
-        # 常に最前面・ウィンドウとして独立表示
-        self.setWindowFlags(
-            Qt.WindowType.Dialog
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
+        # i026: ウィンドウフラグを設定しない（child widget として描画）
+        # i028: WA_StyledBackground を立てることで stylesheet の background-color を描画する。
+        #       これがないと MainWindow の WA_TranslucentBackground が透過して見える。
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._is_running = False
+        self._design = design   # i027: _build_ui より前に保持（_PanelDragBar 生成に使用）
+        self._drag_bar = None
         self._build_ui(roulette_label, pattern_label, max_n)
         if design is not None:
             self._apply_design(design)
@@ -58,7 +67,20 @@ class SequentialSpinDialog(QDialog):
     def _build_ui(self, roulette_label: str, pattern_label: str, max_n: int):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(0, 0, 0, 14)
+
+        # ── i027: 上部ドラッグバー ─────────────────────────────
+        # _PanelDragBar はドラッグ時に self（SequentialSpinDialog）を
+        # parentWidget()（centralWidget）内で move() する。
+        if self._design is not None:
+            from panel_widgets import _PanelDragBar
+            self._drag_bar = _PanelDragBar(self, self._design, parent=self)
+            layout.addWidget(self._drag_bar)
+
+        inner = QVBoxLayout()
+        inner.setSpacing(10)
+        inner.setContentsMargins(14, 0, 14, 0)
+        layout.addLayout(inner)
 
         # ── 対象表示 ──────────────────────────────────────────
         tg = QGroupBox("対象")
@@ -69,7 +91,7 @@ class SequentialSpinDialog(QDialog):
         self._lbl_on_count = QLabel(f"ON 項目数:  {max_n}")
         for w in (self._lbl_roulette, self._lbl_pattern, self._lbl_on_count):
             tg_v.addWidget(w)
-        layout.addWidget(tg)
+        inner.addWidget(tg)
 
         # ── 設定 ──────────────────────────────────────────────
         cg = QGroupBox("設定")
@@ -79,8 +101,10 @@ class SequentialSpinDialog(QDialog):
         row_n = QHBoxLayout()
         row_n.addWidget(QLabel("実行回数:"))
         self._spin_n = QSpinBox()
-        self._spin_n.setRange(1, max(1, max_n))
-        self._spin_n.setValue(min(max_n, 5))
+        # i028: 上限は ON 項目数 - 1（最後の 1 件は残す仕様）
+        max_exec = max(1, max_n - 1)
+        self._spin_n.setRange(1, max_exec)
+        self._spin_n.setValue(min(max_exec, 5))
         self._spin_n.setSuffix(" 回")
         row_n.addWidget(self._spin_n)
         row_n.addStretch()
@@ -96,17 +120,17 @@ class SequentialSpinDialog(QDialog):
         row_h.addWidget(self._spin_hold)
         row_h.addStretch()
         cg_v.addLayout(row_h)
-        layout.addWidget(cg)
+        inner.addWidget(cg)
 
         # ── 状態 / 進捗 ──────────────────────────────────────
         self._lbl_status = QLabel("待機中")
         self._lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._lbl_status)
+        inner.addWidget(self._lbl_status)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 1)
         self._progress.setValue(0)
-        layout.addWidget(self._progress)
+        inner.addWidget(self._progress)
 
         # ── 結果リスト（完了 / 中断後に展開） ────────────────
         self._result_box = QTextEdit()
@@ -114,7 +138,7 @@ class SequentialSpinDialog(QDialog):
         self._result_box.setMinimumHeight(100)
         self._result_box.setMaximumHeight(200)
         self._result_box.hide()
-        layout.addWidget(self._result_box)
+        inner.addWidget(self._result_box)
 
         # ── ボタン行 ──────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -124,7 +148,7 @@ class SequentialSpinDialog(QDialog):
         self._btn_close = QPushButton("閉じる")
         for b in (self._btn_start, self._btn_abort, self._btn_close):
             btn_row.addWidget(b)
-        layout.addLayout(btn_row)
+        inner.addLayout(btn_row)
 
         self._btn_start.clicked.connect(self._on_start_clicked)
         self._btn_abort.clicked.connect(self.abort_requested)
@@ -134,7 +158,7 @@ class SequentialSpinDialog(QDialog):
         """デザイン設定に合わせてスタイルを適用する。"""
         d = design
         self.setStyleSheet(f"""
-            QDialog {{
+            SequentialSpinDialog {{
                 background-color: {d.panel};
             }}
             QGroupBox {{
@@ -188,6 +212,21 @@ class SequentialSpinDialog(QDialog):
     #  公開 API（SequentialSpinMixin から呼ばれる）
     # ================================================================
 
+    def update_target(self, pattern_label: str, on_count: int, max_exec: int):
+        """パターン変更時の表示を更新する（i028）。
+
+        Args:
+            pattern_label: 新しいパターン名
+            on_count:      新しい ON 項目数
+            max_exec:      新しい最大実行回数（= on_count - 1）
+        """
+        self._lbl_pattern.setText(f"パターン:　 {pattern_label}")
+        self._lbl_on_count.setText(f"ON 項目数:  {on_count}")
+        safe_max = max(1, max_exec)
+        self._spin_n.setRange(1, safe_max)
+        # 現在値が新上限を超えていればクランプ
+        self._spin_n.setValue(min(self._spin_n.value(), safe_max))
+
     def set_running(self, running: bool, step: int = 0, total: int = 0):
         """実行状態に合わせて UI を切り替える。"""
         self._is_running = running
@@ -232,6 +271,31 @@ class SequentialSpinDialog(QDialog):
         """エラーメッセージをダイアログ表示する。"""
         QMessageBox.warning(self, "被りなし連続抽選", msg)
 
+    def update_design(self, design):
+        """デザインを更新する。"""
+        self._design = design
+        self._apply_design(design)
+        if self._drag_bar is not None:
+            self._drag_bar.update_design(design)
+
+    # ================================================================
+    #  マウスイベント遮断（i027）
+    # ================================================================
+    # child widget のマウスイベントがデフォルトで親へ伝播すると、
+    # RoulettePanel のドラッグ判定や MainWindow のウィンドウドラッグが
+    # 誤作動する。このパネル自体のクライアント領域クリックは
+    # ここで消費して親へ伝播させない。
+    # （ドラッグ移動は _drag_bar が専用に担当する）
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
     # ================================================================
     #  内部イベント
     # ================================================================
@@ -240,7 +304,7 @@ class SequentialSpinDialog(QDialog):
         self.start_requested.emit(self._spin_n.value(), self._spin_hold.value())
 
     def closeEvent(self, event):
-        """閉じるボタン / ×ボタン: 実行中なら中断要求を emit する。"""
+        """閉じる / hide 時: 実行中なら中断要求を emit する。"""
         if self._is_running:
             self.abort_requested.emit()
         super().closeEvent(event)

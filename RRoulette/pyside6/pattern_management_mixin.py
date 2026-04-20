@@ -76,6 +76,9 @@ class PatternManagementMixin:
             self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
         self._update_win_counts()
+        # i028: 連続抽選パネルが開いていればパターン変更を即時反映する
+        if hasattr(self, "_sync_seq_panel_to_active_pattern"):
+            self._sync_seq_panel_to_active_pattern()
 
     # ------------------------------------------------------------------
     #  パターン追加

@@ -55,15 +55,17 @@ class SequentialSpinMixin:
     # ================================================================
 
     def _open_sequential_spin_dialog(self):
-        """被りなし連続抽選ダイアログを開く（重複起動防止）。
+        """被りなし連続抽選パネルを開く（重複起動防止）。
 
         右クリックメニューからの起動を想定。
         アクティブルーレットと現在パターンを対象として表示する。
+
+        i026: QDialog（別ウィンドウ）から centralWidget 内 child widget へ変更。
+              OBS のウィンドウキャプチャに映る。
         """
-        # 既にダイアログが開いていれば前面に出すだけ
+        # 既にパネルが開いていれば前面に出すだけ
         if self._seq_dialog is not None and self._seq_dialog.isVisible():
             self._seq_dialog.raise_()
-            self._seq_dialog.activateWindow()
             return
 
         ctx = self._manager.active
@@ -71,10 +73,10 @@ class SequentialSpinMixin:
             return
 
         max_n = sum(1 for e in ctx.item_entries if e.enabled)
-        if max_n == 0:
+        if max_n <= 1:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "被りなし連続抽選",
-                                "ON 状態の項目がありません。")
+                                "ON 状態の項目が2つ以上必要です。")
             return
 
         # Runner を遅延生成（初回のみ）
@@ -84,15 +86,27 @@ class SequentialSpinMixin:
         roulette_label = ctx.roulette_id
         pattern_label = ctx.current_pattern or "デフォルト"
 
+        # i026: centralWidget を parent にすることで同一ウィンドウ内 child widget になる
+        central = self.centralWidget()
         from sequential_spin_dialog import SequentialSpinDialog
         dlg = SequentialSpinDialog(
             roulette_label, pattern_label, max_n,
-            design=self._design, parent=self,
+            design=self._design, parent=central,
         )
         dlg.start_requested.connect(self._on_seq_start_requested)
         dlg.abort_requested.connect(self._on_seq_abort_requested)
         self._seq_dialog = dlg
+
+        # centralWidget 内の右上付近に固定配置
+        # i027: y は _MW_DRAG_BAR_H より下に置く（MainWindowDragBar との重複を防ぐ）
+        dlg.adjustSize()
+        margin = 10
+        from panel_widgets import _MW_DRAG_BAR_H
+        x = central.width() - dlg.width() - margin
+        y = _MW_DRAG_BAR_H + margin  # 20 + 10 = 30px から開始
+        dlg.move(max(0, x), y)
         dlg.show()
+        dlg.raise_()
 
     # ================================================================
     #  Runner 初期化
@@ -256,3 +270,27 @@ class SequentialSpinMixin:
         pattern_id = self._get_current_pattern_id(ctx)
         ctx.panel.wheel.add_log_chunk(header, results, pattern_id)
         ctx.panel.wheel.save_log(self._roulette_log_path(self._seq_runner_roulette_id))
+
+    # ================================================================
+    #  パターン変更追従（i028）
+    # ================================================================
+
+    def _sync_seq_panel_to_active_pattern(self):
+        """アクティブパターンが変わったとき、連続抽選パネルの表示を更新する。
+
+        i028: パターン変更時に対象パターン名・ON 項目数・実行回数上限を即時反映する。
+        実行中は現在の連続抽選対象を固定するため更新しない。
+        """
+        dlg = self._seq_dialog
+        if dlg is None or not dlg.isVisible():
+            return
+        # 実行中は対象をブラさないため更新しない
+        if self._seq_runner is not None and self._seq_runner.is_running:
+            return
+        ctx = self._manager.active
+        if ctx is None:
+            return
+        on_count = sum(1 for e in ctx.item_entries if e.enabled)
+        max_exec = on_count - 1  # i028: 上限は ON 項目数 - 1
+        pattern_label = ctx.current_pattern or "デフォルト"
+        dlg.update_target(pattern_label, on_count, max_exec)
