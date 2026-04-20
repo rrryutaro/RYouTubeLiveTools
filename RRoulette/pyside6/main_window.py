@@ -48,10 +48,11 @@ from bridge import (
     SIZE_PROFILES, MIN_W, MIN_H, VERSION,
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
     DesignPresetManager,
-    load_config, load_design,
-    load_all_item_entries, load_app_settings,
+    load_config, load_design, load_app_settings,
     build_segments_from_config,
-    save_item_entries,
+)
+from item_data_io import load_all_item_entries, save_item_entries
+from pattern_store import (
     get_pattern_names, get_current_pattern_name,
     set_current_pattern, add_pattern, delete_pattern, rename_pattern,
     get_pattern_id, ensure_pattern_ids,

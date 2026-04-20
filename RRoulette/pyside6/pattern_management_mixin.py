@@ -19,17 +19,12 @@ import os
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from bridge import (
-    build_segments_from_entries,
-    get_current_pattern_name,
-    get_pattern_names,
-    load_all_item_entries,
-    set_current_pattern,
-    add_pattern,
-    delete_pattern,
-    rename_pattern,
-    save_item_entries,
-    ItemEntry,
+from bridge import build_segments_from_entries
+from item_data_io import load_all_item_entries, save_item_entries
+from item_entry import ItemEntry
+from pattern_store import (
+    get_current_pattern_name, get_pattern_names,
+    set_current_pattern, add_pattern, delete_pattern, rename_pattern,
 )
 from config_utils import EXPORT_DIR
 

@@ -13,7 +13,8 @@ i440: main_window.py から分離。
                    RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow)
 """
 
-from bridge import build_segments_from_entries, save_item_entries
+from bridge import build_segments_from_entries
+from item_data_io import save_item_entries
 from roulette_actions import UpdateItemEntries
 
 
