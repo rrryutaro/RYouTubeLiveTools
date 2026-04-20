@@ -1,9 +1,9 @@
 """
-RRoulette — PySide6 版エントリーポイント
+RRoulette — エントリーポイント
 
 使い方:
   cd RRoulette
-  python rroulette_pyside6.py
+  python main.py
 
 操作:
   - 左ドラッグ: ウィンドウ移動
@@ -38,7 +38,7 @@ app.setFont(QFont("Meiryo", 9))
 
 # i489: 複数起動禁止 — Win32 名前付きミューテックスで検出する。
 #
-# run_proto.py (Python 開発用) と同一ミューテックス名を使用することで、
+# run.py (pyside6/、Python 開発用) と同一ミューテックス名を使用することで、
 # Python 実行中に EXE を起動した場合も（またはその逆も）多重起動を防ぐ。
 # Win32 名前付きミューテックスはプロセス終了時に OS が自動解放するため
 # クラッシュ後の stale 問題は発生しない。

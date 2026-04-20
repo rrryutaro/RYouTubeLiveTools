@@ -14,7 +14,8 @@ i452: main_window.py から分離。
 
 from PySide6.QtWidgets import QApplication
 
-from bridge import save_config, get_pattern_names, get_current_pattern_name
+from config_io import save_config
+from pattern_store import get_pattern_names, get_current_pattern_name
 
 
 class SaveLoadMixin:

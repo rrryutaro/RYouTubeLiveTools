@@ -150,8 +150,15 @@
 ### Python で起動する場合
 
 ```bash
+cd RRoulette
+python main.py
+```
+
+または開発用サブディレクトリから起動する場合:
+
+```bash
 cd RRoulette/pyside6
-python run_proto.py
+python run.py
 ```
 
 ### 実行ファイル（exe）を使う場合

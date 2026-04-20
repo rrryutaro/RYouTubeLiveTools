@@ -13,7 +13,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['rroulette_pyside6.py'],
+    ['main.py'],
     pathex=['pyside6'],
     binaries=binaries,
     datas=datas,

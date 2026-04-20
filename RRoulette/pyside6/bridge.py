@@ -1,5 +1,5 @@
 """
-PySide6 プロトタイプ — 既存ロジック橋渡し層
+bridge.py — 既存ロジック橋渡し層
 
 既存 RRoulette のロジック資産（constants, design_settings, geometry,
 layout_search, config_utils）と PySide6 UI 層を接続する。
@@ -7,10 +7,15 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
 責務:
   - sys.path を通して既存モジュールを import 可能にする
   - layout_search の tkinter.font 依存を QtFontAdapter でモンキーパッチ
-  - 設定読み込み（raw config dict / AppSettings / DesignSettings）
+  - 定数・型・デザイン設定の re-export
+  - 設定読み込み（AppSettings / DesignSettings）— 純 I/O は config_io へ委譲
   - 項目データ読み込み（ItemEntry リスト）
   - セグメント構築（確率・分割・配置の既存ロジック呼び出し）
   - UI 側へ渡すデータの整形
+
+config / pattern 管理は専用モジュールへ切り出し済み:
+  - config_io.py     — load_config / save_config
+  - pattern_store.py — パターン管理純ロジック
 
 データの流れ（2系統）:
 
@@ -32,8 +37,6 @@ layout_search, config_utils）と PySide6 UI 層を接続する。
 
 import sys
 import os
-import json
-import uuid as _uuid
 
 # ── 既存モジュールへのパスを通す ─────────────────────────────────
 _RROULETTE_DIR = os.path.normpath(
@@ -67,7 +70,14 @@ from geometry import (
     get_radial_width_at_tangential_offset,
     polar_to_canvas, normalize_angle_deg,
 )
-from config_utils import CONFIG_FILE, BASE_DIR
+# ── 設定 I/O / パターン管理 — 専用モジュールから re-export ──────────
+# これらは bridge から切り出し済み。後方互換のため bridge 経由でも参照可能。
+from config_io import load_config, save_config
+from pattern_store import (
+    get_pattern_names, get_current_pattern_name, set_current_pattern,
+    add_pattern, delete_pattern, rename_pattern,
+    get_pattern_ids, get_pattern_id, ensure_pattern_ids,
+)
 
 # ── layout_search の tkinter.font 依存をモンキーパッチ ─────────────
 # layout_search は import 時に `import tkinter.font as tkfont` を実行するため、
@@ -95,148 +105,10 @@ from layout_search import (
 layout_search._make_font = make_qt_font
 
 
-# ── 設定読み込み ──────────────────────────────────────────────────
+# ── 設定 / 項目 ──────────────────────────────────────────────────
 
 from app_settings import AppSettings
 from item_entry import ItemEntry
-
-
-# ── パターン管理 ─────────────────────────────────────────────────
-
-def get_pattern_names(config: dict) -> list[str]:
-    """config dict からパターン名の一覧を返す。"""
-    patterns = config.get("item_patterns", {})
-    if not patterns:
-        return ["デフォルト"]
-    return list(patterns.keys())
-
-
-def get_current_pattern_name(config: dict) -> str:
-    """config dict から現在のパターン名を返す。"""
-    return config.get("current_pattern", "デフォルト")
-
-
-def set_current_pattern(config: dict, pattern_name: str) -> None:
-    """現在パターンを切り替えて保存する。"""
-    patterns = config.get("item_patterns", {})
-    if pattern_name not in patterns:
-        return
-    config["current_pattern"] = pattern_name
-    save_config(config)
-
-
-def add_pattern(config: dict, pattern_name: str) -> bool:
-    """新しい空パターンを追加する。既に同名があれば False を返す。"""
-    if "item_patterns" not in config:
-        config["item_patterns"] = {}
-    if pattern_name in config["item_patterns"]:
-        return False
-    config["item_patterns"][pattern_name] = []
-    # i407: pattern_id を生成して登録する
-    if "pattern_ids" not in config:
-        config["pattern_ids"] = {}
-    if pattern_name not in config["pattern_ids"]:
-        config["pattern_ids"][pattern_name] = str(_uuid.uuid4())
-    save_config(config)
-    return True
-
-
-def delete_pattern(config: dict, pattern_name: str) -> bool:
-    """指定パターンを削除する。最後の1件は削除不可。
-
-    削除後、current_pattern が削除対象だった場合は残りの先頭に切り替える。
-    Returns:
-        削除できたら True。
-    """
-    patterns = config.get("item_patterns", {})
-    if pattern_name not in patterns:
-        return False
-    if len(patterns) <= 1:
-        return False
-    del patterns[pattern_name]
-    if config.get("current_pattern") == pattern_name:
-        config["current_pattern"] = next(iter(patterns))
-    # i407: pattern_ids からも削除する
-    config.get("pattern_ids", {}).pop(pattern_name, None)
-    save_config(config)
-    return True
-
-
-def rename_pattern(config: dict, old_name: str, new_name: str) -> bool:
-    """パターン名を変更する。UUID は保持する（i407: 不変ID方針）。
-
-    辞書キーの順序を保持したまま old_name を new_name に置換する。
-    Returns:
-        変更できたら True。old_name が存在しない / new_name が既存なら False。
-    """
-    patterns = config.get("item_patterns", {})
-    if old_name not in patterns:
-        return False
-    if new_name in patterns and new_name != old_name:
-        return False
-    # Python 3.7+ の辞書は挿入順を保持するため、順序を保ちながらキーを置換する
-    config["item_patterns"] = {
-        (new_name if k == old_name else k): v
-        for k, v in patterns.items()
-    }
-    if config.get("current_pattern") == old_name:
-        config["current_pattern"] = new_name
-    # i407: pattern_ids のキー（表示名）を更新するが UUID は維持する
-    pid_map = config.get("pattern_ids", {})
-    if old_name in pid_map:
-        pid_map[new_name] = pid_map.pop(old_name)
-    save_config(config)
-    return True
-
-
-# ── i407: パターン ID 管理 ───────────────────────────────────────────
-
-def get_pattern_ids(config: dict) -> dict:
-    """config からパターン名 → UUID のマップを返す。"""
-    return config.get("pattern_ids", {})
-
-
-def get_pattern_id(config: dict, pattern_name: str) -> str:
-    """指定パターン名の UUID を返す。存在しなければ生成して登録・保存する。
-
-    Args:
-        config: config dict
-        pattern_name: パターン名
-    Returns:
-        そのパターンの不変 UUID 文字列
-    """
-    if "pattern_ids" not in config:
-        config["pattern_ids"] = {}
-    pid_map = config["pattern_ids"]
-    if pattern_name not in pid_map:
-        pid_map[pattern_name] = str(_uuid.uuid4())
-        save_config(config)
-    return pid_map[pattern_name]
-
-
-def ensure_pattern_ids(config: dict) -> dict:
-    """全パターンに pattern_id が付いていることを保証する。
-
-    旧フォーマット（pattern_ids なし）から呼ばれた場合、全パターンに UUID を生成して保存する。
-    Returns:
-        {pattern_name: uuid} の dict
-    """
-    patterns = config.get("item_patterns", {})
-    if "pattern_ids" not in config:
-        config["pattern_ids"] = {}
-    pid_map = config["pattern_ids"]
-    changed = False
-    for name in patterns:
-        if name not in pid_map:
-            pid_map[name] = str(_uuid.uuid4())
-            changed = True
-    # item_patterns が空の場合: "デフォルト" 単一パターンとして ID を確保
-    if not patterns and "デフォルト" not in pid_map:
-        pid_map["デフォルト"] = str(_uuid.uuid4())
-        changed = True
-    if changed:
-        save_config(config)
-    return pid_map
 
 
 def load_app_settings(config: dict | None = None) -> AppSettings:
@@ -248,21 +120,6 @@ def load_app_settings(config: dict | None = None) -> AppSettings:
     if config is None:
         config = load_config()
     return AppSettings.from_config(config)
-
-
-def load_config() -> dict:
-    """既存の設定ファイルを読み込む。ファイルがなければ空辞書を返す。"""
-    try:
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_config(config: dict) -> None:
-    """設定辞書をファイルに保存する。"""
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 def save_item_entries(config: dict, entries: list[ItemEntry],

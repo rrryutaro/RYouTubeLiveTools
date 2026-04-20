@@ -1,9 +1,9 @@
 """
-RRoulette PySide6 プロトタイプ — 起動スクリプト
+RRoulette PySide6 — 開発用起動スクリプト
 
 使い方:
   cd RRoulette/pyside6
-  python run_proto.py
+  python run.py
 
 操作:
   - 左ドラッグ: ウィンドウ移動
@@ -40,7 +40,7 @@ app.setFont(QFont("Meiryo", 9))
 # モジュール変数 _instance_mutex に保持することで、プロセス生存中は
 # ミューテックスが解放されず、確実に二重起動を防ぐ。
 #
-# i489: ミューテックス名を rroulette_pyside6.py (EXE エントリー) と統一。
+# i489: ミューテックス名を main.py (EXE エントリー) と統一。
 # Python 実行と EXE 実行で同じ名前を使うことで、どちらが起動中でも
 # もう一方の多重起動を防ぐ。
 _INSTANCE_MUTEX_NAME = "Local\\RRoulette_SingleInstance_v1"
