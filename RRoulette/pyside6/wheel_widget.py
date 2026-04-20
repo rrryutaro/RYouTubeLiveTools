@@ -15,10 +15,9 @@ resizeEvent で同期的に再計算する。
 スピン物理は SpinController に委譲済み。
 
 既存ロジック接続:
-  - constants.py: MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG, Segment
-  - design_settings.py: DesignSettings（色・フォント設定）
-  - geometry.py: SafeSector, get_sector_safe_area
-  - layout_search.py: build_all_sector_layouts, LayoutResult
+  - app_constants.py: MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG, Segment
+  - design_models.py: DesignSettings（色・フォント設定）
+  - layout_search_adapter.py: build_all_sector_layouts, LayoutResult
 """
 
 import math
@@ -26,16 +25,13 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-# 既存ロジックは bridge 経由で import
 from app_constants import (
     MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG,
     DONUT_DRAW_RADIUS, DONUT_HIT_RADIUS,
     Segment,
 )
 from design_models import DesignSettings
-from bridge import (
-    build_all_sector_layouts, LayoutResult,
-)
+from layout_search_adapter import build_all_sector_layouts, LayoutResult
 
 
 class WheelWidget(QWidget):
