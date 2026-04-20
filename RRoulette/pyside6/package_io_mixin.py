@@ -12,11 +12,9 @@ i447: main_window.py から分離。
 
 import os
 
-from bridge import (
-    build_segments_from_entries,
-    get_pattern_names, get_pattern_id,
-    ItemEntry,
-)
+from segment_builder import build_segments_from_entries
+from pattern_store import get_pattern_names, get_pattern_id
+from item_entry import ItemEntry
 from per_roulette_settings import PER_ROULETTE_KEYS
 
 

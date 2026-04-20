@@ -49,8 +49,8 @@ from bridge import (
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
     DesignPresetManager,
     load_config, load_design, load_app_settings,
-    build_segments_from_config,
 )
+from segment_builder import build_segments_from_config
 from item_data_io import load_all_item_entries, save_item_entries
 from pattern_store import (
     get_pattern_names, get_current_pattern_name,

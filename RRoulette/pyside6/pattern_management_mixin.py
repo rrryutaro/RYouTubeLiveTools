@@ -19,7 +19,7 @@ import os
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from bridge import build_segments_from_entries
+from segment_builder import build_segments_from_entries
 from item_data_io import load_all_item_entries, save_item_entries
 from item_entry import ItemEntry
 from pattern_store import (

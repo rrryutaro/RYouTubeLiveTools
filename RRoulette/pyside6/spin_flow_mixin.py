@@ -15,11 +15,8 @@ i438: main_window.py から分離。
 import random
 import uuid as _uuid_mod
 
-from bridge import (
-    build_segments_from_entries,
-    get_current_pattern_name,
-    get_pattern_id,
-)
+from segment_builder import build_segments_from_entries
+from pattern_store import get_current_pattern_name, get_pattern_id
 from roulette_actions import LastSpinResult, SpinRoulette
 
 

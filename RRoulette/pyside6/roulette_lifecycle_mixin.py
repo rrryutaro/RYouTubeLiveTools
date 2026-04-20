@@ -20,7 +20,7 @@ import uuid as _uuid_mod
 
 from PySide6.QtWidgets import QWidget, QMessageBox
 
-from bridge import build_segments_from_config, build_segments_from_entries
+from segment_builder import build_segments_from_config, build_segments_from_entries
 from item_data_io import load_all_item_entries
 from item_entry import ItemEntry
 from pattern_store import get_current_pattern_name, get_pattern_id
