@@ -107,15 +107,28 @@ class AppSettings:
 
     # ルーレット以外非表示時の個別表示設定 (i463/i464/i465):
     # True = ルーレット以外非表示モード ON 時にも「表示する」（残す）
+    # --- ルーレットパネル内の補助要素 ---
     roulette_only_show_selection_handle: bool = True  # 左上の選択つまみ
     roulette_only_show_title_plate: bool = True        # タイトル
     roulette_only_show_graph_btn: bool = True          # グラフ
     roulette_only_show_grip: bool = True               # リサイズグリップ
     roulette_only_show_log: bool = True                # ログオーバーレイ
+    # --- パネル系（デフォルト: 実行パネルのみ ON）---
+    roulette_only_show_manage_panel: bool = False      # 管理パネル
+    roulette_only_show_items_panel: bool = False       # 項目パネル
+    roulette_only_show_settings_panel: bool = False    # 設定パネル
+    roulette_only_show_execution_panel: bool = True    # 実行パネル（被りなし連続抽選）
+    roulette_only_show_ticket_panel: bool = False      # チケットパネル
 
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
     replay_show_indicator: bool = True  # リプレイ中インジケーター表示
+
+    # 全面非表示 (i485):
+    auto_hide_enabled: bool = True   # 自動全面非表示 ON/OFF (デフォルト: ON)
+    auto_hide_seconds: int = 10      # 自動非表示までの秒数 (デフォルト: 10秒)
+    auto_hide_fade_enabled: bool = True  # 自動非表示時フェードアウト ON/OFF (デフォルト: ON)
+    auto_hide_fade_seconds: float = 0.6  # フェードアウト時間（秒, デフォルト: 0.6秒）
 
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
@@ -150,6 +163,12 @@ class AppSettings:
     manage_panel_width: int | None = None
     manage_panel_height: int | None = None
     manage_panel_visible: bool = False
+    # 被りなし連続抽選パネルの保存位置（i038: 共通パネル形式統一）
+    seq_panel_x: int | None = None
+    seq_panel_y: int | None = None
+    seq_panel_width: int | None = None
+    seq_panel_height: int | None = None
+    seq_panel_drag_bar_visible: bool = True
     always_on_top: bool = True         # メインウィンドウ常に最前面（デフォルト: ON）
     # 透過フラグは window / roulette を独立に持つ
     # 旧 `transparent` キーは互換のため from_config 側でフォールバック読込
@@ -167,6 +186,14 @@ class AppSettings:
     items_panel_drag_bar_visible: bool = True
     settings_panel_drag_bar_visible: bool = True
     manage_panel_drag_bar_visible: bool = True
+
+    # チケットパネル (i050)
+    ticket_panel_x: int | None = None
+    ticket_panel_y: int | None = None
+    ticket_panel_width: int | None = None
+    ticket_panel_height: int | None = None
+    ticket_panel_visible: bool = False
+    ticket_panel_drag_bar_visible: bool = True
 
     # 設定パネル折りたたみ状態 (セクション名 → True=折りたたみ)
     collapsed_sections: dict = field(default_factory=dict)
@@ -250,6 +277,11 @@ class AppSettings:
             manage_panel_width=config.get("manage_panel_width"),
             manage_panel_height=config.get("manage_panel_height"),
             manage_panel_visible=config.get("manage_panel_visible", False),
+            seq_panel_x=config.get("seq_panel_x"),
+            seq_panel_y=config.get("seq_panel_y"),
+            seq_panel_width=config.get("seq_panel_width"),
+            seq_panel_height=config.get("seq_panel_height"),
+            seq_panel_drag_bar_visible=config.get("seq_panel_drag_bar_visible", True),
             always_on_top=config.get("always_on_top", True),
             # 透過: 新キー優先、旧 transparent 互換 (両方に同じ値)
             window_transparent=config.get(
@@ -279,6 +311,10 @@ class AppSettings:
             confirm_item_delete=config.get("confirm_item_delete", True),
             replay_max_count=config.get("replay_max_count", 5),
             replay_show_indicator=config.get("replay_show_indicator", True),
+            auto_hide_enabled=config.get("auto_hide_enabled", True),
+            auto_hide_seconds=config.get("auto_hide_seconds", 10),
+            auto_hide_fade_enabled=config.get("auto_hide_fade_enabled", True),
+            auto_hide_fade_seconds=float(config.get("auto_hide_fade_seconds", 0.6)),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
@@ -287,9 +323,32 @@ class AppSettings:
             roulette_only_show_graph_btn=config.get("roulette_only_show_graph_btn", True),
             roulette_only_show_grip=config.get("roulette_only_show_grip", True),
             roulette_only_show_log=config.get("roulette_only_show_log", True),
+            roulette_only_show_manage_panel=config.get("roulette_only_show_manage_panel", False),
+            roulette_only_show_items_panel=config.get("roulette_only_show_items_panel", False),
+            roulette_only_show_settings_panel=config.get("roulette_only_show_settings_panel", False),
+            roulette_only_show_execution_panel=config.get("roulette_only_show_execution_panel", True),
+            roulette_only_show_ticket_panel=config.get("roulette_only_show_ticket_panel", False),
             manage_panel_float=config.get("manage_panel_float", False),
             items_panel_float=config.get("items_panel_float", False),
+            ticket_panel_x=config.get("ticket_panel_x"),
+            ticket_panel_y=config.get("ticket_panel_y"),
+            ticket_panel_width=config.get("ticket_panel_width"),
+            ticket_panel_height=config.get("ticket_panel_height"),
+            ticket_panel_visible=config.get("ticket_panel_visible", False),
+            ticket_panel_drag_bar_visible=config.get("ticket_panel_drag_bar_visible", True),
         )
+
+    @classmethod
+    def load(cls, config: dict | None = None) -> "AppSettings":
+        """config dict から AppSettings を構築する。
+
+        bridge.py から移動。config が None の場合は load_config() を呼ぶ。
+        将来設定の追加時は from_config() のみ修正すればよい。
+        """
+        if config is None:
+            from config_io import load_config
+            config = load_config()
+        return cls.from_config(config)
 
     def to_config_patch(self) -> dict:
         """AppSettings の値を config dict にマージ可能な差分として返す。
@@ -344,6 +403,11 @@ class AppSettings:
             "manage_panel_width": self.manage_panel_width,
             "manage_panel_height": self.manage_panel_height,
             "manage_panel_visible": self.manage_panel_visible,
+            "seq_panel_x": self.seq_panel_x,
+            "seq_panel_y": self.seq_panel_y,
+            "seq_panel_width": self.seq_panel_width,
+            "seq_panel_height": self.seq_panel_height,
+            "seq_panel_drag_bar_visible": self.seq_panel_drag_bar_visible,
             "always_on_top": self.always_on_top,
             "window_transparent": self.window_transparent,
             "roulette_transparent": self.roulette_transparent,
@@ -368,6 +432,10 @@ class AppSettings:
             "confirm_item_delete": self.confirm_item_delete,
             "replay_max_count": self.replay_max_count,
             "replay_show_indicator": self.replay_show_indicator,
+            "auto_hide_enabled": self.auto_hide_enabled,
+            "auto_hide_seconds": self.auto_hide_seconds,
+            "auto_hide_fade_enabled": self.auto_hide_fade_enabled,
+            "auto_hide_fade_seconds": self.auto_hide_fade_seconds,
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
             "item_panel_display_mode": self.item_panel_display_mode,
@@ -376,6 +444,17 @@ class AppSettings:
             "roulette_only_show_graph_btn": self.roulette_only_show_graph_btn,
             "roulette_only_show_grip": self.roulette_only_show_grip,
             "roulette_only_show_log": self.roulette_only_show_log,
+            "roulette_only_show_manage_panel": self.roulette_only_show_manage_panel,
+            "roulette_only_show_items_panel": self.roulette_only_show_items_panel,
+            "roulette_only_show_settings_panel": self.roulette_only_show_settings_panel,
+            "roulette_only_show_execution_panel": self.roulette_only_show_execution_panel,
+            "roulette_only_show_ticket_panel": self.roulette_only_show_ticket_panel,
             "manage_panel_float": self.manage_panel_float,
             "items_panel_float": self.items_panel_float,
+            "ticket_panel_x": self.ticket_panel_x,
+            "ticket_panel_y": self.ticket_panel_y,
+            "ticket_panel_width": self.ticket_panel_width,
+            "ticket_panel_height": self.ticket_panel_height,
+            "ticket_panel_visible": self.ticket_panel_visible,
+            "ticket_panel_drag_bar_visible": self.ticket_panel_drag_bar_visible,
         }

@@ -5,10 +5,7 @@ i448: main_window.py から分離。
 責務:
   - ウィンドウ/ルーレット透過適用 (_apply_window_transparent, _apply_roulette_transparent)
   - ルーレット以外非表示モード (_toggle_roulette_only_mode, _apply_roulette_only_mode,
-      _apply_roulette_only_mode_single, _apply_roulette_only_mode_multi,
-      _recalc_multi_roulette_only_bounds)
-  - roulette_only 時のウィンドウドラッグ/リサイズ転送 (_on_roulette_window_drag,
-      _on_roulette_window_resize)
+      _sidebar_panel_entries)
   - 常に最前面 / グリップ / ドラッグバー / コントロールボックス / インスタンス表示 トグル
   - 設定パネルフローティング切替 (_toggle_settings_panel_float,
       _apply_settings_panel_float)
@@ -19,7 +16,7 @@ i448: main_window.py から分離。
   class MainWindow(UIToggleMixin, PackageIOMixin, SettingsIOMixin, ..., QMainWindow)
 """
 
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QPropertyAnimation, QParallelAnimationGroup
 
 
 class UIToggleMixin:
@@ -73,189 +70,86 @@ class UIToggleMixin:
         self._apply_roulette_only_mode(self._settings.roulette_only_mode)
         self._save_config()
 
-    def _apply_roulette_only_mode(self, enabled: bool):
+    def _sidebar_panel_entries(self) -> list:
+        """roulette_only で表示/非表示を切り替えるサイドパネルの一覧。
+
+        i038: 新しいパネルを追加する場合はここにエントリを追加するだけでよい。
+
+        Returns:
+            list of (key, panel, show_setting)
+              key:          saved visibility dict のキー
+              panel:        パネルウィジェット
+              show_setting: roulette_only ON 時に表示を維持する場合 True の設定値
+        """
+        _s = self._settings
+        entries = [
+            ("item",     self._item_panel,     _s.roulette_only_show_items_panel),
+            ("settings", self._settings_panel, _s.roulette_only_show_settings_panel),
+            ("manage",   self._manage_panel,   _s.roulette_only_show_manage_panel),
+        ]
+        _seq = getattr(self, '_seq_dialog', None)
+        if _seq is not None:
+            entries.append(("seq", _seq, _s.roulette_only_show_execution_panel))
+        _ticket = getattr(self, '_ticket_panel', None)
+        if _ticket is not None:
+            entries.append(("ticket", _ticket, _s.roulette_only_show_ticket_panel))
+        return entries
+
+    def _apply_roulette_only_mode(self, enabled: bool, *, _preset_snapshot: dict | None = None):
         """ルーレット以外非表示モードを適用する。
 
-        i334: single / multi で挙動を分岐する。
-          single (roulette 1件): 従来どおりウィンドウ操作に委譲。
-          multi  (roulette 2件以上): 非ルーレット系パネルのみ非表示にし、
-            各 roulette は現在位置のまま保持。ウィンドウを全 roulette の
-            最小包含矩形へ追従させる。
-        """
-        if self._manager.count > 1:
-            self._apply_roulette_only_mode_multi(enabled)
-        else:
-            self._apply_roulette_only_mode_single(enabled)
+        i039: single/multi の分岐を廃止し、単一モードに統一。
+          ON:  サイドパネルを設定に従い非表示。ルーレットパネル・ウィンドウは現在位置のまま保持。
+               ウィンドウのリサイズ・ルーレットパネルの移動は行わない。
+          OFF: ON 前の可視状態・ウィンドウサイズを復元。
 
-    def _apply_roulette_only_mode_single(self, enabled: bool):
-        """single 時の `ルーレット以外非表示` 処理（従来ロジックを維持）。"""
-        panel = self._active_panel
+        i058: _preset_snapshot を指定すると、現在の UI 状態からのスナップショット取得を
+              スキップして指定値をそのまま使用する。起動時に使用し、パネルの一時表示を回避する。
+        """
         if enabled:
-            # ON 前の状態を保存（可視性・パネル位置・ウィンドウサイズ・透過状態）
-            self._roulette_only_saved_visibility = {
-                "item": self._item_panel.isVisible(),
-                "settings": self._settings_panel.isVisible(),
-                "manage": self._manage_panel.isVisible(),
-                "window_transparent": self._settings.window_transparent,
-                "roulette_transparent": self._settings.roulette_transparent,
-                "panel_pos": QPoint(panel.pos()),
-                "panel_size": panel.size(),
-                "window_size": self.size(),
-                "panel_offsets": {
-                    "item":     (self._item_panel.x(),     self._item_panel.y()),
-                    "settings": (self._settings_panel.x(), self._settings_panel.y()),
-                    "manage":   (self._manage_panel.x(),   self._manage_panel.y()),
-                },
-                # i462: ルーレットパネル内の補助 UI 表示状態を保存
-                "rp_selection_handle": panel._selection_handle.isVisible(),
-                "rp_title_plate": panel._title_plate.isVisible(),
-                "rp_graph_btn": panel._graph_btn.isVisible(),
-                "rp_grip": panel._grip.isVisible(),
-            }
-            # パネルを非表示
-            self._item_panel.hide()
-            self._settings_panel.hide()
-            self._settings_panel_visible = False
-            self._manage_panel.hide()
-            # ドラッグバーを非表示
-            if hasattr(self, "_mw_drag_bar"):
-                self._mw_drag_bar.hide()
-            # i462/i463/i464/i465: ルーレットパネル内の補助 UI を設定に従い非表示
-            # show=True → 表示維持、show=False → 非表示
             _s = self._settings
-            if not _s.roulette_only_show_selection_handle:
-                panel._selection_handle.hide()
-            if not _s.roulette_only_show_title_plate:
-                panel._title_plate.hide()
-            if not _s.roulette_only_show_graph_btn:
-                panel._graph_btn.hide()
-            if not _s.roulette_only_show_grip:
-                panel._grip.hide()
-            # ウィンドウ背景とルーレットパネルを透過
-            self._apply_window_transparent(True)
-            self._apply_roulette_transparent(True)
-            # ルーレットパネルをウィンドウ左上に寄せてウィンドウをパネルサイズへ
-            panel.roulette_only_mode = True
-            panel._grip._skip_parent_clamp = True
-            panel.move(0, 0)
-            self.resize(panel.width(), panel.height())
-            # i469: roulette_only_active/log_show フラグを設定して _refresh_log_overlay で一括判定。
-            # show() → resizeEvent → _sync_wheel() → _refresh_log_overlay() の流れで
-            # visible_eff が正しく計算されるよう、show() 前にフラグを立てておく。
-            panel._roulette_only_active = True
-            panel._roulette_only_log_show = _s.roulette_only_show_log
-            # ウィンドウから外枠・影を OS/Qt レベルで完全に除去
-            was_visible = self.isVisible()
-            flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
-                     | Qt.WindowType.NoDropShadowWindowHint)
-            if self._settings.always_on_top:
-                flags |= Qt.WindowType.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            if was_visible:
-                self.show()
-            self._dwm_set_borderless(int(self.winId()), True)
-        else:
-            saved = self._roulette_only_saved_visibility
-            was_visible = self.isVisible()
-            self._apply_window_flags()
-            if was_visible:
-                self.show()
-            self._dwm_set_borderless(int(self.winId()), False)
-            panel.roulette_only_mode = False
-            panel._grip._skip_parent_clamp = False
-            dw = panel.width()  - saved["panel_size"].width()
-            dh = panel.height() - saved["panel_size"].height()
-            if "panel_pos" in saved:
-                panel.move(saved["panel_pos"])
-            if "window_size" in saved:
-                new_w = saved["window_size"].width()  + max(0, dw)
-                new_h = saved["window_size"].height() + max(0, dh)
-                self.resize(new_w, new_h)
-            if hasattr(self, "_mw_drag_bar"):
-                self._mw_drag_bar.setGeometry(
-                    0, 0, self.width(), self._mw_drag_bar._BAR_HEIGHT
-                )
-                self._mw_drag_bar.show()
-                self._mw_drag_bar.raise_()
-            self._apply_window_transparent(saved.get("window_transparent", False))
-            self._apply_roulette_transparent(saved.get("roulette_transparent", False))
-            old_rp_right  = saved["panel_pos"].x() + saved["panel_size"].width()
-            old_rp_bottom = saved["panel_pos"].y() + saved["panel_size"].height()
-            offsets = saved.get("panel_offsets", {})
-            panel_entries = [
-                ("item",     self._item_panel,     saved.get("item",     False)),
-                ("settings", self._settings_panel, saved.get("settings", False)),
-                ("manage",   self._manage_panel,   saved.get("manage",   False)),
-            ]
-            for key, sp, was_visible_panel in panel_entries:
-                if not was_visible_panel:
-                    continue
-                sp.show()
-                ox, oy = offsets.get(key, (sp.x(), sp.y()))
-                shift_x = dw if ox >= old_rp_right  else 0
-                shift_y = dh if oy >= old_rp_bottom else 0
-                new_x, new_y = self._clamp_to_client(
-                    ox + shift_x, oy + shift_y, sp.width(), sp.height()
-                )
-                sp.move(new_x, new_y)
-            if saved.get("settings", False):
-                self._settings_panel_visible = True
-            # i462/i463: ルーレットパネル内の補助 UI を復元
-            if saved.get("rp_selection_handle", True):
-                panel._selection_handle.show()
-            if saved.get("rp_title_plate", True):
-                panel._title_plate.show()
-            if saved.get("rp_graph_btn", True):
-                panel._graph_btn.show()
-            if saved.get("rp_grip", True):
-                panel._grip.show()
-            # i469: roulette_only 状態をリセットしてからログオーバーレイを復元
-            panel._roulette_only_active = False
-            panel._roulette_only_log_show = True
-            panel._refresh_log_overlay()
+            # サイドパネル一覧をループで処理
+            _entries = self._sidebar_panel_entries()
 
-    def _apply_roulette_only_mode_multi(self, enabled: bool):
-        """multi 時の `ルーレット以外非表示` 処理。
+            if _preset_snapshot is not None:
+                # i058: 起動時専用 — 呼び出し元が設定値から事前構築したスナップショットを使用。
+                # パネルを通常状態で一時表示せずに roulette_only モードを適用できる。
+                self._roulette_only_saved_visibility = _preset_snapshot
+            else:
+                _offsets = {key: (p.x(), p.y()) for key, p, _ in _entries}
+                _vis_save = {key: p.isVisible() for key, p, _ in _entries}
+                # 各ルーレットパネルの補助 UI 表示状態を保存
+                _rp_ui_saved = {}
+                for _rid in self._manager.ids():
+                    _ctx = self._manager.get(_rid)
+                    if _ctx and _ctx.panel:
+                        _p = _ctx.panel
+                        _rp_ui_saved[_rid] = {
+                            "selection_handle": _p._selection_handle.isVisible(),
+                            "title_plate": _p._title_plate.isVisible(),
+                            "graph_btn": _p._graph_btn.isVisible(),
+                            "grip": _p._grip.isVisible(),
+                        }
+                self._roulette_only_saved_visibility = {
+                    **_vis_save,
+                    "settings_panel_visible": self._settings_panel_visible,
+                    "window_transparent": _s.window_transparent,
+                    "roulette_transparent": _s.roulette_transparent,
+                    "window_size": self.size(),
+                    "panel_offsets": _offsets,
+                    "rp_ui": _rp_ui_saved,
+                }
 
-        i335 修正:
-          ON:  非ルーレット系パネルのみ非表示。各 roulette は現在位置のまま。
-               roulette の移動は OFF 時と同様にメインウィンドウ内の通常移動とする。
-               ウィンドウサイズの動的追従は行わない。
-          OFF: 可視状態を ON 前に復元。roulette の位置/サイズは維持。
-        """
-        if enabled:
-            # ON 前の状態を保存
-            # i462: 各ルーレットパネルの補助 UI 表示状態も保存する
-            _rp_ui_saved = {}
-            for _rid in self._manager.ids():
-                _ctx = self._manager.get(_rid)
-                if _ctx and _ctx.panel:
-                    _p = _ctx.panel
-                    _rp_ui_saved[_rid] = {
-                        "selection_handle": _p._selection_handle.isVisible(),
-                        "title_plate": _p._title_plate.isVisible(),
-                        "graph_btn": _p._graph_btn.isVisible(),
-                        "grip": _p._grip.isVisible(),
-                    }
-            self._roulette_only_saved_visibility = {
-                "item": self._item_panel.isVisible(),
-                "settings": self._settings_panel.isVisible(),
-                "manage": self._manage_panel.isVisible(),
-                "window_transparent": self._settings.window_transparent,
-                "roulette_transparent": self._settings.roulette_transparent,
-                "window_size": self.size(),
-                "rp_ui": _rp_ui_saved,
-            }
-            # 非ルーレット系パネルのみ非表示
-            self._item_panel.hide()
-            self._settings_panel.hide()
-            self._settings_panel_visible = False
-            self._manage_panel.hide()
+            # サイドパネルを設定に従い条件付きで非表示（ループ処理）
+            for key, p, show in _entries:
+                if not show and p.isVisible():
+                    p.hide()
+                    if key == "settings":
+                        self._settings_panel_visible = False
+            # i034: ドラッグバーを透過化（hide せずスペース維持 → 位置ずれ防止）
             if hasattr(self, "_mw_drag_bar"):
-                self._mw_drag_bar.hide()
+                self._mw_drag_bar.set_roulette_only(True)
             # i462/i463/i464/i465: 各ルーレットパネル内の補助 UI を設定に従い非表示
-            # show=True → 表示維持、show=False → 非表示
-            _s = self._settings
             for _rid in self._manager.ids():
                 _ctx = self._manager.get(_rid)
                 if _ctx and _ctx.panel:
@@ -271,54 +165,61 @@ class UIToggleMixin:
             # ウィンドウ・ルーレットを透過
             self._apply_window_transparent(True)
             self._apply_roulette_transparent(True)
-            # i469: roulette_only_active/log_show フラグを設定（single と同様）
+            # i469: roulette_only_active/log_show フラグを設定
             for _rid_log in self._manager.ids():
                 _ctx_log = self._manager.get(_rid_log)
                 if _ctx_log and _ctx_log.panel:
                     _p_log = _ctx_log.panel
                     _p_log._roulette_only_active = True
                     _p_log._roulette_only_log_show = _s.roulette_only_show_log
-            # ウィンドウフラグ: 外枠・影を除去
-            was_visible = self.isVisible()
+            # i058: ウィンドウフラグが変化した場合のみ setWindowFlags → show を実行する。
+            # 起動時は _apply_window_flags() が既に NoDropShadowWindowHint を含むため
+            # フラグが一致し、ネイティブウィンドウ再生成フラッシュを回避できる。
             flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
                      | Qt.WindowType.NoDropShadowWindowHint)
             if self._settings.always_on_top:
                 flags |= Qt.WindowType.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            if was_visible:
-                self.show()
+            if self.windowFlags() != flags:
+                _win_pos = self.pos()
+                was_visible = self.isVisible()
+                self.setWindowFlags(flags)
+                if was_visible:
+                    self.show()
+                self.move(_win_pos)  # 位置を復元
             self._dwm_set_borderless(int(self.winId()), True)
-            # 各 roulette は roulette_only_mode = False のまま。
-            # ウィンドウ内の通常移動（OFF 時と同様）で扱う。
         else:
             saved = self._roulette_only_saved_visibility
+            # setWindowFlags+show による OS 位置ずれを防ぐため事前に画面位置を保存
+            _win_pos = self.pos()
             was_visible = self.isVisible()
             self._apply_window_flags()
             if was_visible:
                 self.show()
             self._dwm_set_borderless(int(self.winId()), False)
+            self.move(_win_pos)  # 位置を復元
             # ウィンドウサイズを復元
             if "window_size" in saved:
                 self.resize(saved["window_size"])
+            # i034: ドラッグバーを通常表示に戻す（set_roulette_only で管理）
             if hasattr(self, "_mw_drag_bar"):
+                self._mw_drag_bar.set_roulette_only(False)
                 self._mw_drag_bar.setGeometry(
                     0, 0, self.width(), self._mw_drag_bar._BAR_HEIGHT
                 )
-                self._mw_drag_bar.show()
                 self._mw_drag_bar.raise_()
             self._apply_window_transparent(saved.get("window_transparent", False))
             self._apply_roulette_transparent(saved.get("roulette_transparent", False))
-            # 可視パネルを復元
-            panel_entries = [
-                ("item",     self._item_panel),
-                ("settings", self._settings_panel),
-                ("manage",   self._manage_panel),
-            ]
-            for key, sp in panel_entries:
-                if saved.get(key, False):
-                    sp.show()
+            # サイドパネルをループで復元（seq_dialog を含む）
+            offsets = saved.get("panel_offsets", {})
+            for key, sp, _ in self._sidebar_panel_entries():
+                if not saved.get(key, False):
+                    continue
+                sp.show()
+                ox, oy = offsets.get(key, (sp.x(), sp.y()))
+                new_x, new_y = self._clamp_to_client(ox, oy, sp.width(), sp.height())
+                sp.move(new_x, new_y)
             if saved.get("settings", False):
-                self._settings_panel_visible = True
+                self._settings_panel_visible = saved.get("settings_panel_visible", True)
             # i462/i463/i465: 各ルーレットパネルの補助 UI を復元
             _rp_ui_saved = saved.get("rp_ui", {})
             for _rid in self._manager.ids():
@@ -340,19 +241,21 @@ class UIToggleMixin:
                     _p._refresh_log_overlay()
 
     def _recalc_multi_roulette_only_bounds(self):
-        """i335: multi 時の動的ウィンドウ境界追従は無効化。
-
-        i334 で実装した包含矩形追従ロジックは移動不具合を引き起こすため
-        i335 で撤回。geometry_changed からの接続は残るが、何もしない。
-        """
+        """i335 以降: 動的ウィンドウ境界追従は無効。geometry_changed 接続先として残す。"""
         return
 
     def _on_roulette_window_drag(self, delta):
-        """roulette_only_mode 時のルーレットドラッグをウィンドウ移動に変換する。"""
+        """roulette_only_mode 時のルーレットドラッグをウィンドウ移動に変換する。
+
+        i039: roulette_only_mode は使用しないため実質未呼出。接続先として残す。
+        """
         self.move(self.pos() + delta)
 
     def _on_roulette_window_resize(self, new_size):
-        """roulette_only_mode 時のルーレットリサイズをウィンドウリサイズに反映する。"""
+        """roulette_only_mode 時のルーレットリサイズをウィンドウリサイズに反映する。
+
+        i039: roulette_only_mode は使用しないため実質未呼出。接続先として残す。
+        """
         self.resize(new_size)
 
     # ================================================================
@@ -644,6 +547,171 @@ class UIToggleMixin:
         その表示/非表示を制御する。
         """
         self._settings_panel.set_spin_section_visible(visible)
+
+    # ================================================================
+    #  継続操作判定ヘルパー
+    # ================================================================
+
+    def _is_operation_active(self) -> bool:
+        """自動全面非表示を抑止すべき継続操作中かを返す。
+
+        スピン中（is_spinning）のみ True を返す。
+        結果表示中や連続抽選 runner 実行中はアイドルカウント継続扱い。
+        """
+        return self._is_any_spinning()
+
+    # ================================================================
+    #  全面非表示 (i485)
+    # ================================================================
+
+    def _hide_all(self):
+        """RRoulette 全体を全面非表示にする（手動 Esc・自動アイドル共通）。
+
+        メインウィンドウを最小化し（タスクバーに残る）、フローティング中の
+        パネルは hide する。再アクティブ化（showNormal / changeEvent）で復元。
+        フェード完了後から呼ばれる場合は opacity はすでに 0 になっているが、
+        minimize/hide 後に復元時に 1.0 に戻す。
+        """
+        if getattr(self, '_is_all_hidden', False):
+            return
+        # フェード中フラグをクリア（フェード完了後の呼び出しに備える）
+        self._auto_hide_fading = False
+        # フローティングパネルの可視状態を保存して hide
+        saved = {}
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False) and panel.isVisible():
+                saved[id(panel)] = panel
+                panel.hide()
+        self._all_hidden_saved_panels = saved
+        self._is_all_hidden = True
+        # アイドルタイマーを停止
+        if hasattr(self, '_idle_timer'):
+            self._idle_timer.stop()
+        # メインウィンドウを最小化（タスクバー・Alt+Tab から復帰可能）
+        self.showMinimized()
+
+    def _restore_all(self):
+        """全面非表示を復元する（changeEvent での WindowStateChange 復帰時に呼ぶ）。
+
+        メインウィンドウは既に showNormal になった後に呼ばれる前提。
+        hide していたフローティングパネルを再表示し、opacity を 1.0 に戻す。
+        """
+        if not getattr(self, '_is_all_hidden', False):
+            return
+        self._is_all_hidden = False
+        # opacity を確実に 1.0 に戻す（フェードアウト後に残留している場合に備える）
+        self.setWindowOpacity(1.0)
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False):
+                panel.setWindowOpacity(1.0)
+        # フローティングパネル復元
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if id(panel) in getattr(self, '_all_hidden_saved_panels', {}):
+                panel.show()
+                panel.raise_()
+        self._all_hidden_saved_panels = {}
+        # アイドルタイマー再開
+        self._reset_idle_timer()
+
+    def _reset_idle_timer(self):
+        """アイドルタイマーをリセットする（ユーザー操作・復元時に呼ぶ）。
+
+        フェード中であれば中断して opacity を復元する。
+        全面非表示中・auto_hide_enabled=False・seconds<=0 のときはタイマー停止のみ。
+        """
+        if not hasattr(self, '_idle_timer'):
+            return
+        if getattr(self, '_is_all_hidden', False):
+            return
+        # フェード中なら中断して opacity を元に戻す
+        if getattr(self, '_auto_hide_fading', False):
+            self._cancel_auto_hide_fade()
+        if self._settings.auto_hide_enabled and self._settings.auto_hide_seconds > 0:
+            self._idle_timer.start(self._settings.auto_hide_seconds * 1000)
+        else:
+            self._idle_timer.stop()
+
+    def _start_auto_hide_fade(self):
+        """自動全面非表示のフェードアウトを開始する（アイドルタイマー満了時に呼ぶ）。
+
+        フェード有効時: 200ms かけて全関連ウィンドウをフェードアウト → `_hide_all()`。
+        フェード無効時: 即座に `_hide_all()`。
+        スピン中の場合はアイドルタイマーを再セットして非表示を保留する。
+        """
+        if getattr(self, '_is_all_hidden', False):
+            return
+        if getattr(self, '_auto_hide_fading', False):
+            return
+
+        # 継続操作中（スピン中・結果表示中・連続抽選実行中）は非表示へ進まずタイマーを再セット
+        if self._is_operation_active():
+            if self._settings.auto_hide_enabled and self._settings.auto_hide_seconds > 0:
+                self._idle_timer.start(self._settings.auto_hide_seconds * 1000)
+            return
+
+        if not self._settings.auto_hide_fade_enabled:
+            self._hide_all()
+            return
+
+        # フェード対象: 現在表示中のウィンドウを収集
+        targets = [self]
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False) and panel.isVisible():
+                targets.append(panel)
+
+        self._auto_hide_fading = True
+        # フェード時間: 設定値（秒）をミリ秒に変換。範囲は 100〜2000ms にクランプ
+        fade_ms = int(max(0.1, min(10.0, self._settings.auto_hide_fade_seconds)) * 1000)
+        group = QParallelAnimationGroup(self)
+        for w in targets:
+            anim = QPropertyAnimation(w, b"windowOpacity", group)
+            anim.setDuration(fade_ms)
+            anim.setStartValue(1.0)
+            anim.setEndValue(0.0)
+        group.finished.connect(self._on_auto_hide_fade_done)
+        self._auto_hide_anim_group = group  # GC 防止のため参照保持
+        group.start()
+
+    def _on_auto_hide_fade_done(self):
+        """フェード完了コールバック — 全面非表示処理へ移行する。"""
+        self._auto_hide_anim_group = None
+        # 二重呼び出し防止（_hide_all 内でフラグをクリア）
+        self._hide_all()
+
+    def _cancel_auto_hide_fade(self):
+        """フェード中断 — アニメーションを止めて opacity を 1.0 に戻す。"""
+        self._auto_hide_fading = False
+        group = getattr(self, '_auto_hide_anim_group', None)
+        if group is not None:
+            group.stop()
+            self._auto_hide_anim_group = None
+        # 全ウィンドウの opacity を確実にリセット
+        self.setWindowOpacity(1.0)
+        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
+            if getattr(panel, '_floating', False):
+                panel.setWindowOpacity(1.0)
+
+    def _on_auto_hide_fade_changed(self, enabled: bool):
+        """管理パネルのフェードアウト ON/OFF 変更を受け取る。"""
+        self._settings.auto_hide_fade_enabled = enabled
+        self._save_config()
+
+    def _on_auto_hide_fade_seconds_changed(self, seconds: float):
+        """管理パネルのフェードアウト時間変更を受け取る。"""
+        self._settings.auto_hide_fade_seconds = max(0.1, min(10.0, seconds))
+        self._save_config()
+
+    def _on_auto_hide_enabled_changed(self, enabled: bool):
+        """管理パネルの自動全面非表示 ON/OFF 変更を受け取る。"""
+        self._settings.auto_hide_enabled = enabled
+        self._reset_idle_timer()
+        self._save_config()
+
+    def _on_auto_hide_seconds_changed(self, seconds: int):
+        """管理パネルの自動全面非表示秒数変更を受け取る。"""
+        self._settings.auto_hide_seconds = max(1, seconds)
+        self._reset_idle_timer()
+        self._save_config()
 
     def _toggle_settings_panel(self):
         if self._settings_panel_visible:

@@ -8,7 +8,7 @@ settings_panel.py から分離した純関数群。
      取り込まれていたもの。UI に依存しないため独立ファイルに分離した。
 """
 
-from bridge import ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES
+from app_constants import ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES
 
 
 def serialize_items_text(items: list[str]) -> str:

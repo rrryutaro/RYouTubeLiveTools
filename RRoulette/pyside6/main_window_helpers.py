@@ -66,14 +66,40 @@ class _TabRouletteFilter(QObject):
         self._mw = main_window
 
     def eventFilter(self, obj, event):
-        if (event.type() == QEvent.Type.KeyPress
+        if (event.type() in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride)
                 and event.key() == Qt.Key.Key_Tab
                 and not event.isAutoRepeat()):
             fw = QApplication.focusWidget()
             if isinstance(fw, self._TEXT_INPUT_TYPES):
                 return False  # テキスト入力系はスルー
-            self._mw._toggle_roulette_only_mode()
-            return True  # イベント消費
+            if event.type() == QEvent.Type.KeyPress:
+                self._mw._toggle_roulette_only_mode()
+            return True  # KeyPress / ShortcutOverride いずれも消費
+        return False
+
+
+class _IdleResetFilter(QObject):
+    """i485: アイドル検出用 QApplication レベルイベントフィルタ。
+
+    マウス・キー・ホイール操作を検知して on_activity コールバックを呼ぶ。
+    これによりアイドルタイマーがリセットされ、自動全面非表示が延期される。
+    """
+
+    _ACTIVITY_TYPES = frozenset({
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.MouseButtonRelease,
+        QEvent.Type.MouseMove,
+        QEvent.Type.KeyPress,
+        QEvent.Type.Wheel,
+    })
+
+    def __init__(self, on_activity, parent=None):
+        super().__init__(parent)
+        self._on_activity = on_activity
+
+    def eventFilter(self, obj, event):
+        if event.type() in self._ACTIVITY_TYPES:
+            self._on_activity()
         return False
 
 
@@ -89,10 +115,26 @@ class _MainWindowDragBar(QWidget):
         self._dragging = False
         self._drag_start = QPoint()
         self._start_pos = QPoint()
+        self._roulette_only = False  # roulette_only 時は透過化（スペース維持）
         self.setFixedHeight(self._BAR_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
 
+    def set_roulette_only(self, ronly: bool):
+        """roulette_only ON 時はドラッグバーを透過化する。
+
+        hide() はせずウィジェットの占有スペースを維持することで、
+        他パネルの位置ずれを防ぐ。
+        """
+        self._roulette_only = ronly
+        if ronly:
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+        self.update()
+
     def paintEvent(self, event):
+        if self._roulette_only:
+            return  # 透過状態: 何も描画しない（スペースは維持）
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(self._design.separator))
         color = QColor(self._design.text_sub)
@@ -106,6 +148,9 @@ class _MainWindowDragBar(QWidget):
         p.end()
 
     def mousePressEvent(self, event):
+        if self._roulette_only:
+            event.ignore()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
             self._drag_start = event.globalPosition().toPoint()
@@ -113,7 +158,7 @@ class _MainWindowDragBar(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if not self._dragging:
+        if self._roulette_only or not self._dragging:
             return
         delta = event.globalPosition().toPoint() - self._drag_start
         self._mw.move(self._start_pos + delta)

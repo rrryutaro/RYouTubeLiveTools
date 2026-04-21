@@ -40,7 +40,7 @@ _app = QApplication.instance() or QApplication(sys.argv)
 
 from wheel_widget import WheelWidget   # noqa: E402
 from roulette_panel import RoulettePanel  # noqa: E402
-from bridge import DesignSettings  # noqa: E402
+from design_models import DesignSettings  # noqa: E402
 
 try:
     from RRoulette.sound_manager import SoundManager as _SM

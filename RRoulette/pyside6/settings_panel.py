@@ -42,11 +42,12 @@ from panel_widgets import (
 )
 from manage_panel import ManagePanel
 
-from bridge import (
-    SIDEBAR_W, SIZE_PROFILES, DesignSettings,
+from app_constants import (
+    SIDEBAR_W, SIZE_PROFILES,
     POINTER_PRESET_NAMES, _POINTER_PRESET_ANGLES,
     ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES,
 )
+from design_models import DesignSettings
 
 from app_settings import AppSettings
 from item_entry import ItemEntry
@@ -112,7 +113,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         """操作・設定パネル。
 
         Args:
-            item_entries: 項目データ（bridge.load_item_entries() の戻り値）。
+            item_entries: 項目データ（load_item_entries() の戻り値）。
                 設定データ（AppSettings）とは別管理。各項目のテキスト・
                 確率・分割等を保持する ItemEntry のリスト。
             settings: アプリ設定データ（AppSettings）。

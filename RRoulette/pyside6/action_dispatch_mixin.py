@@ -81,6 +81,14 @@ class ActionDispatchMixin:
         manager の set_active → SettingsPanel 同期をまとめる。
         """
         old_id = self._manager.active_id
+        # i050: active 切替前に現在のチケットデータを old context に flush する
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None and old_id:
+            old_ctx = self._manager.get(old_id)
+            if old_ctx is not None:
+                old_ctx.ticket_holdings  = tp.get_current_holdings()
+                old_ctx.ticket_history   = tp.get_current_history()
+                old_ctx.ticket_templates = tp.get_current_templates()
         self._manager.set_active(roulette_id)
         # set_active は同一 ID では何もしないので、
         # 実際に変わった場合のみ同期する
@@ -94,6 +102,17 @@ class ActionDispatchMixin:
         SettingsPanel が追従するようにする。
         """
         self._sync_settings_to_active()
+        # i050: チケットパネルを新しい active roulette のデータに切替
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None:
+            ctx = self._manager.get(roulette_id)
+            if ctx is not None:
+                tp.set_active_data(
+                    roulette_id,
+                    list(ctx.ticket_holdings),
+                    list(ctx.ticket_history),
+                    list(ctx.ticket_templates),
+                )
         # i333: 全ルーレットパネルのアクティブ表示を更新
         for rid in self._manager.ids():
             ctx = self._manager.get(rid)

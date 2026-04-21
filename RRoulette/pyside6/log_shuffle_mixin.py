@@ -15,7 +15,7 @@ i445: main_window.py から分離。
 
 import os
 
-from bridge import build_segments_from_entries
+from segment_builder import build_segments_from_entries
 from config_utils import EXPORT_DIR
 
 

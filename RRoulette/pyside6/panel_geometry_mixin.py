@@ -10,10 +10,10 @@ i436: main_window.py から分離。
 使用側: class MainWindow(PanelGeometryMixin, QMainWindow)
 """
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
-from bridge import MIN_W, MIN_H
+from app_constants import MIN_W, MIN_H
 from roulette_panel import RoulettePanel
 from panel_input_filter import PANEL_BAR_HEIGHT
 
@@ -215,15 +215,16 @@ class PanelGeometryMixin:
         """全パネルの位置・表示状態を AppSettings から復元する。"""
         s = self._settings
 
-        # i465: roulette_only_mode が ON のまま終了していた場合は、
-        # 一時的に OFF として通常状態を復元し、その通常状態をスナップショットに
-        # 取り込んだ後で改めて ON を適用する。これにより、OFF 操作で正しく
-        # ON 前の状態へ戻れるようになる。
+        # i465: roulette_only_mode が ON のまま終了していた場合の対応。
+        # i058: 旧実装では「一時的に OFF として通常状態を表示 → スナップショット取得
+        #       → 改めて ON 適用」という手順を取っていたが、この通常状態の一時表示が
+        #       起動時フラッシュの原因だった。
+        #       新実装では設定値からスナップショットを直接構築し、パネルを一時表示しない。
         _was_roulette_only = s.roulette_only_mode
-        if _was_roulette_only:
-            s.roulette_only_mode = False
 
         defaults = self._default_panel_positions()
+
+        # ── ジオメトリ設定（show/hide はまとめて後で行う）──
 
         # ItemPanel
         ip_x = s.items_panel_x if s.items_panel_x is not None else defaults["items"][0]
@@ -231,9 +232,6 @@ class PanelGeometryMixin:
         ip_w = s.items_panel_width if s.items_panel_width is not None else defaults["items"][2]
         ip_h = s.items_panel_height if s.items_panel_height is not None else defaults["items"][3]
         self._apply_panel_geometry(self._item_panel, ip_x, ip_y, ip_w, ip_h, 260, 220)
-        if s.items_panel_visible:
-            self._item_panel.show()
-            self._item_panel.raise_()
 
         # SettingsPanel
         sp_x = s.settings_panel_x if s.settings_panel_x is not None else defaults["settings"][0]
@@ -242,10 +240,6 @@ class PanelGeometryMixin:
         sp_h = s.settings_panel_height if s.settings_panel_height is not None else defaults["settings"][3]
         sp_min = self._settings_panel._panel_min_w
         self._apply_panel_geometry(self._settings_panel, sp_x, sp_y, sp_w, sp_h, sp_min, 200)
-        if s.settings_panel_visible:
-            self._settings_panel.show()
-            self._settings_panel.raise_()
-            self._settings_panel_visible = True
 
         # ManagePanel
         # i462: 初回起動（位置が未保存）のとき管理パネルを表示し、パネル構成を把握できるようにする
@@ -255,12 +249,6 @@ class PanelGeometryMixin:
         mp_w = s.manage_panel_width if s.manage_panel_width is not None else defaults["manage"][2]
         mp_h = s.manage_panel_height if s.manage_panel_height is not None else defaults["manage"][3]
         self._apply_panel_geometry(self._manage_panel, mp_x, mp_y, mp_w, mp_h, 240, 220)
-        if s.manage_panel_visible or _is_first_launch:
-            self._manage_panel.show()
-            self._manage_panel.raise_()
-            self._manage_panel_visible = True
-            if _is_first_launch:
-                self._settings.manage_panel_visible = True
 
         # i336: 追加ルーレットの位置復元
         for rid, (rx, ry, rw, rh) in getattr(self, "_roulette_saved_geometries", {}).items():
@@ -272,17 +260,93 @@ class PanelGeometryMixin:
                 RoulettePanel._MIN_W, RoulettePanel._MIN_H,
             )
 
-        # i465: 管理/項目パネルのフローティング状態を復元
+        # TicketPanel (i050)
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None:
+            tp_x = s.ticket_panel_x if s.ticket_panel_x is not None else (defaults["manage"][0] + defaults["manage"][2] + 12)
+            tp_y = s.ticket_panel_y if s.ticket_panel_y is not None else defaults["manage"][1]
+            tp_w = s.ticket_panel_width if s.ticket_panel_width is not None else 400
+            tp_h = s.ticket_panel_height if s.ticket_panel_height is not None else 460
+            self._apply_panel_geometry(tp, tp_x, tp_y, tp_w, tp_h, 360, 300)
+
+        # i058: フローティング変換を show() より前に行う。
+        # パネルが非表示のままフローティング化するため、
+        # 「埋め込みとして show → hide → フローティングとして show」の
+        # 一時フラッシュが発生しない。
         if s.manage_panel_float:
             self._apply_manage_panel_float(True)
         if s.items_panel_float:
             self._apply_items_panel_float(True)
 
-        # i465: roulette_only_mode が ON だった場合、通常状態をスナップショットに
-        # 取り込み、改めて ON を適用する（OFF 操作で正しく通常状態へ戻るため）
+        # ── 表示状態の復元 ──
+
         if _was_roulette_only:
-            s.roulette_only_mode = True
-            self._apply_roulette_only_mode(True)
+            # i058: 設定値からスナップショットを直接構築し、パネルを一時表示しない。
+            # _apply_roulette_only_mode(True) に _preset_snapshot を渡すことで
+            # 「現在の UI 状態からスナップショット」のステップをスキップする。
+            _entries = self._sidebar_panel_entries()
+            _offsets = {key: (p.x(), p.y()) for key, p, _ in _entries}
+            _rp_ui_saved = {}
+            for _rid in self._manager.ids():
+                _ctx = self._manager.get(_rid)
+                if _ctx and _ctx.panel:
+                    _p = _ctx.panel
+                    _rp_ui_saved[_rid] = {
+                        "selection_handle": _p._selection_handle.isVisible(),
+                        "title_plate":      _p._title_plate.isVisible(),
+                        "graph_btn":        _p._graph_btn.isVisible(),
+                        "grip":             _p._grip.isVisible(),
+                    }
+            _startup_snapshot = {
+                "item":                   s.items_panel_visible,
+                "settings":               s.settings_panel_visible,
+                "manage":                 s.manage_panel_visible or _is_first_launch,
+                "ticket":                 s.ticket_panel_visible if tp is not None else False,
+                "settings_panel_visible": s.settings_panel_visible,
+                "window_transparent":     s.window_transparent,
+                "roulette_transparent":   s.roulette_transparent,
+                "window_size":            QSize(
+                                              s.window_width  or self._INITIAL_W,
+                                              s.window_height or self._INITIAL_H,
+                                          ),
+                "panel_offsets":          _offsets,
+                "rp_ui":                  _rp_ui_saved,
+            }
+            # roulette_only_show_* = True のパネルは show() で直接表示する
+            for key, p, show_in_ro in _entries:
+                if show_in_ro and _startup_snapshot.get(key, False):
+                    p.show()
+                    p.raise_()
+                    if key == "settings":
+                        self._settings_panel_visible = True
+                    elif key == "manage":
+                        self._manage_panel_visible = True
+            # ManagePanel 初回起動フラグ処理
+            if _is_first_launch:
+                self._settings.manage_panel_visible = True
+            # roulette_only モードを適用（スナップショットは事前構築済み）
+            self._apply_roulette_only_mode(True, _preset_snapshot=_startup_snapshot)
+        else:
+            # 通常復元: 設定に従いパネルを表示する
+            if s.items_panel_visible:
+                self._item_panel.show()
+                self._item_panel.raise_()
+
+            if s.settings_panel_visible:
+                self._settings_panel.show()
+                self._settings_panel.raise_()
+                self._settings_panel_visible = True
+
+            if s.manage_panel_visible or _is_first_launch:
+                self._manage_panel.show()
+                self._manage_panel.raise_()
+                self._manage_panel_visible = True
+                if _is_first_launch:
+                    self._settings.manage_panel_visible = True
+
+            if tp is not None and s.ticket_panel_visible:
+                tp.show()
+                tp.raise_()
 
         # ManagePanel のチェックボックスを実状態と同期
         self._sync_manage_panel_checks()
@@ -302,6 +366,7 @@ class PanelGeometryMixin:
             getattr(self, "_settings_panel", None),
             getattr(self, "_item_panel", None),
             getattr(self, "_manage_panel", None),
+            getattr(self, "_ticket_panel", None),
         ):
             if p is None:
                 continue
@@ -327,6 +392,16 @@ class PanelGeometryMixin:
                 self._settings_panel.isVisible()
                 if hasattr(self, "_settings_panel") else False
             )
+            self._manage_panel.set_ticket_visible(
+                self._ticket_panel.isVisible()
+                if hasattr(self, "_ticket_panel") else False
+            )
+            seq_visible = (
+                hasattr(self, "_seq_dialog")
+                and self._seq_dialog is not None
+                and self._seq_dialog.isVisible()
+            )
+            self._manage_panel.set_seq_visible(seq_visible)
         except Exception:
             pass
 
@@ -415,6 +490,13 @@ class PanelGeometryMixin:
         self._manage_panel.show()
         self._manage_panel.raise_()
         self._manage_panel_visible = True
+        # TicketPanel (i050)
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None:
+            defaults = self._default_panel_positions()
+            tp_x = defaults["manage"][0] + defaults["manage"][2] + 12
+            tp_y = defaults["manage"][1]
+            self._apply_panel_geometry(tp, tp_x, tp_y, 400, 460, 360, 300)
         # チェックボックスと AppSettings を同期
         self._sync_manage_panel_checks()
         self._settings.items_panel_visible = True
@@ -506,6 +588,20 @@ class PanelGeometryMixin:
             s.manage_panel_y = mp.y()
             s.manage_panel_width = mp.width()
             s.manage_panel_height = mp.height()
+        # SeqDialog (i038) — 表示中のときだけ
+        _seq = getattr(self, "_seq_dialog", None)
+        if _seq is not None and _seq.isVisible():
+            s.seq_panel_x = _seq.x()
+            s.seq_panel_y = _seq.y()
+            s.seq_panel_width = _seq.width()
+            s.seq_panel_height = _seq.height()
+        # TicketPanel (i050)
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None and tp.isVisible():
+            s.ticket_panel_x = tp.x()
+            s.ticket_panel_y = tp.y()
+            s.ticket_panel_width = tp.width()
+            s.ticket_panel_height = tp.height()
         self._save_config()
 
     def _restore_settings_panel_visibility(self):
@@ -708,6 +804,15 @@ class PanelGeometryMixin:
             entry["log_box_border"]  = p.wheel._log_box_border
             entry["result_close_mode"] = p.result_overlay._close_mode
             entry["result_hold_sec"]   = p.result_overlay._hold_sec
+            # i050/i052: チケットデータを保存（active ルーレットはパネルから最新値を取得）
+            if rid == self._manager.active_id and hasattr(self, "_ticket_panel"):
+                entry["ticket_holdings"]  = self._ticket_panel.get_current_holdings()
+                entry["ticket_history"]   = self._ticket_panel.get_current_history()
+                entry["ticket_templates"] = self._ticket_panel.get_current_templates()
+            else:
+                entry["ticket_holdings"]  = list(ctx.ticket_holdings)
+                entry["ticket_history"]   = list(ctx.ticket_history)
+                entry["ticket_templates"] = list(ctx.ticket_templates)
             roulettes_cfg.append(entry)
         self._config["roulettes"] = roulettes_cfg
 
@@ -754,6 +859,16 @@ class PanelGeometryMixin:
             s.manage_panel_visible = _saved.get("manage", self._manage_panel.isVisible())
         else:
             s.manage_panel_visible = self._manage_panel.isVisible()
+
+        # TicketPanel (i050)
+        tp = getattr(self, "_ticket_panel", None)
+        if tp is not None and tp.isVisible():
+            s.ticket_panel_x = tp.x()
+            s.ticket_panel_y = tp.y()
+            s.ticket_panel_width = tp.width()
+            s.ticket_panel_height = tp.height()
+        if tp is not None:
+            s.ticket_panel_visible = tp.isVisible()
 
         self._save_config()
 
@@ -808,8 +923,10 @@ class PanelGeometryMixin:
                         self._settings_panel,
                         self._item_panel,
                         self._manage_panel,
+                        getattr(self, "_ticket_panel", None),
                     ):
-                        f._enable_tracking_recursive(p)
+                        if p is not None:
+                            f._enable_tracking_recursive(p)
             except Exception:
                 pass
             # i345: 復元後に SettingsPanel 表示を active ルーレットの実状態に合わせる

@@ -17,7 +17,7 @@ from per_roulette_settings import PerRouletteSettings
 if TYPE_CHECKING:
     from roulette_panel import RoulettePanel
     from item_entry import ItemEntry
-    from bridge import Segment
+    from app_constants import Segment
 
 
 @dataclass
@@ -52,3 +52,10 @@ class RouletteContext:
     # i412: pattern import 時に記録した source_pattern_id → dest_pattern_id のマップ。
     # log import 時に pattern_id を destination 側に再マップするために使う（セッション内のみ保持）。
     imported_pattern_id_map: dict = field(default_factory=dict)
+    # i050: チケット機能 (v0.5.2 簡易版第1段)
+    # 保有チケットリスト: [{ticket_name, issuer, effect, quantity}]
+    ticket_holdings: list = field(default_factory=list)
+    # 履歴リスト: [{ticket_name, issuer, effect, action_type, result_type, timestamp}]
+    ticket_history: list = field(default_factory=list)
+    # i052: テンプレートリスト: [{ticket_name, issuer, effect}] (ルーレット単位)
+    ticket_templates: list = field(default_factory=list)

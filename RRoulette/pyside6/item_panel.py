@@ -23,9 +23,10 @@ from item_text_helpers import serialize_items_text, parse_items_text, enforce_it
 from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu
 from settings_panel import _calc_item_probs, _populate_weight_combo
 
-from bridge import DesignSettings
+from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
+from app_constants import ITEM_MAX_COUNT
 
 
 class _ItemPanelAPI:
@@ -127,11 +128,13 @@ class _SimpleItemDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
 
         prob_str = index.data(self.PROB_ROLE) or ""
-        win_str  = index.data(self.WIN_ROLE)  or ""
+        # win_str: None = 当選回数列非表示, "" = 表示だが 0 件（空欄で幅確保）, "N" = 値あり
+        win_str  = index.data(self.WIN_ROLE)
 
         # 右列の総幅を計算
+        # win_str is not None のとき列幅を常に確保する（0 件でも確率列がずれない）
         right_w = self._R_MARGIN
-        if win_str:
+        if win_str is not None:
             right_w += self._WIN_W + self._COL_GAP
         if prob_str:
             right_w += self._PROB_W + self._COL_GAP
@@ -170,11 +173,12 @@ class _SimpleItemDelegate(QStyledItemDelegate):
 
         # 右固定列（右端から逆順に配置）
         right_x = opt.rect.right() - self._R_MARGIN
-        if win_str:
+        if win_str is not None:
             win_rect = QRect(right_x - self._WIN_W, opt.rect.top(), self._WIN_W, opt.rect.height())
-            painter.drawText(
-                win_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, win_str
-            )
+            if win_str:  # 0 件（空文字）のときはテキスト描画をスキップ、幅だけ確保
+                painter.drawText(
+                    win_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, win_str
+                )
             right_x -= self._WIN_W + self._COL_GAP
         if prob_str:
             prob_rect = QRect(right_x - self._PROB_W, opt.rect.top(), self._PROB_W, opt.rect.height())
@@ -718,6 +722,27 @@ class ItemPanel(QFrame):
         )
         reset_row.addWidget(self._simple_items_reset_btn)
         reset_row.addStretch(1)
+        # まとめて分割 UI (i056): 表示 ON の全項目の split_count を一括増減
+        _bulk_lbl = QLabel("まとめ分割")
+        _bulk_lbl.setFont(QFont("Meiryo", 8))
+        _bulk_lbl.setStyleSheet(f"color: {design.text_sub};")
+        reset_row.addWidget(_bulk_lbl)
+        self._bulk_split_plus_btn = QPushButton("＋")
+        self._bulk_split_plus_btn.setFont(QFont("Meiryo", 8))
+        self._bulk_split_plus_btn.setFixedWidth(22)
+        self._bulk_split_plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._bulk_split_plus_btn.setStyleSheet(reset_btn_style)
+        self._bulk_split_plus_btn.setToolTip("表示ONの全項目の分割数を+1します（上限超えなら不適用）")
+        self._bulk_split_plus_btn.clicked.connect(self._on_bulk_split_plus)
+        reset_row.addWidget(self._bulk_split_plus_btn)
+        self._bulk_split_minus_btn = QPushButton("－")
+        self._bulk_split_minus_btn.setFont(QFont("Meiryo", 8))
+        self._bulk_split_minus_btn.setFixedWidth(22)
+        self._bulk_split_minus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._bulk_split_minus_btn.setStyleSheet(reset_btn_style)
+        self._bulk_split_minus_btn.setToolTip("表示ONの全項目の分割数を-1します（下限1）")
+        self._bulk_split_minus_btn.clicked.connect(self._on_bulk_split_minus)
+        reset_row.addWidget(self._bulk_split_minus_btn)
         action_v.addLayout(reset_row)
 
         page_v.addWidget(action_frame)
@@ -931,7 +956,8 @@ class ItemPanel(QFrame):
             )
             prob_str = f"{prob_val:.1f}%" if s.show_item_prob and prob_val is not None else ""
             win_count = self._simple_win_counts.get(entry.text, 0)
-            win_str = str(win_count) if s.show_item_win_count and win_count > 0 else ""
+            # None = 列非表示, "" = 表示だが 0 件（幅確保・テキスト空）, "N" = 値あり
+            win_str = (str(win_count) if win_count > 0 else "") if s.show_item_win_count else None
             item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
             item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
             self._simple_list.addItem(item)
@@ -972,7 +998,8 @@ class ItemPanel(QFrame):
             prob_val = probs[i] if i < len(probs) else None
             prob_str = f"{prob_val:.1f}%" if s.show_item_prob and prob_val is not None else ""
             win_count = self._simple_win_counts.get(entry.text, 0)
-            win_str = str(win_count) if s.show_item_win_count and win_count > 0 else ""
+            # None = 列非表示, "" = 表示だが 0 件（幅確保・テキスト空）, "N" = 値あり
+            win_str = (str(win_count) if win_count > 0 else "") if s.show_item_win_count else None
             item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
             item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
             item.setCheckState(
@@ -1219,6 +1246,48 @@ class ItemPanel(QFrame):
         self._api.entries = entries
         # 選択を調整
         self._simple_selected_idx = min(idx, len(entries) - 1)
+        self._api.notify_changed()
+
+    # ----------------------------------------------------------------
+    #  まとめて分割 (i056)
+    # ----------------------------------------------------------------
+
+    def _on_bulk_split_plus(self):
+        """まとめて分割 +1: 表示 ON の全項目の split_count を +1 する。
+
+        適用後のセグメント総数が ITEM_MAX_COUNT を超える場合は警告して不適用。
+        """
+        entries = self._api.entries
+        on_entries = [e for e in entries if e.enabled]
+        if not on_entries:
+            return
+        total_after = sum(min(10, e.split_count + 1) for e in on_entries)
+        if total_after > ITEM_MAX_COUNT:
+            QMessageBox.warning(
+                self, "まとめて分割",
+                f"分割後のセグメント数（{total_after}）が上限（{ITEM_MAX_COUNT}）を\n"
+                "超えるため適用できません。",
+            )
+            return
+        for e in on_entries:
+            e.split_count = min(10, e.split_count + 1)
+        self._api.notify_changed()
+
+    def _on_bulk_split_minus(self):
+        """まとめて分割 -1: 表示 ON の全項目の split_count を -1 する（下限 1）。
+
+        安全側制御 (i057): ON 項目のいずれかが split_count == 1 の場合は適用しない。
+        これにより、まとめて分割で増やした分だけ戻せる（元の個別設定を壊さない）。
+        """
+        entries = self._api.entries
+        on_entries = [e for e in entries if e.enabled]
+        if not on_entries:
+            return
+        # ON 項目に 1 のものが含まれる場合は減算しない
+        if any(e.split_count <= 1 for e in on_entries):
+            return
+        for e in on_entries:
+            e.split_count = max(1, e.split_count - 1)
         self._api.notify_changed()
 
     # ----------------------------------------------------------------

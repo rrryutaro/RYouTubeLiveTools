@@ -19,17 +19,12 @@ import os
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from bridge import (
-    build_segments_from_entries,
-    get_current_pattern_name,
-    get_pattern_names,
-    load_all_item_entries,
-    set_current_pattern,
-    add_pattern,
-    delete_pattern,
-    rename_pattern,
-    save_item_entries,
-    ItemEntry,
+from segment_builder import build_segments_from_entries
+from item_data_io import load_all_item_entries, save_item_entries
+from item_entry import ItemEntry
+from pattern_store import (
+    get_current_pattern_name, get_pattern_names,
+    set_current_pattern, add_pattern, delete_pattern, rename_pattern,
 )
 from config_utils import EXPORT_DIR
 
@@ -81,6 +76,9 @@ class PatternManagementMixin:
             self._item_panel._refresh_simple_list()
         self._refresh_panel_tracking()
         self._update_win_counts()
+        # i028: 連続抽選パネルが開いていればパターン変更を即時反映する
+        if hasattr(self, "_sync_seq_panel_to_active_pattern"):
+            self._sync_seq_panel_to_active_pattern()
 
     # ------------------------------------------------------------------
     #  パターン追加

@@ -65,6 +65,15 @@ class ContextMenuMixin:
         a = panel_menu.addAction(f"{sp_mark} 設定パネル (F3)")
         a.triggered.connect(self._toggle_settings_panel_v2)
 
+        tp_mark = "\u25cf" if self._ticket_panel.isVisible() else "  "
+        a = panel_menu.addAction(f"{tp_mark} チケットパネル (F4)")
+        a.triggered.connect(self._toggle_ticket_panel)
+
+        seq_visible = (self._seq_dialog is not None and self._seq_dialog.isVisible())
+        seq_mark = "\u25cf" if seq_visible else "  "
+        a = panel_menu.addAction(f"{seq_mark} 実行パネル (F5)")
+        a.triggered.connect(self._toggle_sequential_spin_dialog)
+
         menu.addSeparator()
 
         # 常に最前面 (i463: ルーレット以外非表示より上に配置)

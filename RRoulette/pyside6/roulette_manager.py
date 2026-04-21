@@ -25,6 +25,7 @@ class RouletteManager(QObject):
         super().__init__(parent)
         self._roulettes: dict[str, RouletteContext] = {}
         self._active_id: str = ""
+        self._names: dict[str, str] = {}
 
     # ================================================================
     #  プロパティ
@@ -107,6 +108,18 @@ class RouletteManager(QObject):
         except ValueError:
             return None
         return keys[(idx - 1) % len(keys)]
+
+    def get_name(self, roulette_id: str) -> str | None:
+        """カスタム表示名を返す。未設定なら None。"""
+        return self._names.get(roulette_id)
+
+    def set_name(self, roulette_id: str, name: str) -> None:
+        """カスタム表示名を設定する。"""
+        self._names[roulette_id] = name
+
+    def unset_name(self, roulette_id: str) -> None:
+        """カスタム表示名を削除する（ルーレット削除時）。"""
+        self._names.pop(roulette_id, None)
 
     def set_active(self, roulette_id: str) -> None:
         """アクティブなルーレットを切り替える。

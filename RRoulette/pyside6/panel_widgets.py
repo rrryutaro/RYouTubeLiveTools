@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QMenu, QWidget, QApplication,
 )
 
-from bridge import DesignSettings
+from design_models import DesignSettings
 from dark_theme import get_header_colors
 
 

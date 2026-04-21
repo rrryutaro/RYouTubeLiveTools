@@ -20,11 +20,10 @@ import uuid as _uuid_mod
 
 from PySide6.QtWidgets import QWidget, QMessageBox
 
-from bridge import (
-    build_segments_from_config, build_segments_from_entries,
-    load_all_item_entries, ItemEntry,
-    get_current_pattern_name, get_pattern_id,
-)
+from segment_builder import build_segments_from_config, build_segments_from_entries
+from item_data_io import load_all_item_entries
+from item_entry import ItemEntry
+from pattern_store import get_current_pattern_name, get_pattern_id
 from roulette_panel import RoulettePanel
 from roulette_context import RouletteContext
 from per_roulette_settings import PerRouletteSettings
@@ -281,6 +280,7 @@ class RouletteLifecycleMixin:
         # 同じ roulette_id が再採番された場合に削除前履歴が dedup base に混入しないようにする。
         self._win_history.clear(roulette_id=roulette_id)
         self._win_history.save()
+        self._manager.unset_name(roulette_id)  # i048: カスタム名のメモリクリーンアップ
         self._update_instance_labels()
         self._update_roulette_manage_panel()
         return True
@@ -320,7 +320,13 @@ class RouletteLifecycleMixin:
     # ================================================================
 
     def _roulette_label(self, roulette_id: str) -> str:
-        """roulette_id から表示ラベル文字列を返す（i427）。"""
+        """roulette_id から表示ラベル文字列を返す（i427）。
+
+        i047: カスタム名が設定されていればそれを優先する。
+        """
+        custom = self._manager.get_name(roulette_id)
+        if custom:
+            return custom
         if roulette_id == "default":
             return "ルーレット 1"
         if roulette_id.startswith("roulette_"):
@@ -364,17 +370,7 @@ class RouletteLifecycleMixin:
             ctx = self._manager.get(rid)
             if ctx is None:
                 continue
-            # 表示名: roulette_id がシンプルなら番号で表示
-            if rid == "default":
-                label = "ルーレット 1"
-            elif rid.startswith("roulette_"):
-                try:
-                    n = int(rid[len("roulette_"):])
-                    label = f"ルーレット {n}"
-                except ValueError:
-                    label = rid
-            else:
-                label = rid
+            label = self._roulette_label(rid)
             entries.append({
                 "id": rid,
                 "label": label,
@@ -428,6 +424,22 @@ class RouletteLifecycleMixin:
             return
         self._remove_roulette(roulette_id)
 
+    def _on_manage_roulette_rename(self, roulette_id: str, new_name: str) -> None:
+        """ManagePanel からの名前変更コールバック（i047）。"""
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        self._manager.set_name(roulette_id, new_name)
+        # タイトルプレートを即時更新
+        ctx = self._manager.get(roulette_id)
+        is_multi = self._manager.count > 1
+        if ctx and ctx.panel and is_multi:
+            ctx.panel.set_title(new_name)
+        # 管理パネル一覧を更新
+        self._update_roulette_manage_panel()
+        # 設定を保存
+        self._save_config()
+
     def _on_manage_apply_to_all_changed(self, value: bool) -> None:
         """ManagePanel の一括適用チェックボックスから: _apply_to_all フラグを更新する（i347）。"""
         self._apply_to_all = value
@@ -435,11 +447,16 @@ class RouletteLifecycleMixin:
     def _on_roulette_only_hide_changed(self, key: str, value: bool) -> None:
         """管理パネルのルーレット以外非表示時個別設定変更ハンドラ（i463/i464/i466）。"""
         _key_map = {
-            "selection_handle": "roulette_only_show_selection_handle",
-            "title_plate":      "roulette_only_show_title_plate",
-            "graph_btn":        "roulette_only_show_graph_btn",
-            "grip":             "roulette_only_show_grip",
-            "log":              "roulette_only_show_log",
+            "selection_handle":  "roulette_only_show_selection_handle",
+            "title_plate":       "roulette_only_show_title_plate",
+            "graph_btn":         "roulette_only_show_graph_btn",
+            "grip":              "roulette_only_show_grip",
+            "log":               "roulette_only_show_log",
+            "manage_panel":      "roulette_only_show_manage_panel",
+            "items_panel":       "roulette_only_show_items_panel",
+            "settings_panel":    "roulette_only_show_settings_panel",
+            "execution_panel":   "roulette_only_show_execution_panel",
+            "ticket_panel":      "roulette_only_show_ticket_panel",
         }
         attr = _key_map.get(key)
         if not attr:
@@ -451,8 +468,6 @@ class RouletteLifecycleMixin:
             return
         if key == "log":
             # i469: _roulette_only_log_show を更新して _refresh_log_overlay に委ねる。
-            # visible_eff の計算は _refresh_log_overlay 内で一括判定する。
-            # settings panel の log OFF は _log_visible=False で自動的に優先される。
             for rid in self._manager.ids():
                 ctx = self._manager.get(rid)
                 if ctx is None or not ctx.panel.isVisible():
@@ -460,6 +475,22 @@ class RouletteLifecycleMixin:
                 panel = ctx.panel
                 panel._roulette_only_log_show = value
                 panel._refresh_log_overlay()
+        elif key == "execution_panel":
+            # roulette_only 中に設定変更: 連続抽選パネルの表示/非表示を即時反映
+            _dlg = getattr(self, '_seq_dialog', None)
+            if _dlg is not None:
+                if value:
+                    _dlg.show()
+                else:
+                    _dlg.hide()
+        elif key == "ticket_panel":
+            # roulette_only 中に設定変更: チケットパネルの表示/非表示を即時反映
+            _tp = getattr(self, '_ticket_panel', None)
+            if _tp is not None:
+                if value:
+                    _tp.show()
+                else:
+                    _tp.hide()
 
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。
@@ -511,11 +542,19 @@ class RouletteLifecycleMixin:
                 # "default" パネル生成は不要だが per-roulette 設定は復元する (i344/i364)
                 ctx = self._manager.get("default")
                 if ctx is not None:
+                    # i047: カスタム名を復元
+                    custom_name = entry.get("roulette_name")
+                    if custom_name:
+                        self._manager.set_name("default", custom_name)
                     log_show = entry.get("log_overlay_show", self._settings.log_overlay_show)
                     log_on_top = entry.get("log_on_top", self._settings.log_on_top)
                     ctx.panel.wheel.set_log_visible(log_show)
                     ctx.panel.wheel.set_log_on_top(log_on_top)
                     self._restore_per_panel_from_entry(ctx.panel, entry, ctx=ctx)  # i368: ctx も渡す
+                    # i050/i052: チケットデータを復元
+                    ctx.ticket_holdings  = list(entry.get("ticket_holdings", []))
+                    ctx.ticket_history   = list(entry.get("ticket_history", []))
+                    ctx.ticket_templates = list(entry.get("ticket_templates", []))
                 continue
 
             if self._manager.get(rid) is not None:
@@ -523,6 +562,10 @@ class RouletteLifecycleMixin:
             panel = self._add_roulette(rid, activate=False)
             if panel is None:
                 continue
+            # i047: カスタム名を復元
+            custom_name = entry.get("roulette_name")
+            if custom_name:
+                self._manager.set_name(rid, custom_name)
             # i338: per-roulette item_patterns + current_pattern を復元
             item_patterns_raw = entry.get("item_patterns")
             current_pat = entry.get("current_pattern", "デフォルト")
@@ -572,6 +615,12 @@ class RouletteLifecycleMixin:
                 log_path = self._roulette_log_path(rid)
                 if os.path.exists(log_path):
                     ctx.panel.wheel.load_log(log_path)
+
+            # i050/i052: チケットデータを復元
+            if ctx is not None:
+                ctx.ticket_holdings  = list(entry.get("ticket_holdings", []))
+                ctx.ticket_history   = list(entry.get("ticket_history", []))
+                ctx.ticket_templates = list(entry.get("ticket_templates", []))
 
             # i424: 前回非表示だったパネルを非表示に戻す
             if not entry.get("visible", True) and ctx is not None:

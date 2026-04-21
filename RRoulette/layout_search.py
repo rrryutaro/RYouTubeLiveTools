@@ -28,15 +28,33 @@ LinePlacement.extra_offset: 縦2/3 の複数列レイアウトで使う接線方
   2: scale     — 可変サイズ・固定サイズ以下に縮小のみ（1列固定）
 """
 import math
-import tkinter.font as tkfont
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Protocol
 
 from geometry import (
     SafeSector, get_sector_safe_area,
     get_radial_width_at_tangential_offset,
 )
 from line_break import layout_text_ellipsis, fit_text_to_width
+
+# ════════════════════════════════════════════════════════════════
+#  font 計測インターフェース
+# ════════════════════════════════════════════════════════════════
+
+class FontAdapter(Protocol):
+    """layout_search が要求する font 計測インターフェース。
+
+    tkinter.font.Font / QtFontAdapter 等の計測実装に共通する最小契約。
+    layout_search は tkinter.font を直接 import しない。
+    利用前に _make_font を差し替えること（layout_search_adapter.py 参照）。
+
+    要求メソッド:
+        measure(text: str) -> int  — テキスト水平幅 (px)
+        metrics(key: str)  -> int  — フォントメトリクス（"linespace" のみ使用）
+    """
+    def measure(self, text: str) -> int: ...
+    def metrics(self, key: str) -> int: ...
+
 
 # テキストと境界の間に確保する余白（px）
 _TEXT_PAD = 6
@@ -169,8 +187,16 @@ def build_all_sector_layouts(
 #  共通ヘルパー
 # ════════════════════════════════════════════════════════════════
 
-def _make_font(family: str, size: int) -> tkfont.Font:
-    return tkfont.Font(family=family, size=size, weight="bold")
+def _make_font(family: str, size: int) -> FontAdapter:
+    """font 計測オブジェクトを生成するファクトリー。
+
+    この関数は利用前に計測実装（Qt 等）で差し替えること。
+    layout_search_adapter.py が layout_search._make_font = make_qt_font で設定する。
+    """
+    raise RuntimeError(
+        "layout_search._make_font が未初期化です。"
+        " layout_search_adapter を import してから使用してください。"
+    )
 
 
 def _build_placements(lines: list, line_height: int) -> list:

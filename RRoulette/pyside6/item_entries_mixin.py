@@ -13,7 +13,8 @@ i440: main_window.py から分離。
                    RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow)
 """
 
-from bridge import build_segments_from_entries, save_item_entries
+from segment_builder import build_segments_from_entries
+from item_data_io import save_item_entries
 from roulette_actions import UpdateItemEntries
 
 
@@ -46,6 +47,10 @@ class ItemEntriesMixin:
         Returns:
             置換できたら True。
         """
+        # i021: 被りなし連続抽選中に項目編集が来たら安全に中断する
+        _seq = getattr(self, '_seq_runner', None)
+        if _seq is not None and _seq.is_running:
+            _seq.abort()
         if roulette_id:
             ctx = self._manager.get(roulette_id)
         else:
@@ -60,6 +65,10 @@ class ItemEntriesMixin:
         self._save_item_entries()
         # i289 t07: _refresh_panel_tracking はここでは呼ばない。
         # 新規行ウィジェットを追加する set_active_entries 呼び出し元で行う。
+        # i035: 連続抽選パネルの項目一覧を即時更新（実行中でなければ）
+        _refresh = getattr(self, '_refresh_seq_dialog_items', None)
+        if _refresh is not None:
+            _refresh()
         return True
 
     # ------------------------------------------------------------------

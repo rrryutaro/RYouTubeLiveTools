@@ -14,7 +14,8 @@ i452: main_window.py から分離。
 
 from PySide6.QtWidgets import QApplication
 
-from bridge import save_config, get_pattern_names, get_current_pattern_name
+from config_io import save_config
+from pattern_store import get_pattern_names, get_current_pattern_name
 
 
 class SaveLoadMixin:
@@ -107,6 +108,12 @@ class SaveLoadMixin:
             s.result_hold_sec      = p.result_overlay._hold_sec
             # ctx.settings を config エントリへ書き出す（geometry・item_patterns は維持）
             entry.update(s.to_config_entry())
+            # i047: カスタム名を保存
+            custom_name = self._manager.get_name(rid)
+            if custom_name:
+                entry["roulette_name"] = custom_name
+            elif "roulette_name" in entry:
+                del entry["roulette_name"]
             existing[rid] = entry
         # 元の順序を保ちつつ新規 ID も末尾に追加してリストを再構築
         seen: set[str] = set()

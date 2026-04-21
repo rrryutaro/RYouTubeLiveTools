@@ -1,28 +1,37 @@
 """
-RRoulette PySide6 プロトタイプ — 起動スクリプト
+RRoulette PySide6 — 開発用起動スクリプト
 
 使い方:
   cd RRoulette/pyside6
-  python run_proto.py
+  python run.py
 
 操作:
   - 左ドラッグ: ウィンドウ移動
   - 右クリック: メニュー（パネル開閉・サイズ・デザイン・テキストモード・終了）
   - F1: 右パネル表示/非表示
-  - Esc: 終了
+  - Esc: 全面非表示（タスクバー/Alt+Tab で再表示）
 
 既存設定ファイル (dist/roulette_settings.json) があれば、
 項目リスト・デザイン・テキストモード・ポインター位置を自動読み込みする。
 """
 
 import sys
+import os
 import ctypes
+
+# RRoulette ルートを sys.path に追加（pyside6 モジュールから ../constants.py 等を参照するため）
+# 各モジュールにも同等のガードがあるが、エントリーポイントで明示することで
+# 起動経路に依存しない初期化順序を保証する。
+_RROULETTE_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+if _RROULETTE_DIR not in sys.path:
+    sys.path.insert(0, _RROULETTE_DIR)
+
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-# bridge を import する前に QApplication を作成する必要がある
-# （QFontMetrics は QApplication が存在しないと動作しない）
+# main_window → wheel_widget → layout_search_adapter → font_adapter (QFontMetrics) の
+# import チェーンより先に QApplication を作成する必要がある
 QApplication.setHighDpiScaleFactorRoundingPolicy(
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 )
@@ -39,7 +48,11 @@ app.setFont(QFont("Meiryo", 9))
 # OS が自動解放するため stale 問題は発生しない。
 # モジュール変数 _instance_mutex に保持することで、プロセス生存中は
 # ミューテックスが解放されず、確実に二重起動を防ぐ。
-_INSTANCE_MUTEX_NAME = "Local\\RRoulette_RunProto_SingleInstance_v1"
+#
+# i489: ミューテックス名を main.py (EXE エントリー) と統一。
+# Python 実行と EXE 実行で同じ名前を使うことで、どちらが起動中でも
+# もう一方の多重起動を防ぐ。
+_INSTANCE_MUTEX_NAME = "Local\\RRoulette_SingleInstance_v1"
 _ERROR_ALREADY_EXISTS = 183
 _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
 if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:

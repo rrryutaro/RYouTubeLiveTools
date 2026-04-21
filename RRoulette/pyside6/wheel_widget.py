@@ -15,10 +15,9 @@ resizeEvent で同期的に再計算する。
 スピン物理は SpinController に委譲済み。
 
 既存ロジック接続:
-  - constants.py: MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG, Segment
-  - design_settings.py: DesignSettings（色・フォント設定）
-  - geometry.py: SafeSector, get_sector_safe_area
-  - layout_search.py: build_all_sector_layouts, LayoutResult
+  - app_constants.py: MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG, Segment
+  - design_models.py: DesignSettings（色・フォント設定）
+  - layout_search_adapter.py: build_all_sector_layouts, LayoutResult
 """
 
 import math
@@ -26,13 +25,16 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-# 既存ロジックは bridge 経由で import
-from bridge import (
+from app_constants import (
     MIN_R, WHEEL_OUTER_MARGIN, POINTER_OVERHANG,
     DONUT_DRAW_RADIUS, DONUT_HIT_RADIUS,
-    Segment, DesignSettings,
-    build_all_sector_layouts, LayoutResult,
+    Segment,
 )
+from design_models import DesignSettings
+from layout_search_adapter import build_all_sector_layouts, LayoutResult
+
+
+_CHUNK_PREFIX = "\x00CHUNK\x00"  # i022: ログチャンクエントリの先頭マーカー
 
 
 class WheelWidget(QWidget):
@@ -64,6 +66,8 @@ class WheelWidget(QWidget):
 
         # --- ログオーバーレイ ---
         # i407: _log_entries の 3 番目要素は pattern_id（UUID）。旧形式の pattern 名は使わない。
+        # i022: text が _CHUNK_PREFIX で始まる場合は被りなし連続抽選のチャンクエントリ。
+        #       フォーマット: "\x00CHUNK\x00" + "\x00".join([header, line1, line2, ...])
         self._log_entries: list[tuple[str, str, str]] = []  # (時刻, テキスト, pattern_id) 新しい順
         self._log_max: int = 8             # 最大表示件数
         self._log_visible: bool = True     # 表示ON/OFF
@@ -79,6 +83,9 @@ class WheelWidget(QWidget):
 
         # --- リプレイ中表示 ---
         self._replay_indicator: bool = False  # 再生中フラグ
+
+        # --- 被りなし連続抽選 状態表示 (i023: paintEvent 内で描画、OBS確実キャプチャ) ---
+        self._seq_status_text: str = ""  # 空文字列なら非表示
 
         # --- 透過モード ---
         self._transparent: bool = False
@@ -189,6 +196,37 @@ class WheelWidget(QWidget):
         self.update()
         self.log_changed.emit()  # i343
 
+    def add_log_chunk(self, header: str, results: list, pattern_id: str = ""):
+        """被りなし連続抽選の結果を 1 チャンクとしてログに追加する。
+
+        i022: 連続抽選の全結果を1件のエントリとして記録する。
+        text フィールドに _CHUNK_PREFIX + "\\x00".join([header, line1, ...]) を格納する。
+        i026: save_log の永続化対象に含まれる（再起動後も復元される）。
+
+        Args:
+            header: チャンク見出し（例: "被りなし連続抽選 5回"）
+            results: [(step, winner), ...] の結果リスト
+            pattern_id: パターンUUID
+        """
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        lines = [header] + [f"  {step}回目: {winner}" for step, winner in results]
+        text = _CHUNK_PREFIX + "\x00".join(lines)
+        self._log_entries.insert(0, (ts, text, pattern_id))
+        if len(self._log_entries) > self._log_max:
+            self._log_entries = self._log_entries[:self._log_max]
+        self.update()
+        self.log_changed.emit()
+
+    def set_seq_status(self, text: str):
+        """被りなし連続抽選の状態テキストを設定する。
+
+        i023: paintEvent 内で直接描画することで OBS キャプチャに確実に映す。
+        空文字列を指定すると非表示（描画なし）になる。
+        """
+        self._seq_status_text = text
+        self.update()
+
     def set_replay_indicator(self, visible: bool):
         """リプレイ中表示のON/OFFを設定する。"""
         self._replay_indicator = visible
@@ -252,11 +290,25 @@ class WheelWidget(QWidget):
         """ログ履歴をJSONファイルに保存する。
 
         i407: エントリは pattern_id（UUID）で保存する。
+        i026: チャンクエントリも永続化対象に含める。
+        i027: チャンクエントリは type="chunk" + header + lines の明示フォーマットで保存する。
+              単発エントリは type="single" + text で保存する。
         """
         import json
-        # 古い順で保存
-        data = [{"ts": ts, "text": text, "pattern_id": pid}
-                for ts, text, pid in reversed(self._log_entries)]
+        data = []
+        for ts, text, pid in reversed(self._log_entries):
+            if text.startswith(_CHUNK_PREFIX):
+                # チャンクエントリ: 構造化データとして保存（null バイト不要な形式）
+                parts = text[len(_CHUNK_PREFIX):].split("\x00")
+                header = parts[0] if parts else ""
+                lines = parts[1:] if len(parts) > 1 else []
+                data.append({
+                    "ts": ts, "type": "chunk",
+                    "header": header, "lines": lines,
+                    "pattern_id": pid,
+                })
+            else:
+                data.append({"ts": ts, "type": "single", "text": text, "pattern_id": pid})
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -264,8 +316,9 @@ class WheelWidget(QWidget):
         """JSONファイルからログ履歴を復元する。
 
         i407: pattern_id フィールドがないエントリは旧フォーマットとして破棄する。
-        旧フォーマット（"pattern" キーのみ）のデータは安全側で除外し、
-        クリーンな状態から再スタートする。
+        i027: type="chunk" エントリは header+lines から _CHUNK_PREFIX 形式に復元する。
+              type="single" / 旧フォーマット（type なし）は text フィールドを使う。
+              load 完了後に log_changed を emit してオーバーレイを即時更新する。
         """
         import json
         import os
@@ -277,20 +330,30 @@ class WheelWidget(QWidget):
             if not isinstance(data, list):
                 return
             # 古い順で保存されている → 新しい順に変換
-            # i407: pattern_id が存在しないエントリは旧フォーマットとして除外する
             entries = []
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                if "ts" not in item or "text" not in item:
-                    continue
                 pid = item.get("pattern_id", "")
                 if not pid:
-                    # 旧フォーマット（pattern_id なし）: 安全側で除外
+                    # pattern_id なし: 旧フォーマット or 不正エントリ → 除外
                     continue
-                entries.append((item["ts"], item["text"], pid))
+                ts = item.get("ts", "")
+                t = item.get("type", "single")
+                if t == "chunk":
+                    # i027: 構造化チャンク → _CHUNK_PREFIX 形式に復元
+                    header = item.get("header", "")
+                    lines = item.get("lines", [])
+                    text = _CHUNK_PREFIX + "\x00".join([header] + lines)
+                else:
+                    # "single" または type なし旧フォーマット
+                    text = item.get("text", "")
+                    if not text:
+                        continue
+                entries.append((ts, text, pid))
             self._log_entries = list(reversed(entries[-self._log_max:]))
             self.update()
+            self.log_changed.emit()  # i027: load 後にオーバーレイを即時更新する
         except Exception:
             pass
 
@@ -557,6 +620,25 @@ class WheelWidget(QWidget):
                 "REPLAY",
             )
 
+        # --- 被りなし連続抽選 状態表示 (i023: paintEvent 内描画で OBS キャプチャ保証) ---
+        if self._seq_status_text:
+            status_font = QFont("Meiryo", 10, QFont.Weight.Bold)
+            fm_s = QFontMetrics(status_font)
+            tw = fm_s.horizontalAdvance(self._seq_status_text)
+            th = fm_s.height()
+            pad = 8
+            bw = tw + pad * 2
+            bh = th + pad * 2
+            bx = (self.width() - bw) // 2
+            by = self.height() - bh - 30  # グリップ領域を避けてパネル下部に配置
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 180))
+            painter.drawRoundedRect(QRectF(bx, by, bw, bh), 4, 4)
+            painter.setFont(status_font)
+            painter.setPen(QColor(255, 220, 50))
+            painter.drawText(QPointF(bx + pad, by + pad + fm_s.ascent()),
+                             self._seq_status_text)
+
         painter.end()
 
     def _draw_sector_text(self, painter: QPainter, i: int,
@@ -665,70 +747,68 @@ class WheelWidget(QWidget):
         painter.drawPolygon(pointer)
 
     def _draw_log_overlay(self, painter: QPainter, d: DesignSettings):
-        """ログオーバーレイを左上に描画する (v0.4.4 互換)。
+        """ログオーバーレイを左上に描画する。
 
-        - 配置: 左上 (margin, margin)
-        - 順序: 新しいログが上、古いログが下 (`_log_entries` は新しい順なので
-          そのまま i 順に描画する)
-        - 番号付け無し (v0.4.4 と同じ素のフォーマット)
-        - 新しいログが追加されると下方向にボックスが伸びる
+        i023: 1実行 = 1枠線塊 の原則で統一。
+        - 通常単発エントリ: 1件ごとに独立したボックス（log_box_border でボーダー制御）
+        - チャンクエントリ: 1連続実行を1つの枠線付き複数行ボックスで描画
+        - 全エントリを上から順に積んで表示
         """
         log_font = QFont(d.fonts.log_family or "Meiryo", d.log.font_size)
         fm = QFontMetrics(log_font)
         line_h = fm.height() + 2
         padding = 6
+        gap = 3  # ボックス間隔
         margin = 8
 
         entries = self.get_log_entries()  # i393: フィルタ済み (ts, text) リスト
-        n = len(entries)
-        if n == 0:
+        if not entries:
             return
 
-        # 表示文字列を構築 (番号無し / オプションでタイムスタンプ)
         show_ts = self._log_timestamp
-        lines = []
-        for ts, text in entries:
-            if show_ts:
-                lines.append(f"[{ts}] {text}")
-            else:
-                lines.append(text)
-
-        # テキスト幅の最大値を算出
-        max_text_w = 0
-        for line in lines:
-            w = fm.horizontalAdvance(line)
-            if w > max_text_w:
-                max_text_w = w
-
-        box_w = max_text_w + padding * 2
-        box_h = line_h * n + padding * 2
-
-        # 左上に配置 (上から下へ流れる)
-        # i343: インスタンスラベル (#N) と重ならないよう上部を確保する
-        box_x = margin
-        box_y = 30
-
-        # 背景ボックス
         bg_color = QColor(d.log.box_bg_color)
         bg_color.setAlpha(180)
-        if self._log_box_border:
-            painter.setPen(QPen(QColor(d.log.box_outline_color), 1))
-        else:
-            painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(bg_color))
-        painter.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 4, 4)
-
-        # テキスト描画
-        painter.setFont(log_font)
         text_color = QColor(d.log.text_color)
         shadow_color = QColor(d.log.shadow_color)
+        outline_color = QColor(d.log.box_outline_color)
 
-        for i, line in enumerate(lines):
-            y = box_y + padding + (i + 1) * line_h - fm.descent()
-            x = box_x + padding
-            # 影
-            painter.setPen(shadow_color)
-            painter.drawText(QPointF(x + 1, y + 1), line)
-            # 本体
-            painter.setPen(text_color)
-            painter.drawText(QPointF(x, y), line)
+        box_x = margin
+        box_y = 30  # i343: インスタンスラベル (#N) と重ならないよう上部を確保
+
+        painter.setFont(log_font)
+
+        for ts, text in entries:
+            if text.startswith(_CHUNK_PREFIX):
+                # チャンクエントリ: 枠線付き複数行ボックス（常に枠線あり）
+                parts = text[len(_CHUNK_PREFIX):].split("\x00")
+                chunk_lines = parts if parts else ["(空)"]
+                max_w = max((fm.horizontalAdvance(ln) for ln in chunk_lines), default=0)
+                bw = max_w + padding * 2
+                bh = line_h * len(chunk_lines) + padding * 2
+                painter.setPen(QPen(outline_color, 1))
+                painter.setBrush(QBrush(bg_color))
+                painter.drawRoundedRect(QRectF(box_x, box_y, bw, bh), 4, 4)
+                for i, ln in enumerate(chunk_lines):
+                    y = box_y + padding + (i + 1) * line_h - fm.descent()
+                    x = box_x + padding
+                    painter.setPen(shadow_color)
+                    painter.drawText(QPointF(x + 1, y + 1), ln)
+                    painter.setPen(text_color)
+                    painter.drawText(QPointF(x, y), ln)
+                box_y += bh + gap
+            else:
+                # 通常エントリ: 1件ごとに独立したボックス
+                display = f"[{ts}] {text}" if show_ts else text
+                bw = fm.horizontalAdvance(display) + padding * 2
+                bh = line_h + padding * 2
+                painter.setPen(QPen(outline_color, 1) if self._log_box_border
+                               else Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(bg_color))
+                painter.drawRoundedRect(QRectF(box_x, box_y, bw, bh), 4, 4)
+                y = box_y + padding + line_h - fm.descent()
+                x = box_x + padding
+                painter.setPen(shadow_color)
+                painter.drawText(QPointF(x + 1, y + 1), display)
+                painter.setPen(text_color)
+                painter.drawText(QPointF(x, y), display)
+                box_y += bh + gap

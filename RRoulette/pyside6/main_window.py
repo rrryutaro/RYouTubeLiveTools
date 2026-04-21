@@ -44,14 +44,15 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
 
 import os
 
-from bridge import (
-    SIZE_PROFILES, MIN_W, MIN_H, VERSION,
+from app_constants import SIZE_PROFILES, MIN_W, MIN_H, VERSION
+from design_models import (
     DesignSettings, DESIGN_PRESET_NAMES, DESIGN_PRESETS,
-    DesignPresetManager,
-    load_config, load_design,
-    load_all_item_entries, load_app_settings,
-    build_segments_from_config,
-    save_item_entries,
+    DesignPresetManager, load_design,
+)
+from config_io import load_config
+from segment_builder import build_segments_from_config
+from item_data_io import load_all_item_entries, save_item_entries
+from pattern_store import (
     get_pattern_names, get_current_pattern_name,
     set_current_pattern, add_pattern, delete_pattern, rename_pattern,
     get_pattern_id, ensure_pattern_ids,
@@ -68,6 +69,7 @@ from roulette_macro_session import MacroPlaybackSession
 from settings_panel import SettingsPanel
 from item_panel import ItemPanel, _ItemPanelAPI
 from manage_panel import ManagePanel
+from ticket_panel import TicketPanel
 from panel_widgets import _PanelGrip
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from sound_manager import SoundManager
@@ -82,6 +84,7 @@ from pattern_management_mixin import PatternManagementMixin
 from replay_management_mixin import ReplayManagementMixin
 from design_graph_mixin import DesignGraphMixin
 from macro_flow_mixin import MacroFlowMixin
+from sequential_spin_mixin import SequentialSpinMixin
 from log_shuffle_mixin import LogShuffleMixin
 from settings_io_mixin import SettingsIOMixin
 from package_io_mixin import PackageIOMixin
@@ -91,11 +94,11 @@ from window_frame_mixin import WindowFrameMixin
 from action_dispatch_mixin import ActionDispatchMixin
 from save_load_mixin import SaveLoadMixin
 from accessor_helper_mixin import AccessorHelperMixin
-from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar
+from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar, _IdleResetFilter
 
 
 
-class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
+class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, SequentialSpinMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
     """PySide6 プロトタイプのメインウィンドウ。
 
     独立パネル群（RoulettePanel, SettingsPanel）を載せる土台。
@@ -134,6 +137,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._init_settings_panel(central)
         self._init_item_panel(central)
         self._init_manage_panel(central)
+        self._init_ticket_panel(central)
         self._connect_panel_geometry_signals()
         self._init_input_filters()
         self._init_runtime_state(central)
@@ -150,7 +154,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         """設定・デザイン・プリセット・マネージャー・パネル一覧の初期化。"""
         # --- 既存設定の読み込み ---
         self._config = load_config()
-        self._settings = load_app_settings(self._config)
+        self._settings = AppSettings.load(self._config)
         self._design = load_design(self._config)
 
         # --- デザインプリセットマネージャー ---
@@ -409,13 +413,24 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             self._design,
             items_visible=self._settings.items_panel_visible,
             settings_visible=self._settings.settings_panel_visible,
+            ticket_visible=self._settings.ticket_panel_visible,
+            seq_visible=False,  # i051: seq dialog は起動時常に非表示
             on_drag_bar_changed=lambda vis: self._on_manage_panel_drag_bar_changed(vis),
             roulette_only_show_selection_handle=self._settings.roulette_only_show_selection_handle,
             roulette_only_show_title_plate=self._settings.roulette_only_show_title_plate,
             roulette_only_show_graph_btn=self._settings.roulette_only_show_graph_btn,
             roulette_only_show_grip=self._settings.roulette_only_show_grip,
             roulette_only_show_log=self._settings.roulette_only_show_log,
+            roulette_only_show_manage_panel=self._settings.roulette_only_show_manage_panel,
+            roulette_only_show_items_panel=self._settings.roulette_only_show_items_panel,
+            roulette_only_show_settings_panel=self._settings.roulette_only_show_settings_panel,
+            roulette_only_show_execution_panel=self._settings.roulette_only_show_execution_panel,
+            roulette_only_show_ticket_panel=self._settings.roulette_only_show_ticket_panel,
             manage_panel_float=self._settings.manage_panel_float,
+            auto_hide_enabled=self._settings.auto_hide_enabled,
+            auto_hide_seconds=self._settings.auto_hide_seconds,
+            auto_hide_fade_enabled=self._settings.auto_hide_fade_enabled,
+            auto_hide_fade_seconds=self._settings.auto_hide_fade_seconds,
             parent=central,
         )
 
@@ -437,6 +452,53 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # i336: 追加ルーレットを config から復元（_roulette_visible_ids 初期化後に実行）
         self._roulette_saved_geometries: dict[str, tuple] = {}
         self._restore_extra_roulettes(central)
+
+    def _init_ticket_panel(self, central: QWidget):
+        """TicketPanel の生成・初期状態設定・パネル一覧への追加 (i050)。"""
+        self._ticket_panel = TicketPanel(
+            self._design,
+            on_drag_bar_changed=lambda vis: self._on_ticket_panel_drag_bar_changed(vis),
+            parent=central,
+        )
+        self._ticket_panel.hide()
+        if not self._settings.ticket_panel_drag_bar_visible:
+            self._ticket_panel._drag_bar.setVisible(False)
+        # 初期データ: active roulette のチケットデータをセット
+        ctx = self._active_context
+        self._ticket_panel.set_active_data(
+            self._manager.active_id,
+            list(ctx.ticket_holdings),
+            list(ctx.ticket_history),
+            list(ctx.ticket_templates),
+        )
+        self._ticket_panel.data_changed.connect(self._on_ticket_data_changed)
+        self._panels.append(self._ticket_panel)
+
+    def _on_ticket_panel_drag_bar_changed(self, vis: bool):
+        self._settings.ticket_panel_drag_bar_visible = vis
+        self._save_config()
+
+    def _on_ticket_data_changed(self):
+        """チケットパネルのデータが変わったとき、active context に反映して保存。"""
+        rid = self._manager.active_id
+        ctx = self._manager.get(rid)
+        if ctx is not None:
+            ctx.ticket_holdings  = self._ticket_panel.get_current_holdings()
+            ctx.ticket_history   = self._ticket_panel.get_current_history()
+            ctx.ticket_templates = self._ticket_panel.get_current_templates()
+        self._save_config()
+
+    def _toggle_ticket_panel(self):
+        """チケットパネルの表示 / 非表示。"""
+        new_visible = not self._ticket_panel.isVisible()
+        if new_visible:
+            self._ticket_panel.show()
+            self._ticket_panel.raise_()
+        else:
+            self._ticket_panel.hide()
+        self._settings.ticket_panel_visible = new_visible
+        self._sync_manage_panel_checks()
+        self._save_config()
 
     def _connect_manage_panel_signals(self):
         """ManagePanel の全シグナルを接続する。"""
@@ -476,6 +538,46 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.manage_panel_float_changed.connect(  # i465
             self._toggle_manage_panel_float
         )
+        self._manage_panel.auto_hide_enabled_changed.connect(  # i485
+            self._on_auto_hide_enabled_changed
+        )
+        self._manage_panel.auto_hide_seconds_changed.connect(  # i485
+            self._on_auto_hide_seconds_changed
+        )
+        self._manage_panel.auto_hide_fade_changed.connect(  # i486
+            self._on_auto_hide_fade_changed
+        )
+        self._manage_panel.auto_hide_fade_seconds_changed.connect(  # i487
+            self._on_auto_hide_fade_seconds_changed
+        )
+        self._manage_panel.roulette_rename_requested.connect(  # i047
+            self._on_manage_roulette_rename
+        )
+        self._manage_panel.ticket_panel_toggled.connect(  # i051
+            self._on_manage_ticket_toggled
+        )
+        self._manage_panel.seq_panel_toggled.connect(  # i051
+            self._on_manage_seq_toggled
+        )
+
+    def _on_manage_ticket_toggled(self, visible: bool):
+        """ManagePanel のチケットパネルチェックボックスに応答する。"""
+        if visible:
+            self._ticket_panel.show()
+            self._ticket_panel.raise_()
+        else:
+            self._ticket_panel.hide()
+        self._settings.ticket_panel_visible = visible
+        self._save_config()
+
+    def _on_manage_seq_toggled(self, visible: bool):
+        """ManagePanel の実行パネルチェックボックスに応答する。"""
+        if visible:
+            self._open_sequential_spin_dialog()
+        else:
+            if self._seq_dialog is not None:
+                self._seq_dialog.hide()
+            self._sync_manage_panel_checks()
 
     def _connect_panel_geometry_signals(self):
         """全パネルの geometry_changed と panel_save_timer を接続する。
@@ -498,6 +600,8 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._item_panel.geometry_changed.connect(self._panel_save_timer.start)
         # manage panel
         self._manage_panel.geometry_changed.connect(self._panel_save_timer.start)
+        # ticket panel
+        self._ticket_panel.geometry_changed.connect(self._panel_save_timer.start)
 
     def _init_input_filters(self):
         """PanelInputFilter / SpaceSpinFilter を QApplication にインストール。"""
@@ -513,6 +617,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
                 self._settings_panel,
                 self._item_panel,
                 self._manage_panel,
+                self._ticket_panel,
             ],
             focus_only_panels=[],
         )
@@ -525,6 +630,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # i462: Tab キーでルーレット以外非表示を切り替えるフィルタ
         self._tab_roulette_filter = _TabRouletteFilter(self)
         QApplication.instance().installEventFilter(self._tab_roulette_filter)
+
+        # i485: アイドル検出フィルタ（全ユーザー操作でアイドルタイマーをリセット）
+        self._idle_reset_filter = _IdleResetFilter(self._reset_idle_timer)
+        QApplication.instance().installEventFilter(self._idle_reset_filter)
 
         # i346: 設定適用先（False = 選択中のみ / True = 全ルーレット）
         self._apply_to_all: bool = False
@@ -554,6 +663,23 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # --- コンテキストメニュー ---
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # --- 全面非表示状態 (i485) ---
+        self._is_all_hidden = False
+        self._all_hidden_saved_panels = {}
+
+        # --- 自動全面非表示タイマー (i485) ---
+        # i486: フェードアウト状態フラグと参照
+        self._auto_hide_fading = False
+        self._auto_hide_anim_group = None
+
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        # i486: タイマー満了時はフェード経由（フェード無効時は _start_auto_hide_fade が即 _hide_all を呼ぶ）
+        self._idle_timer.timeout.connect(self._start_auto_hide_fade)
+        # _idle_reset_filter は _init_input_filters で既にインストール済みのため
+        # ここでタイマーを開始する
+        self._reset_idle_timer()
 
         # --- OS テーマ変更の定期監視 (system モード用) ---
         self._last_os_theme = resolve_theme_mode("system")

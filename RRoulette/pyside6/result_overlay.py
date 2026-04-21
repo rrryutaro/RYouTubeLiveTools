@@ -26,7 +26,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QRectF
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 
-from bridge import DesignSettings
+from design_models import DesignSettings
 
 # close_mode 定数
 CLOSE_CLICK = 0    # クリックで閉じる
@@ -87,15 +87,54 @@ class ResultOverlay(QLabel):
         self._outline_color = QColor("#000000")    # アウトライン色
         self._outline_width: float = 2.0           # アウトライン幅
 
+        # i022: 被りなし連続抽選用 prefix ("N/M回目: " など)
+        self._result_prefix: str = ""
+
+        # 連続抽選全結果サマリー表示モード
+        self._summary_mode: bool = False
+        self._base_stylesheet: str = ""
+
     # ================================================================
     #  公開 API
     # ================================================================
+
+    def set_result_prefix(self, prefix: str):
+        """次の show_result に付加するプレフィックスを設定する。
+
+        i022: 被りなし連続抽選で "N/M回目: " のような前置きを表示するために使用。
+        空文字列を設定するとプレフィックスなし（通常状態）に戻る。
+        """
+        self._result_prefix = prefix
 
     def show_result(self, winner: str):
         """結果テキストを表示し、安定表示する。"""
         self._stop_auto_timer()
         self._stop_flash()
-        self.setText(f"  \U0001f3af {winner}  ")
+        display = (self._result_prefix + winner) if self._result_prefix else winner
+        self.setText(f"  \U0001f3af {display}  ")
+        self.show()
+        self.raise_()
+        self.update_position()
+        self._start_auto_timer_if_needed()
+
+    def show_summary(self, results: list):
+        """連続抽選の全結果サマリーをオーバーレイに表示する（最終回完了時に使用）。
+
+        results: [(step, winner), ...] 形式のリスト。
+        """
+        self._stop_auto_timer()
+        self._stop_flash()
+        self._summary_mode = True
+        lines = ["\U0001f3c6 全結果:"]
+        for step, winner in results:
+            lines.append(f"  {step}回目: {winner}")
+        self.setText("\n".join(lines))
+        self.setWordWrap(True)
+        self.setStyleSheet(
+            f"color: {self._text_color.name()}; "
+            f"background-color: rgba(0, 0, 0, 200); "
+            f"border-radius: 8px; padding: 10px 18px;"
+        )
         self.show()
         self.raise_()
         self.update_position()
@@ -111,6 +150,11 @@ class ResultOverlay(QLabel):
         self._stop_auto_timer()
         self._force_auto_close = False
         self._force_hold_sec = None
+        if self._summary_mode:
+            self._summary_mode = False
+            self.setWordWrap(False)
+            if self._base_stylesheet:
+                self.setStyleSheet(self._base_stylesheet)
         if self.isVisible():
             self.hide()
             self.closed.emit()
@@ -146,22 +190,30 @@ class ResultOverlay(QLabel):
         if container is None:
             return
         cw, ch = container.width(), container.height()
-        self.adjustSize()
-        lw = min(self.sizeHint().width() + 32, int(cw * 0.8))
-        lh = self.sizeHint().height() + 16
+        if self._summary_mode:
+            # サマリーモード: 幅を固定してワードラップで高さを計算
+            lw = min(int(cw * 0.75), 420)
+            lh = self.heightForWidth(lw) + 24
+            if lh <= 24:
+                lh = 120  # fallback
+        else:
+            self.adjustSize()
+            lw = min(self.sizeHint().width() + 32, int(cw * 0.8))
+            lh = self.sizeHint().height() + 16
         lx = (cw - lw) // 2
-        ly = (ch - lh) // 2
+        ly = max(10, (ch - lh) // 2)
         self.setGeometry(lx, ly, lw, lh)
 
     def apply_style(self, design: DesignSettings):
         """デザイン連動の配色を適用する。"""
         # テキスト色は transparent にし、paintEvent でアウトライン付き描画する
         self._text_color = QColor(design.gold)
-        self.setStyleSheet(
+        self._base_stylesheet = (
             f"color: transparent; "
             f"background-color: rgba(0, 0, 0, 180); "
             f"border-radius: 8px; padding: 8px 16px;"
         )
+        self.setStyleSheet(self._base_stylesheet)
 
     # ================================================================
     #  自動クローズタイマー
@@ -242,6 +294,10 @@ class ResultOverlay(QLabel):
         """QLabel の描画後にアウトライン付きテキストを重ねて描画する。"""
         # QLabel のデフォルト描画（背景・ボーダー。テキストは transparent で見えない）
         super().paintEvent(event)
+
+        # サマリーモードでは stylesheet の色で QLabel がそのまま描画するため、path 処理不要
+        if self._summary_mode:
+            return
 
         text = self.text()
         if not text:

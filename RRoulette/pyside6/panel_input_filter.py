@@ -122,6 +122,27 @@ class PanelInputFilter(QObject):
         for p in self._drag_panels:
             self._enable_tracking_recursive(p)
 
+    def add_drag_panel(self, panel: QWidget):
+        """drag_panels に動的にパネルを追加する（i036: 実行パネル対応）。"""
+        if panel not in self._drag_panels:
+            self._drag_panels.append(panel)
+            self._enable_tracking_recursive(panel)
+
+    def remove_drag_panel(self, panel: QWidget):
+        """drag_panels からパネルを削除する（i036: 実行パネル対応）。"""
+        try:
+            self._drag_panels.remove(panel)
+        except ValueError:
+            pass
+        # 進行中のリサイズ/ドラッグ状態が対象パネルなら解除
+        if self._resize_panel is panel:
+            self._resize_panel = None
+            self._resize_edge = ""
+            self._resize_start_geom = None
+        if self._press_panel is panel:
+            self._press_panel = None
+            self._dragging = False
+
     @staticmethod
     def _enable_tracking_recursive(widget):
         """widget とその全子孫 QWidget で setMouseTracking(True) を呼ぶ。"""
