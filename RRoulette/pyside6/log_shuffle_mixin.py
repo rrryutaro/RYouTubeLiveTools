@@ -112,6 +112,9 @@ class LogShuffleMixin:
         self._settings_panel.set_active_entries(new_entries)
         # i289 t07: 行ウィジェット再構築後に mouseTracking を再適用する。
         self._refresh_panel_tracking()
+        # i088: ItemPanel のシンプルリスト（確率・係数表示）を即時同期する。
+        if hasattr(self, "_item_panel"):
+            self._item_panel._refresh_simple_list()
         self._save_item_entries()
 
     # ================================================================

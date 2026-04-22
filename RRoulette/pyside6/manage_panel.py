@@ -117,7 +117,7 @@ class ManagePanel(QFrame):
                                    on_drag_bar_changed=on_drag_bar_changed)
 
         # コンテンツ
-        body = QFrame()
+        body = QFrame(self)  # i068: 親なし HWND フラッシュ防止
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(10, 10, 10, 10)
         body_layout.setSpacing(8)
@@ -169,7 +169,7 @@ class ManagePanel(QFrame):
 
         body_layout.addLayout(_panel_grp_hdr)
 
-        self._panel_grp_content = QWidget()
+        self._panel_grp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _pgc = QVBoxLayout(self._panel_grp_content)
         _pgc.setContentsMargins(0, 4, 0, 4)
         _pgc.setSpacing(4)
@@ -269,7 +269,7 @@ class ManagePanel(QFrame):
 
         body_layout.addLayout(_roulette_grp_hdr)
 
-        self._roulette_grp_content = QWidget()
+        self._roulette_grp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _rgc = QVBoxLayout(self._roulette_grp_content)
         _rgc.setContentsMargins(0, 4, 0, 4)
         _rgc.setSpacing(4)
@@ -308,7 +308,7 @@ class ManagePanel(QFrame):
         self._apply_grp_btn.toggled.connect(self._on_apply_grp_toggle)
         body_layout.addWidget(self._apply_grp_btn)
 
-        self._apply_grp_content = QWidget()
+        self._apply_grp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _agc = QVBoxLayout(self._apply_grp_content)
         _agc.setContentsMargins(0, 4, 0, 4)
         _agc.setSpacing(4)
@@ -346,7 +346,7 @@ class ManagePanel(QFrame):
         body_layout.addWidget(self._ro_only_toggle_btn)
 
         # 折りたたみコンテンツ — パネル群 / ルーレットパネル群の2グループ
-        self._ro_only_content = QWidget()
+        self._ro_only_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _ro_content_layout = QVBoxLayout(self._ro_only_content)
         _ro_content_layout.setContentsMargins(8, 2, 0, 2)
         _ro_content_layout.setSpacing(3)
@@ -381,7 +381,7 @@ class ManagePanel(QFrame):
         self._ro_panels_toggle_btn.toggled.connect(self._on_ro_panels_toggle)
         _ro_content_layout.addWidget(self._ro_panels_toggle_btn)
 
-        self._ro_panels_content = QWidget()
+        self._ro_panels_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _ro_panels_layout = QVBoxLayout(self._ro_panels_content)
         _ro_panels_layout.setContentsMargins(12, 0, 0, 2)
         _ro_panels_layout.setSpacing(2)
@@ -429,7 +429,7 @@ class ManagePanel(QFrame):
         self._ro_rp_toggle_btn.toggled.connect(self._on_ro_rp_toggle)
         _ro_content_layout.addWidget(self._ro_rp_toggle_btn)
 
-        self._ro_rp_content = QWidget()
+        self._ro_rp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _ro_rp_layout = QVBoxLayout(self._ro_rp_content)
         _ro_rp_layout.setContentsMargins(12, 0, 0, 2)
         _ro_rp_layout.setSpacing(2)
@@ -486,7 +486,7 @@ class ManagePanel(QFrame):
         self._app_settings_toggle_btn.toggled.connect(self._on_app_settings_toggle)
         body_layout.addWidget(self._app_settings_toggle_btn)
 
-        self._app_settings_content = QWidget()
+        self._app_settings_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _app_content_layout = QVBoxLayout(self._app_settings_content)
         _app_content_layout.setContentsMargins(12, 2, 0, 2)
         _app_content_layout.setSpacing(6)
@@ -592,7 +592,7 @@ class ManagePanel(QFrame):
         body.setStyleSheet(f"background-color: {design.panel};")
 
         # i348: コンテンツをスクロール領域で包む（高さ不足でも潰れない）
-        self._scroll = QScrollArea()
+        self._scroll = QScrollArea(self)  # i068: 親なし HWND フラッシュ防止
         self._scroll.setWidget(body)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -710,7 +710,7 @@ class ManagePanel(QFrame):
         is_visible = entry.get("visible", True)
         label_text = entry.get("label", rid)
 
-        row = QWidget()
+        row = QWidget(self)  # i068: 親なし HWND フラッシュ防止
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(4)
@@ -743,7 +743,7 @@ class ManagePanel(QFrame):
             f" border: 1px solid {self._design.accent}; border-radius: 4px; padding: 3px 7px; }}"
         )
 
-        name_stack = QStackedWidget()
+        name_stack = QStackedWidget(row)  # i068: 親なし HWND フラッシュ防止
         name_stack.addWidget(name_btn)   # index 0: 通常表示
         name_stack.addWidget(name_edit)  # index 1: 編集中
         name_stack.setCurrentIndex(0)

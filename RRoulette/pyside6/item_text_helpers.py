@@ -102,6 +102,41 @@ def parse_items_text(raw: str) -> list[str]:
     return items
 
 
+def validate_item_limits(items: list[str]) -> str:
+    """項目数 / 行数 / 文字数の上限を検証し、違反があればエラーメッセージを返す。
+
+    i078: 保存前チェック用。切り捨ては行わない。
+    問題なければ空文字列を返す。
+
+    Returns:
+        エラーメッセージ文字列。問題なければ "" を返す。
+    """
+    errors: list[str] = []
+    if len(items) > ITEM_MAX_COUNT:
+        errors.append(
+            f"項目数が上限（{ITEM_MAX_COUNT}件）を超えています（現在 {len(items)} 件）。"
+            f"\n超過分を削除してから保存してください。"
+        )
+    for i, item in enumerate(items):
+        lines = item.split("\n")
+        if len(lines) > ITEM_MAX_LINES:
+            label = item[:10] + "…" if len(item) > 10 else item
+            errors.append(
+                f"項目 {i + 1}「{label}」の行数が上限（{ITEM_MAX_LINES}行）を超えています。"
+            )
+        for ln in lines:
+            if len(ln) > ITEM_MAX_LINE_CHARS:
+                label = item[:10] + "…" if len(item) > 10 else item
+                errors.append(
+                    f"項目 {i + 1}「{label}」に {ITEM_MAX_LINE_CHARS} 文字を超える行があります"
+                    f"（{len(ln)} 文字）。"
+                )
+                break  # 1 項目につき 1 件のエラーで十分
+    if not errors:
+        return ""
+    return "\n".join(errors)
+
+
 def enforce_item_limits(items: list[str]) -> tuple[list[str], bool, str]:
     """項目数 / 行数 / 文字数の上限を強制する。
 

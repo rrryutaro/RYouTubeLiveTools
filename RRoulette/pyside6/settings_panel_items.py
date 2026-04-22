@@ -335,10 +335,10 @@ class _ItemsMixin:
         prob_row.addWidget(mode_combo)
 
         # 値ウィジェット（QStackedWidget で切替）
-        value_stack = QStackedWidget()
+        value_stack = QStackedWidget(row)  # i068: 親なし HWND フラッシュ防止
 
         # page 0: 変更なし — 空ラベル
-        empty_label = QLabel("")
+        empty_label = QLabel("", value_stack)  # i068: 親なし HWND フラッシュ防止
         value_stack.addWidget(empty_label)
 
         # page 1: 重み係数 — QComboBox

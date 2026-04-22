@@ -53,7 +53,7 @@ class _SectionsMixin:
         透過 (ウィンドウ / ルーレット個別) と常に最前面を、折りたたみ
         セクションの外に常設で配置する。
         """
-        bar = QFrame()
+        bar = QFrame(self)  # i068: 親なし HWND フラッシュ防止
         bar.setStyleSheet(
             f"QFrame {{"
             f"  background-color: {design.panel};"

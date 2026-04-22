@@ -37,26 +37,50 @@ class WinHistory:
         self._save_path = save_path
 
     def record(self, winner_text: str, pattern_id: str,
-               roulette_id: str = "default", pattern_name: str = ""):
+               roulette_id: str = "default", pattern_name: str = "") -> str:
         """スピン結果を記録する。
 
         i407: pattern_id（UUID）を基準として記録する。
         pattern_name は表示参照用として保持するが、フィルタには使わない。
+        i071: 作成したレコードの ID を返す（差し替え用）。
 
         Args:
             winner_text: 当選テキスト
             pattern_id: パターンの不変UUID
             roulette_id: ルーレットID
             pattern_name: パターン表示名（参照用、省略可）
+
+        Returns:
+            作成したレコードの UUID 文字列
         """
+        record_id = str(uuid.uuid4())
         self._records.append({
-            "id": str(uuid.uuid4()),
+            "id": record_id,
             "text": winner_text,
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "pattern_id": pattern_id,
             "pattern": pattern_name,
             "roulette_id": roulette_id,
         })
+        return record_id
+
+    def replace_record_text(self, record_id: str, new_text: str) -> bool:
+        """指定 ID のレコードのテキストを差し替える (i071)。
+
+        pointer_move で winner が変わった際に既存レコードを書き換えるために使用。
+
+        Args:
+            record_id: 対象レコードの UUID
+            new_text: 新しい当選テキスト
+
+        Returns:
+            差し替えに成功したら True
+        """
+        for rec in self._records:
+            if rec.get("id") == record_id:
+                rec["text"] = new_text
+                return True
+        return False
 
     def count_by_item(self, pattern_id: str,
                       roulette_id: str | None = None) -> dict[str, int]:

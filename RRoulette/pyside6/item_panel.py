@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QApplication,
 )
 
-from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits
+from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits, validate_item_limits
 from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu
 from settings_panel import _calc_item_probs, _populate_weight_combo
 
@@ -296,7 +296,7 @@ class ItemPanel(QFrame):
             outer.addWidget(pattern_widget)
 
         # ── タイトルバー（アイコン群）──
-        self._title_bar = QFrame()
+        self._title_bar = QFrame(self)  # i066: 親なし HWND フラッシュ防止
         self._title_bar.setStyleSheet(
             f"QFrame {{"
             f"  background-color: {design.panel};"
@@ -409,14 +409,14 @@ class ItemPanel(QFrame):
         self._popup_hint.hide()
 
         # ── 表示モードスタック ──
-        self._stack = QStackedWidget()
+        self._stack = QStackedWidget(self)  # i068: 親なし HWND フラッシュ防止
         self._stack.setStyleSheet(
             f"QStackedWidget {{ background-color: {design.panel}; }}"
         )
         outer.addWidget(self._stack, stretch=1)
 
         # ── スタック 0: 詳細表示ページ（既存行 UI）──
-        self._rows_scroll = QScrollArea()
+        self._rows_scroll = QScrollArea(self._stack)  # i068: 親なし HWND フラッシュ防止
         self._rows_scroll.setWidgetResizable(True)
         self._rows_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
@@ -662,7 +662,7 @@ class ItemPanel(QFrame):
         page_v.addWidget(self._simple_list, stretch=1)
 
         # 下部アクション行 (常時ランダム / 今すぐランダム / 並びリセット / 項目リセット)
-        action_frame = QFrame()
+        action_frame = QFrame(page)  # i066: 親なし HWND フラッシュ防止
         action_frame.setStyleSheet(
             f"QFrame {{ background-color: {design.panel};"
             f" border-top: 1px solid {design.separator}; }}"
@@ -748,7 +748,7 @@ class ItemPanel(QFrame):
         page_v.addWidget(action_frame)
 
         # 下部編集エリア（選択時に表示）
-        self._simple_edit_frame = QFrame()
+        self._simple_edit_frame = QFrame(page)  # i066: 親なし HWND フラッシュ防止
         self._simple_edit_frame.setStyleSheet(
             f"QFrame {{ background-color: {design.panel};"
             f" border-top: 1px solid {design.separator}; }}"
@@ -869,9 +869,9 @@ class ItemPanel(QFrame):
         prob_row.addWidget(self._simple_mode_combo)
 
         # 値ウィジェット (QStackedWidget: page0=空, page1=重み係数, page2=固定確率)
-        self._simple_value_stack = QStackedWidget()
+        self._simple_value_stack = QStackedWidget(self._simple_edit_frame)  # i068: 親なし HWND フラッシュ防止
 
-        empty_lbl = QLabel("")
+        empty_lbl = QLabel("", self._simple_value_stack)  # i068: 親なし HWND フラッシュ防止
         self._simple_value_stack.addWidget(empty_lbl)  # page 0
 
         n = len(self._api.entries) or 1
@@ -1345,6 +1345,12 @@ class ItemPanel(QFrame):
         parsed = parse_items_text(raw)
         if not parsed:
             self._text_warn_lbl.setText("項目が 0 件になるため保存しません")
+            self._text_warn_lbl.setVisible(True)
+            return
+        # i078: 上限超過は silent truncate せず明示エラーで保存中止
+        limit_err = validate_item_limits(parsed)
+        if limit_err:
+            self._text_warn_lbl.setText(limit_err)
             self._text_warn_lbl.setVisible(True)
             return
         changed, warn = self._api.replace_from_texts(parsed)

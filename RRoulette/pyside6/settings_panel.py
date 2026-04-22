@@ -147,7 +147,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._build_quick_settings_bar(outer, settings, design)
 
         # ── 1つのスクロール領域にアプリ設定 + 項目リストを縦並び ──
-        self._scroll = QScrollArea()
+        self._scroll = QScrollArea(self)  # i068: 親なし HWND フラッシュ防止
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded

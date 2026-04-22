@@ -386,8 +386,14 @@ class MacroFlowMixin:
     def _on_result_overlay_closed(self, roulette_id: str):
         """ResultOverlay が閉じられた時のハンドラ。
 
+        i069: まずスピン結果を確定（ログ・履歴・勝利数）してから
         auto advance 待機中であれば再開を試みる。
         """
+        # i069: ポインター操作モードを終了してから結果を確定する
+        ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+        if ctx is not None:
+            ctx.panel.exit_pointer_move_mode()
+        self._finalize_pending_spin_result(roulette_id)
         self._try_resume_macro_after_overlay(roulette_id)
 
     def _try_resume_macro_after_overlay(self, closed_roulette_id: str):
