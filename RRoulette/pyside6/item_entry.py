@@ -17,7 +17,8 @@ AppSettings（アプリ設定）とは明確に分離された「項目データ
       ItemEntry   → config["item_patterns"][パターン名] 内
 """
 
-from dataclasses import dataclass
+import uuid as _uuid_mod
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -30,6 +31,7 @@ class ItemEntry:
         split_count: 分割数（1 = 分割なし）
         prob_mode: 確率モード (None / "fixed" / "weight")
         prob_value: 確率値（prob_mode に応じた意味）
+        item_id: 項目を一意に識別する UUID 文字列（i076: チケット効果での項目特定用）
     """
 
     text: str
@@ -37,6 +39,7 @@ class ItemEntry:
     split_count: int = 1
     prob_mode: str | None = None
     prob_value: float | None = None
+    item_id: str = field(default_factory=lambda: str(_uuid_mod.uuid4()))
 
     @classmethod
     def from_config_entry(cls, entry, *, keep_disabled: bool = False
@@ -61,12 +64,15 @@ class ItemEntry:
             text = entry.get("text", "")
             if not text.strip():
                 return None
+            # i076: 既存データに item_id がなければ新規生成して付与する
+            item_id = entry.get("item_id") or str(_uuid_mod.uuid4())
             return cls(
                 text=text,
                 enabled=enabled,
                 split_count=entry.get("split_count", 1),
                 prob_mode=entry.get("prob_mode"),
                 prob_value=entry.get("prob_value"),
+                item_id=item_id,
             )
         return None
 
@@ -78,4 +84,5 @@ class ItemEntry:
             "split_count": self.split_count,
             "prob_mode": self.prob_mode,
             "prob_value": self.prob_value,
+            "item_id": self.item_id,
         }

@@ -91,6 +91,10 @@ class WheelWidget(QWidget):
         self._transparent: bool = False
         self._spin_direction: int = 1  # 0=反時計回り, 1=時計回り（デフォルト: 時計回り）
 
+        # --- i069: ポインター操作モード 可動範囲表示 ---
+        self._pm_base_angle: float | None = None  # None のとき非表示
+        self._pm_max_deg: float = 0.0
+
         # --- 描画パラメータ ---
         self._cx: float = 0.0
         self._cy: float = 0.0
@@ -195,6 +199,29 @@ class WheelWidget(QWidget):
             self._log_entries = self._log_entries[:self._log_max]
         self.update()
         self.log_changed.emit()  # i343
+
+    def replace_log_entry(self, old_text: str, pattern_id: str,
+                          new_text: str) -> bool:
+        """最新の old_text エントリを new_text へ差し替える (i071)。
+
+        pointer_move で winner が変わった際にログ表示を更新するために使用。
+        先頭（最新）から検索し、最初にマッチした 1 件のみを書き換える。
+
+        Args:
+            old_text: 差し替え前のテキスト
+            pattern_id: パターンUUID（同じパターン内のエントリのみ対象）
+            new_text: 差し替え後のテキスト
+
+        Returns:
+            差し替えに成功したら True
+        """
+        for i, (ts, text, pid) in enumerate(self._log_entries):
+            if text == old_text and pid == pattern_id:
+                self._log_entries[i] = (ts, new_text, pid)
+                self.update()
+                self.log_changed.emit()
+                return True
+        return False
 
     def add_log_chunk(self, header: str, results: list, pattern_id: str = ""):
         """被りなし連続抽選の結果を 1 チャンクとしてログに追加する。
@@ -366,6 +393,18 @@ class WheelWidget(QWidget):
     def set_transparent(self, enabled: bool):
         """透過モードを設定する。"""
         self._transparent = enabled
+        self.update()
+
+    def set_pointer_move_range(self, base_angle: float, max_deg: float) -> None:
+        """ポインター操作モードの可動範囲を設定して表示する (i069)。"""
+        self._pm_base_angle = base_angle % 360.0
+        self._pm_max_deg = max(0.0, max_deg)
+        self.update()
+
+    def clear_pointer_move_range(self) -> None:
+        """ポインター操作モードの可動範囲表示を消す (i069)。"""
+        self._pm_base_angle = None
+        self._pm_max_deg = 0.0
         self.update()
 
     def seg_at_pointer(self) -> int:
@@ -607,6 +646,10 @@ class WheelWidget(QWidget):
                 painter.drawEllipse(hole_rect)
                 painter.restore()
 
+        # --- i069: ポインター操作モード 可動範囲（ポインター背面に描く） ---
+        if self._pm_base_angle is not None:
+            self._draw_pointer_move_range(painter, cx, cy, r)
+
         # --- ポインター ---
         self._draw_pointer(painter, cx, cy, r, d)
 
@@ -745,6 +788,39 @@ class WheelWidget(QWidget):
         painter.setPen(QPen(QColor(d.pointer.outline_color), d.pointer.outline_width))
         painter.setBrush(QBrush(QColor(d.pointer.fill_color)))
         painter.drawPolygon(pointer)
+
+    def _draw_pointer_move_range(self, painter: QPainter, cx: float, cy: float,
+                                 r: float) -> None:
+        """ポインター操作モードの可動範囲を円弧のみで描画する (i069/i072/i074)。
+
+        i073: ホイール外側〜ポインター外側の中間帯（r + POINTER_OVERHANG/2）に描画。
+        i074: 円弧のみ（扇形塗り・境界線・ダッシュ線・ラベル等の装飾を全廃）。
+              ポインター背面に描画するため paintEvent での呼び出し順を入れ替え済み。
+        """
+        if self._pm_base_angle is None:
+            return
+        base = self._pm_base_angle
+        span = self._pm_max_deg * 2.0
+        if span <= 0:
+            return
+
+        arc_r = max(10.0, r + POINTER_OVERHANG / 2)
+
+        # Qt 角度変換: our angle (CW from top) → Qt angle (CCW from 3 o'clock)
+        qt_start = int((90.0 - (base + self._pm_max_deg)) * 16)
+        qt_span  = int(span * 16)
+        arc_rect = QRectF(cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
+
+        painter.save()
+
+        # 可動範囲を示す円弧のみ（シアン）
+        arc_pen = QPen(QColor(0, 220, 220, 210), 5)
+        arc_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arc_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(arc_rect, qt_start, qt_span)
+
+        painter.restore()
 
     def _draw_log_overlay(self, painter: QPainter, d: DesignSettings):
         """ログオーバーレイを左上に描画する。

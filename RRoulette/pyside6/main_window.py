@@ -472,6 +472,15 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             list(ctx.ticket_templates),
         )
         self._ticket_panel.data_changed.connect(self._on_ticket_data_changed)
+        # i069: pointer_move チケット使用要求
+        self._ticket_panel.pointer_move_requested.connect(self._on_pointer_move_requested)
+        # i076: set_item_enabled チケット使用要求
+        # i076/i077: set_item_enabled チケット使用要求（使用時選択型）
+        self._ticket_panel.set_item_enabled_requested.connect(self._on_set_item_enabled_requested)
+        # i086: set_weight チケット使用要求（使用時選択型）
+        self._ticket_panel.set_item_weight_requested.connect(self._on_set_item_weight_requested)
+        # i087: 確率指定系チケット使用要求（使用時選択型）
+        self._ticket_panel.set_prob_effect_requested.connect(self._on_set_prob_effect_requested)
         self._panels.append(self._ticket_panel)
 
     def _on_ticket_panel_drag_bar_changed(self, vis: bool):
@@ -487,6 +496,549 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             ctx.ticket_history   = self._ticket_panel.get_current_history()
             ctx.ticket_templates = self._ticket_panel.get_current_templates()
         self._save_config()
+
+    def _on_pointer_move_committed(self, roulette_id: str, winner: str) -> None:
+        """pointer_move drag release 時に記録済みの winner を差し替え、成功/ドブ選択を出す (i070/i071/i072)。
+
+        i071: 即時記録済みの old_winner と異なる場合のみ、
+        win_history / wheel log / 勝利数表示を書き換える。
+        i072: 差し替え後に成功/ドブ選択オーバーレイを表示する。
+        """
+        if not hasattr(self, '_pending_spin_results'):
+            return
+        pending = self._pending_spin_results.get(roulette_id)
+        if pending is None:
+            return
+        old_winner = pending["winner"]
+
+        pattern_id    = pending["pattern_id"]
+        rid           = roulette_id or "default"
+        win_record_id = pending.get("win_record_id", "")
+        ctx           = pending["ctx"]
+
+        if winner != old_winner:
+            # win_history を差し替える
+            if win_record_id:
+                self._win_history.replace_record_text(win_record_id, winner)
+            self._win_history.save()
+
+            # wheel ログを差し替える
+            if ctx:
+                ctx.panel.wheel.replace_log_entry(old_winner, pattern_id, winner)
+                ctx.panel.wheel.save_log(self._roulette_log_path(roulette_id))
+
+            # 当選回数表示を更新
+            self._update_win_counts()
+
+            # pending の winner も更新（2回目 commit 防止）
+            pending["winner"] = winner
+            print(f"[dev] pointer_move committed: '{old_winner}' → '{winner}'")
+        else:
+            print(f"[dev] pointer_move committed: same winner '{winner}', no rewrite")
+
+        # i073: 成功/ドブ選択オーバーレイを TicketPanel 上に表示（800ms 後）
+        ticket_info = pending.get("pm_ticket_info")
+        if ticket_info:
+            _name   = ticket_info.get("name", "")
+            _issuer = ticket_info.get("issuer", "")
+            _effect = ticket_info.get("effect", "")
+            QTimer.singleShot(800, lambda: self._ticket_panel.show_pointer_move_result_selection(
+                _name, _issuer, _effect
+            ))
+
+    def _on_pointer_move_requested(self, roulette_id: str, max_deg: float,
+                                    name: str, issuer: str, effect: str,
+                                    ticket_id: str = "") -> None:
+        """TicketPanel から pointer_move チケット使用要求を受け取る (i069/i070)。
+
+        使用条件:
+          - 対象ルーレットが結果表示中（暫定結果あり）
+          - まだポインター操作モードに入っていない
+          - この結果表示に対して pending result が存在する
+        """
+        ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+        if ctx is None:
+            return
+        panel = ctx.panel
+        # 結果表示中かチェック
+        if not panel.result_overlay.isVisible():
+            return
+        # 既にポインター操作モード中なら拒否
+        if panel.pointer_move_mode_active:
+            return
+        # pending result が存在するかチェック（seq スピン中は対象外）
+        pending_key = roulette_id
+        if not hasattr(self, '_pending_spin_results'):
+            return
+        if pending_key not in self._pending_spin_results:
+            return
+        # i070: ticket_id も渡してチケットを消費（同名チケット識別）
+        # i072: 履歴は drag release + 成功/ドブ選択後に finalize_pointer_move_ticket() で記録
+        self._ticket_panel.consume_ticket_pointer_move(name, issuer, effect,
+                                                       ticket_id=ticket_id)
+        # i072: pending dict にチケット情報を保存（成功/ドブ選択時に使用）
+        pending = self._pending_spin_results.get(pending_key)
+        if pending is not None:
+            pending["pm_ticket_info"] = {
+                "name": name, "issuer": issuer, "effect": effect,
+            }
+        # ポインター操作モードへ移行
+        panel.enter_pointer_move_mode(max_deg)
+        print(f"[dev] pointer_move mode entered: roulette='{roulette_id}', max_deg={max_deg}")
+
+    def _on_set_item_enabled_requested(self, roulette_id: str, name: str,
+                                        issuer: str, effect: str,
+                                        ticket_id: str) -> None:
+        """set_item_enabled チケット使用要求を処理する (i076/i077)。
+
+        i077: 使用時選択型。対象項目はこのメソッド内で OBS 可視オーバーレイを経由して選ぶ。
+
+        事前バリデーション:
+          - 有効項目が 1 件以下 → チケット不消費・警告
+        選択後バリデーション（on_selected 内）:
+          - 対象項目が見つからない → 中断（チケット消費済みを避けるため消費前に選択させる）
+          - OFF にして有効項目 0 件になる → 中断
+        適用先は常に active roulette / current pattern のみ。
+        """
+        from PySide6.QtWidgets import QMessageBox as _QMB
+        ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+        if ctx is None:
+            return
+        if ctx is not self._manager.active:
+            _QMB.warning(self, "チケット適用エラー",
+                         "非アクティブなルーレットには適用できません。\nチケットは消費されません。")
+            return
+
+        # 現在 enabled の項目のみを候補とする（使用時点の最新状態）
+        enabled_entries = [(e.item_id, e.text) for e in ctx.item_entries if e.enabled]
+        if len(enabled_entries) <= 1:
+            _QMB.warning(self, "チケット適用エラー",
+                         "有効項目が1件以下のため非表示にできません。\nチケットは消費されません。")
+            print(f"[dev] set_item_enabled: enabled_count={len(enabled_entries)}, aborted")
+            return
+
+        # 選択後コールバック
+        def on_selected(item_id: str) -> None:
+            # 選択時点でも ctx / entry を再取得（状態変化に対する保険）
+            ctx2 = self._manager.get(roulette_id) if roulette_id else self._manager.active
+            if ctx2 is None or ctx2 is not self._manager.active:
+                return
+            entries = ctx2.item_entries
+            target_idx = next(
+                (i for i, e in enumerate(entries) if e.item_id == item_id), None
+            )
+            if target_idx is None:
+                print(f"[dev] set_item_enabled: item_id={item_id!r} not found at apply time")
+                return
+            # OFF にして有効項目が 0 件にならないか確認
+            if entries[target_idx].enabled:
+                enabled_count = sum(1 for e in entries if e.enabled)
+                if enabled_count <= 1:
+                    print(f"[dev] set_item_enabled: would zero out enabled items, aborted")
+                    return
+            # チケット消費（バリデーション通過後に消費）
+            # i083: 使用時に選んだ項目名を渡して履歴詳細に記録
+            if not self._ticket_panel.consume_ticket_set_item_enabled(
+                    name, issuer, effect, ticket_id=ticket_id,
+                    target_item_text=entries[target_idx].text):
+                return
+            # i079: 一時非表示（永続変更ではない）
+            entries[target_idx].enabled = False
+            rid = roulette_id or self._manager.active_id
+            self._update_items_by_action(rid, list(entries))
+            # 項目リスト UI への即時反映
+            self._settings_panel.set_active_entries(list(ctx2.item_entries))
+            if hasattr(self, "_item_panel"):
+                self._item_panel._refresh_simple_list()
+            print(f"[dev] set_item_enabled: temp OFF item_id={item_id!r}, "
+                  f"text='{entries[target_idx].text}'")
+
+            # i079: 結果表示が消えたタイミングで元の ON 状態へ自動復帰
+            result_ov = ctx2.panel.result_overlay
+
+            def _on_result_closed():
+                # 一度だけ実行・切断
+                try:
+                    result_ov.closed.disconnect(_on_result_closed)
+                except Exception:
+                    pass
+                ctx3 = self._manager.get(rid)
+                if ctx3 is None:
+                    return
+                entries3 = ctx3.item_entries
+                target3 = next((e for e in entries3 if e.item_id == item_id), None)
+                if target3 is None:
+                    print(f"[dev] set_item_enabled restore: item_id={item_id!r} not found")
+                    return
+                target3.enabled = True
+                self._update_items_by_action(rid, list(entries3))
+                self._settings_panel.set_active_entries(list(ctx3.item_entries))
+                if hasattr(self, "_item_panel"):
+                    self._item_panel._refresh_simple_list()
+                print(f"[dev] set_item_enabled restore: ON restored item_id={item_id!r}")
+
+            result_ov.closed.connect(_on_result_closed)
+
+        def on_cancelled() -> None:
+            print("[dev] set_item_enabled: cancelled, ticket not consumed")
+
+        # OBS 可視の選択オーバーレイを表示（チケット消費はキャンセル不可の選択後）
+        self._ticket_panel.show_item_hide_select_overlay(
+            enabled_entries, on_selected, on_cancelled
+        )
+
+    def _on_set_item_weight_requested(self, roulette_id: str, name: str,
+                                       issuer: str, effect: str,
+                                       ticket_id: str) -> None:
+        """set_weight チケット使用要求を処理する (i086)。
+
+        使用時選択型。対象項目はこのメソッド内で OBS 可視オーバーレイを経由して選ぶ。
+        係数値はチケットの effect_params["weight_value"] から取得する。
+
+        事前バリデーション:
+          - 有効項目が存在しない → チケット不消費・警告
+          - 係数値が現在の有効項目数ルール上で不正 → チケット不消費・警告
+        適用先は常に active roulette / current pattern のみ。
+        効果は一時上書き（結果表示が消えたら元に戻す）。
+        """
+        from PySide6.QtWidgets import QMessageBox as _QMB
+        ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+        if ctx is None:
+            return
+        if ctx is not self._manager.active:
+            _QMB.warning(self, "チケット適用エラー",
+                         "非アクティブなルーレットには適用できません。\nチケットは消費されません。")
+            return
+
+        # チケットの effect_params から係数値を取得
+        holdings = self._ticket_panel.get_current_holdings()
+        h_match = next(
+            (h for h in holdings
+             if (ticket_id and h.get("ticket_id") == ticket_id)
+             or (not ticket_id and h.get("ticket_name") == name
+                 and h.get("issuer") == issuer and h.get("effect") == effect)),
+            {}
+        )
+        weight_value = float(h_match.get("effect_params", {}).get("weight_value", 1.0))
+
+        # 現在 enabled の項目のみを候補とする
+        enabled_entries = [e for e in ctx.item_entries if e.enabled]
+        n = len(enabled_entries)
+        if n == 0:
+            _QMB.warning(self, "チケット適用エラー",
+                         "有効項目がありません。\nチケットは消費されません。")
+            print(f"[dev] set_weight: no enabled items, aborted")
+            return
+
+        # 係数値が現在の有効項目数に対して有効範囲かチェック
+        # _build_weight_candidates(n) の最大値は n なので weight_value > n は範囲外
+        if weight_value > n:
+            _QMB.warning(self, "チケット適用エラー",
+                         f"指定された係数 ×{weight_value:g} は現在の有効項目数 {n} に対して"
+                         f"適用できません（最大 ×{n:g}）。\nチケットは消費されません。")
+            print(f"[dev] set_weight: weight_value={weight_value} > n={n}, aborted")
+            return
+
+        # 表示テキスト生成（項目名 / 現在係数 / 現在確率）
+        from settings_panel_items import _calc_item_probs
+        probs = _calc_item_probs(ctx.item_entries)
+        all_entries = ctx.item_entries
+        items_for_overlay: list[tuple[str, str]] = []
+        for e in enabled_entries:
+            gi = next((i for i, x in enumerate(all_entries) if x.item_id == e.item_id), None)
+            if gi is None:
+                continue
+            prob = probs[gi]
+            prob_str = f"{prob:.1f}%" if prob is not None else "—"
+            if e.prob_mode == "weight" and e.prob_value is not None:
+                w_str = f"×{e.prob_value:g}"
+            elif e.prob_mode == "fixed":
+                w_str = f"固定 {e.prob_value:g}%"
+            else:
+                w_str = "×1"
+            display = f"{e.text}  /  係数 {w_str}  /  {prob_str}"
+            items_for_overlay.append((e.item_id, display))
+
+        # 選択後コールバック
+        def on_selected(item_id: str) -> None:
+            ctx2 = self._manager.get(roulette_id) if roulette_id else self._manager.active
+            if ctx2 is None or ctx2 is not self._manager.active:
+                return
+            entries = ctx2.item_entries
+            target_idx = next(
+                (i for i, e in enumerate(entries) if e.item_id == item_id), None
+            )
+            if target_idx is None:
+                print(f"[dev] set_weight: item_id={item_id!r} not found at apply time")
+                return
+
+            # チケット消費（バリデーション通過後）
+            target_text = entries[target_idx].text
+            if not self._ticket_panel.consume_ticket_set_weight(
+                    name, issuer, effect, ticket_id=ticket_id):
+                return
+
+            # 元の prob_mode / prob_value を保存してから一時上書き
+            orig_mode = entries[target_idx].prob_mode
+            orig_value = entries[target_idx].prob_value
+
+            entries[target_idx].prob_mode = "weight"
+            entries[target_idx].prob_value = weight_value
+
+            rid = roulette_id or self._manager.active_id
+            self._update_items_by_action(rid, list(entries))
+            # 項目リスト UI への即時反映
+            self._settings_panel.set_active_entries(list(ctx2.item_entries))
+            if hasattr(self, "_item_panel"):
+                self._item_panel._refresh_simple_list()
+            print(f"[dev] set_weight: temp weight ×{weight_value:g} applied to item_id={item_id!r}, "
+                  f"text='{target_text}'")
+
+            # 結果表示が消えたタイミングで元の状態へ自動復帰
+            result_ov = ctx2.panel.result_overlay
+            eparams_hist = {"weight_value": weight_value, "target_item": target_text}
+
+            def _on_result_closed():
+                try:
+                    result_ov.closed.disconnect(_on_result_closed)
+                except Exception:
+                    pass
+                ctx3 = self._manager.get(rid)
+                if ctx3 is None:
+                    return
+                entries3 = ctx3.item_entries
+                target3 = next((e for e in entries3 if e.item_id == item_id), None)
+                if target3 is None:
+                    # i088: リセット等で item_id が消えた場合は結果不明で記録
+                    print(f"[dev] set_weight restore: item_id={item_id!r} not found after reset")
+                    self._ticket_panel.finalize_ticket_with_result(
+                        name, issuer, effect, "none",
+                        effect_type="set_weight", effect_params=eparams_hist)
+                    return
+                target3.prob_mode = orig_mode
+                target3.prob_value = orig_value
+                self._update_items_by_action(rid, list(entries3))
+                self._settings_panel.set_active_entries(list(ctx3.item_entries))
+                if hasattr(self, "_item_panel"):
+                    self._item_panel._refresh_simple_list()
+                print(f"[dev] set_weight restore: item_id={item_id!r} reverted to "
+                      f"mode={orig_mode!r}, value={orig_value!r}")
+                # i088: 結果選択オーバーレイを表示して成功 / ドブを記録
+                def _on_chosen(value: str) -> None:
+                    result_val = value if value != "__cancel__" else "none"
+                    self._ticket_panel.finalize_ticket_with_result(
+                        name, issuer, effect, result_val,
+                        effect_type="set_weight", effect_params=eparams_hist)
+                self._ticket_panel.show_result_selection_overlay(name, effect, _on_chosen)
+
+            result_ov.closed.connect(_on_result_closed)
+
+        def on_cancelled() -> None:
+            print("[dev] set_weight: cancelled, ticket not consumed")
+
+        # OBS 可視の選択オーバーレイを表示（チケット消費はキャンセル不可の選択後）
+        self._ticket_panel.show_weight_select_overlay(
+            weight_value, items_for_overlay, on_selected, on_cancelled
+        )
+
+    def _on_set_prob_effect_requested(self, roulette_id: str, name: str,
+                                       issuer: str, effect: str,
+                                       ticket_id: str) -> None:
+        """固定確率指定・追加確率指定チケット使用要求を処理する (i087)。
+
+        effect_type（"set_fixed_prob" / "add_prob"）は holdings の effect_params から取得。
+        使用時選択型。対象項目はこのメソッド内で OBS 可視オーバーレイを経由して選ぶ。
+
+        固定確率指定:
+          - prob_value をそのまま固定確率として適用。
+        追加確率指定:
+          - 使用時点の現在確率に prob_value を加算して固定確率として適用。
+
+        バリデーション（非消費条件）:
+          - 有効項目が存在しない
+          - 適用後確率が 0% 以下または 100% 以上
+          - 他 ON 項目の固定確率合計 + 適用後確率 >= 100%（残余不足）
+          - キャンセル
+        """
+        from PySide6.QtWidgets import QMessageBox as _QMB
+        ctx = self._manager.get(roulette_id) if roulette_id else self._manager.active
+        if ctx is None:
+            return
+        if ctx is not self._manager.active:
+            _QMB.warning(self, "チケット適用エラー",
+                         "非アクティブなルーレットには適用できません。\nチケットは消費されません。")
+            return
+
+        # チケットの effect_type と prob_value を取得
+        holdings = self._ticket_panel.get_current_holdings()
+        h_match = next(
+            (h for h in holdings
+             if (ticket_id and h.get("ticket_id") == ticket_id)
+             or (not ticket_id and h.get("ticket_name") == name
+                 and h.get("issuer") == issuer and h.get("effect") == effect)),
+            {}
+        )
+        effect_type = h_match.get("effect_type", "")
+        prob_value = float(h_match.get("effect_params", {}).get("prob_value", 10.0))
+
+        # 有効項目チェック
+        enabled_entries = [e for e in ctx.item_entries if e.enabled]
+        if not enabled_entries:
+            _QMB.warning(self, "チケット適用エラー",
+                         "有効項目がありません。\nチケットは消費されません。")
+            return
+
+        # 表示テキスト生成（項目名 / 現在係数 / 現在確率）
+        from settings_panel_items import _calc_item_probs
+        all_entries = ctx.item_entries
+        probs = _calc_item_probs(all_entries)
+        items_for_overlay: list[tuple[str, str]] = []
+        for e in enabled_entries:
+            gi = next((i for i, x in enumerate(all_entries) if x.item_id == e.item_id), None)
+            if gi is None:
+                continue
+            prob = probs[gi]
+            prob_str = f"{prob:.1f}%" if prob is not None else "—"
+            if e.prob_mode == "weight" and e.prob_value is not None:
+                w_str = f"×{e.prob_value:g}"
+            elif e.prob_mode == "fixed":
+                w_str = f"固定 {e.prob_value:g}%"
+            else:
+                w_str = "×1"
+            display = f"{e.text}  /  係数 {w_str}  /  {prob_str}"
+            items_for_overlay.append((e.item_id, display))
+
+        # ダイアログタイトル
+        if effect_type == "set_fixed_prob":
+            dialog_title = f"固定確率 {prob_value:g}% を適用する項目を選んでください"
+        else:
+            dialog_title = f"確率 +{prob_value:g}% を加算する項目を選んでください"
+
+        def on_selected(item_id: str) -> None:
+            ctx2 = self._manager.get(roulette_id) if roulette_id else self._manager.active
+            if ctx2 is None or ctx2 is not self._manager.active:
+                return
+            entries = ctx2.item_entries
+            target_idx = next(
+                (i for i, e in enumerate(entries) if e.item_id == item_id), None
+            )
+            if target_idx is None:
+                print(f"[dev] set_prob: item_id={item_id!r} not found at apply time")
+                return
+
+            # 現在確率の再取得（選択時点）
+            probs2 = _calc_item_probs(entries)
+            gi2 = target_idx
+            current_prob = probs2[gi2] if probs2[gi2] is not None else 0.0
+
+            # 適用後確率の決定
+            if effect_type == "set_fixed_prob":
+                applied_prob = prob_value
+            else:
+                applied_prob = round(current_prob + prob_value, 1)
+
+            # バリデーション
+            if applied_prob <= 0.0 or applied_prob >= 100.0:
+                _QMB.warning(self, "チケット適用エラー",
+                             f"適用後の確率 {applied_prob:.1f}% は無効です（0%〜100%の範囲外）。\n"
+                             "チケットは消費されません。")
+                return
+
+            # 他 ON 固定確率の合計（対象項目が固定確率なら除外して計算）
+            other_fixed_sum = sum(
+                e.prob_value for e in entries
+                if e.enabled and e.item_id != item_id and e.prob_mode == "fixed"
+                and e.prob_value is not None
+            )
+            other_weight_count = sum(
+                1 for e in entries
+                if e.enabled and e.item_id != item_id and e.prob_mode != "fixed"
+            )
+            # other_fixed_sum + applied_prob が 100 以上だと残余不足（weight 項目がある場合）
+            # または全て固定でも合計超過
+            if other_weight_count > 0 and other_fixed_sum + applied_prob >= 100.0:
+                _QMB.warning(self, "チケット適用エラー",
+                             f"他の固定確率の合計 {other_fixed_sum:.1f}% に "
+                             f"{applied_prob:.1f}% を加えると残余確率が不足します。\n"
+                             "チケットは消費されません。")
+                return
+            if other_weight_count == 0 and other_fixed_sum + applied_prob > 100.0:
+                _QMB.warning(self, "チケット適用エラー",
+                             f"確率の合計が 100% を超えます "
+                             f"（他固定 {other_fixed_sum:.1f}% + 適用 {applied_prob:.1f}%）。\n"
+                             "チケットは消費されません。")
+                return
+
+            # チケット消費
+            target_text = entries[target_idx].text
+            if not self._ticket_panel.consume_ticket_set_prob(
+                    name, issuer, effect, ticket_id=ticket_id):
+                return
+
+            # 元の prob_mode / prob_value を保存して一時上書き
+            orig_mode = entries[target_idx].prob_mode
+            orig_value = entries[target_idx].prob_value
+
+            entries[target_idx].prob_mode = "fixed"
+            entries[target_idx].prob_value = applied_prob
+
+            rid = roulette_id or self._manager.active_id
+            self._update_items_by_action(rid, list(entries))
+            self._settings_panel.set_active_entries(list(ctx2.item_entries))
+            if hasattr(self, "_item_panel"):
+                self._item_panel._refresh_simple_list()
+            print(f"[dev] set_prob({effect_type}): applied_prob={applied_prob:.1f}% to "
+                  f"item_id={item_id!r}, text='{target_text}'")
+
+            # 結果表示が消えたタイミングで自動復帰
+            result_ov = ctx2.panel.result_overlay
+            eparams_hist = {
+                "prob_value": prob_value,
+                "target_item": target_text,
+                "applied_prob": applied_prob,
+            }
+
+            def _on_result_closed():
+                try:
+                    result_ov.closed.disconnect(_on_result_closed)
+                except Exception:
+                    pass
+                ctx3 = self._manager.get(rid)
+                if ctx3 is None:
+                    return
+                entries3 = ctx3.item_entries
+                target3 = next((e for e in entries3 if e.item_id == item_id), None)
+                if target3 is None:
+                    # i088: リセット等で item_id が消えた場合は結果不明で記録
+                    print(f"[dev] set_prob restore: item_id={item_id!r} not found after reset")
+                    self._ticket_panel.finalize_ticket_with_result(
+                        name, issuer, effect, "none",
+                        effect_type=effect_type, effect_params=eparams_hist)
+                    return
+                target3.prob_mode = orig_mode
+                target3.prob_value = orig_value
+                self._update_items_by_action(rid, list(entries3))
+                self._settings_panel.set_active_entries(list(ctx3.item_entries))
+                if hasattr(self, "_item_panel"):
+                    self._item_panel._refresh_simple_list()
+                print(f"[dev] set_prob restore: item_id={item_id!r} reverted to "
+                      f"mode={orig_mode!r}, value={orig_value!r}")
+                # i088: 結果選択オーバーレイを表示して成功 / ドブを記録
+                def _on_chosen(value: str) -> None:
+                    result_val = value if value != "__cancel__" else "none"
+                    self._ticket_panel.finalize_ticket_with_result(
+                        name, issuer, effect, result_val,
+                        effect_type=effect_type, effect_params=eparams_hist)
+                self._ticket_panel.show_result_selection_overlay(name, effect, _on_chosen)
+
+            result_ov.closed.connect(_on_result_closed)
+
+        def on_cancelled() -> None:
+            print(f"[dev] set_prob({effect_type}): cancelled, ticket not consumed")
+
+        self._ticket_panel.show_prob_select_overlay(
+            dialog_title, items_for_overlay, on_selected, on_cancelled
+        )
 
     def _toggle_ticket_panel(self):
         """チケットパネルの表示 / 非表示。"""
@@ -651,6 +1203,9 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._update_win_counts()
         _init_rp_mgr = self._replay_mgrs.get(self._manager.active_id)
         self._settings_panel.set_replay_count(_init_rp_mgr.count() if _init_rp_mgr else 0)
+
+        # --- i069: スピン結果遅延確定用 ---
+        self._pending_spin_results: dict = {}
 
         # --- ドラッグ・リサイズ状態 ---
         self._dragging_window = False

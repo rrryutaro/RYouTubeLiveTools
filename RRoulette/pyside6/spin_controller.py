@@ -144,6 +144,11 @@ class SpinController(QObject):
         """決定音の種類を設定する（i370: per-roulette）。"""
         self._win_pattern = idx
 
+    def play_result_sound(self):
+        """結果SE（win音）を鳴らす (i072)。pointer_move 確定時など外部から呼ぶ。"""
+        if self._sound_result_enabled and self._sound:
+            self._sound.play_win(self._win_pattern)
+
     def start_spin(self, duration: float | None = None):
         """spin を開始する（プリセットベース多段階減速）。
 

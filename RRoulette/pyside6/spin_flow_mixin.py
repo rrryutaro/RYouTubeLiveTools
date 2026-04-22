@@ -25,7 +25,15 @@ class SpinFlowMixin:
 
     MainWindow の self.* にアクセスする前提で設計されている。
     単独では動作しない。
+
+    i069: 通常スピン（非seq）の結果確定はオーバーレイ close 時まで遅延していた。
+    i071: 「即時反映 → pointer_move 時に差し替え」方式へ変更。
+    スピン停止時点で即時記録し、_pending_spin_results に win_record_id を保持する。
+    pointer_move で winner が変わった場合は replace_record_text / replace_log_entry で差し替える。
     """
+
+    # i069: key = roulette_id (空文字列 = default), value = 暫定スピン結果 dict
+    _pending_spin_results: dict  # type annotation only; initialized by MainWindow.__init__
 
     # ------------------------------------------------------------------
     #  アクション経由 spin
@@ -179,16 +187,39 @@ class SpinFlowMixin:
             _seq = getattr(self, '_seq_runner', None)
             _in_seq = (_seq is not None and _seq.is_running
                        and roulette_id == getattr(self, '_seq_runner_roulette_id', None))
-            if ctx and not _in_seq:
-                ctx.panel.wheel.add_log_entry(winner, pattern_id)  # i407: UUID 渡し
-                # i345: ルーレットごとに独立したログファイルへ保存し、
-                # #3 のスピン結果が #1 のログファイルを上書きしないようにする
-                ctx.panel.wheel.save_log(self._roulette_log_path(roulette_id))
-            # 勝利数集計用履歴に記録
-            self._win_history.record(winner, pattern_id, roulette_id or "default",
-                                     pattern_name=pattern_name)
-            self._win_history.save()
-            self._update_win_counts()
+            if _in_seq:
+                # i022: 被りなし連続抽選中は既存挙動を維持（即時記録）
+                self._win_history.record(winner, pattern_id, roulette_id or "default",
+                                         pattern_name=pattern_name)
+                self._win_history.save()
+                self._update_win_counts()
+            else:
+                # i071: 通常スピンも即時記録する（i069 遅延方式から変更）
+                # ログ記録（即時）
+                if winner and ctx:
+                    ctx.panel.wheel.add_log_entry(winner, pattern_id)
+                    ctx.panel.wheel.save_log(self._roulette_log_path(roulette_id))
+                # 勝利数集計用履歴に記録（即時）。record() は UUID を返す。
+                win_record_id = self._win_history.record(
+                    winner, pattern_id, roulette_id or "default",
+                    pattern_name=pattern_name)
+                self._win_history.save()
+                self._update_win_counts()
+
+                # pointer_move による差し替えのために pending を保持
+                pending_key = roulette_id
+                if not hasattr(self, '_pending_spin_results'):
+                    self._pending_spin_results = {}
+                self._pending_spin_results[pending_key] = {
+                    "winner":         winner,       # 即時記録した winner
+                    "seg_idx":        seg_idx,
+                    "pattern_id":     pattern_id,
+                    "pattern_name":   pattern_name,
+                    "roulette_id":    roulette_id,
+                    "ctx":            ctx,
+                    "win_record_id":  win_record_id,  # i071: 差し替え用 ID
+                }
+                print(f"[dev] spin result recorded: roulette='{roulette_id}', winner='{winner}'")
             # i351: スピン完了後、active ルーレットのリプレイ件数を表示更新する
             if roulette_id == self._manager.active_id:
                 _spin_fin_mgr = self._replay_mgrs.get(roulette_id)
@@ -203,6 +234,24 @@ class SpinFlowMixin:
         if (_seq is not None and _seq.is_running
                 and roulette_id == getattr(self, '_seq_runner_roulette_id', None)):
             _seq.on_spin_finished(winner)
+
+    # ------------------------------------------------------------------
+    #  i071: pending クリーンアップ（即時記録済み / pointer_move 差し替え対応）
+    # ------------------------------------------------------------------
+
+    def _finalize_pending_spin_result(self, roulette_id: str) -> None:
+        """ResultOverlay が閉じた時点で pending 情報をクリアする (i071)。
+
+        i071: スピン結果は spin_finished 時点で即時記録済み。
+        pointer_move による差し替えも committed 時点で完了済み。
+        この関数は pending dict のクリーンアップのみ行う。
+        """
+        if not hasattr(self, '_pending_spin_results'):
+            return
+        pending = self._pending_spin_results.pop(roulette_id, None)
+        if pending is not None:
+            print(f"[dev] pending cleared: roulette='{roulette_id}', "
+                  f"winner='{pending.get('winner', '')}'")
 
     # ------------------------------------------------------------------
     #  ポインタ角度

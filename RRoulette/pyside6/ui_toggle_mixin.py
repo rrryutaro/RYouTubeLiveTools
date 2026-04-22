@@ -16,7 +16,41 @@ i448: main_window.py から分離。
   class MainWindow(UIToggleMixin, PackageIOMixin, SettingsIOMixin, ..., QMainWindow)
 """
 
-from PySide6.QtCore import Qt, QPoint, QPropertyAnimation, QParallelAnimationGroup
+from PySide6.QtCore import Qt, QPoint, QVariantAnimation
+from PySide6.QtGui import QPainter, QColor
+from PySide6.QtWidgets import QWidget
+
+
+# ---------------------------------------------------------------------------
+#  OBS 向けキャンバスフェードオーバーレイ (i066)
+# ---------------------------------------------------------------------------
+
+class _CanvasFadeOverlay(QWidget):
+    """自動非表示フェードアウト用オーバーレイ（OBS 可視対応）。
+
+    setWindowOpacity は OS レベルの透明度変化のため OBS に映らない。
+    代わりに、親ウィンドウ内にキャンバス描画として背景色を塗り広げることで
+    アプリ内の描画変化として OBS にも映るフェードを実現する。
+    """
+
+    def __init__(self, parent: QWidget, bg_color: str) -> None:
+        super().__init__(parent)
+        self._bg = QColor(bg_color)
+        self._alpha = 0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setGeometry(parent.rect())
+        self.raise_()
+        self.show()
+
+    def set_alpha(self, a: int) -> None:
+        self._alpha = max(0, min(255, int(a)))
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        c = QColor(self._bg)
+        c.setAlpha(self._alpha)
+        p.fillRect(self.rect(), c)
 
 
 class UIToggleMixin:
@@ -599,11 +633,8 @@ class UIToggleMixin:
         if not getattr(self, '_is_all_hidden', False):
             return
         self._is_all_hidden = False
-        # opacity を確実に 1.0 に戻す（フェードアウト後に残留している場合に備える）
-        self.setWindowOpacity(1.0)
-        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
-            if getattr(panel, '_floating', False):
-                panel.setWindowOpacity(1.0)
+        # i066: キャンバスオーバーレイを破棄（フェード中断後に残留している場合に備える）
+        self._destroy_auto_hide_overlay()
         # フローティングパネル復元
         for panel in (self._settings_panel, self._item_panel, self._manage_panel):
             if id(panel) in getattr(self, '_all_hidden_saved_panels', {}):
@@ -631,10 +662,18 @@ class UIToggleMixin:
         else:
             self._idle_timer.stop()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """ウィンドウリサイズ時にフェードオーバーレイのサイズを追従させる。"""
+        super().resizeEvent(event)
+        overlay = getattr(self, '_auto_hide_overlay', None)
+        if overlay is not None:
+            overlay.setGeometry(self.rect())
+
     def _start_auto_hide_fade(self):
         """自動全面非表示のフェードアウトを開始する（アイドルタイマー満了時に呼ぶ）。
 
-        フェード有効時: 200ms かけて全関連ウィンドウをフェードアウト → `_hide_all()`。
+        フェード有効時: キャンバス描画ベースのオーバーレイでフェード → `_hide_all()`。
+        setWindowOpacity は OBS に映らないため、ウィンドウ内の描画変化で代替する (i066)。
         フェード無効時: 即座に `_hide_all()`。
         スピン中の場合はアイドルタイマーを再セットして非表示を保留する。
         """
@@ -653,43 +692,47 @@ class UIToggleMixin:
             self._hide_all()
             return
 
-        # フェード対象: 現在表示中のウィンドウを収集
-        targets = [self]
-        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
-            if getattr(panel, '_floating', False) and panel.isVisible():
-                targets.append(panel)
-
         self._auto_hide_fading = True
         # フェード時間: 設定値（秒）をミリ秒に変換。範囲は 100〜2000ms にクランプ
         fade_ms = int(max(0.1, min(10.0, self._settings.auto_hide_fade_seconds)) * 1000)
-        group = QParallelAnimationGroup(self)
-        for w in targets:
-            anim = QPropertyAnimation(w, b"windowOpacity", group)
-            anim.setDuration(fade_ms)
-            anim.setStartValue(1.0)
-            anim.setEndValue(0.0)
-        group.finished.connect(self._on_auto_hide_fade_done)
-        self._auto_hide_anim_group = group  # GC 防止のため参照保持
-        group.start()
+
+        # i066: キャンバス描画ベースのオーバーレイ（OBS に映る）
+        bg_color = getattr(self._design, 'bg', '#000000')
+        overlay = _CanvasFadeOverlay(self, bg_color)
+        self._auto_hide_overlay = overlay
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0)
+        anim.setEndValue(255)
+        anim.setDuration(fade_ms)
+        anim.valueChanged.connect(lambda v: overlay.set_alpha(int(v)))
+        anim.finished.connect(self._on_auto_hide_fade_done)
+        self._auto_hide_anim = anim  # GC 防止のため参照保持
+        anim.start()
 
     def _on_auto_hide_fade_done(self):
         """フェード完了コールバック — 全面非表示処理へ移行する。"""
-        self._auto_hide_anim_group = None
+        self._auto_hide_anim = None
+        self._destroy_auto_hide_overlay()
         # 二重呼び出し防止（_hide_all 内でフラグをクリア）
         self._hide_all()
 
     def _cancel_auto_hide_fade(self):
-        """フェード中断 — アニメーションを止めて opacity を 1.0 に戻す。"""
+        """フェード中断 — アニメーションを止めてオーバーレイを破棄する。"""
         self._auto_hide_fading = False
-        group = getattr(self, '_auto_hide_anim_group', None)
-        if group is not None:
-            group.stop()
-            self._auto_hide_anim_group = None
-        # 全ウィンドウの opacity を確実にリセット
-        self.setWindowOpacity(1.0)
-        for panel in (self._settings_panel, self._item_panel, self._manage_panel):
-            if getattr(panel, '_floating', False):
-                panel.setWindowOpacity(1.0)
+        anim = getattr(self, '_auto_hide_anim', None)
+        if anim is not None:
+            anim.stop()
+            self._auto_hide_anim = None
+        self._destroy_auto_hide_overlay()
+
+    def _destroy_auto_hide_overlay(self) -> None:
+        """フェードオーバーレイを破棄する（存在しない場合は何もしない）。"""
+        overlay = getattr(self, '_auto_hide_overlay', None)
+        if overlay is not None:
+            overlay.hide()
+            overlay.deleteLater()
+            self._auto_hide_overlay = None
 
     def _on_auto_hide_fade_changed(self, enabled: bool):
         """管理パネルのフェードアウト ON/OFF 変更を受け取る。"""

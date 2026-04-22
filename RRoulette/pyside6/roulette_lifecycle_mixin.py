@@ -126,6 +126,8 @@ class RouletteLifecycleMixin:
         panel.result_overlay.closed.connect(
             lambda rid=roulette_id: self._on_result_overlay_closed(rid)
         )
+        # i070: pointer_move drag release 時の確定 winner を pending に反映
+        panel.pointer_move_committed.connect(self._on_pointer_move_committed)
         panel.window_drag_delta.connect(self._on_roulette_window_drag)
         panel.window_resize_needed.connect(self._on_roulette_window_resize)
 

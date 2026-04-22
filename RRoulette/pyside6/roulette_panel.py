@@ -341,6 +341,8 @@ class RoulettePanel(QFrame):
     pointer_angle_changed = Signal(float)
     pointer_angle_committed = Signal()
     geometry_changed = Signal()
+    provisional_result_changed = Signal(str)  # i069: ポインター操作中の仮結果変化
+    pointer_move_committed = Signal(str, str)  # i070: drag release 時の確定 (roulette_id, winner)
     activate_requested = Signal(str)
     graph_requested = Signal(str)        # (roulette_id): グラフを開く要求（後方互換）
     in_panel_graph_opened = Signal(str)  # i389: in-panel グラフ表示時に emit
@@ -408,6 +410,13 @@ class RoulettePanel(QFrame):
         self._panel_drag_start = QPoint()
         self._panel_start_pos = QPoint()
 
+        # ── i069: ポインター操作モード ──
+        self._pointer_move_active: bool = False
+        self._pointer_move_base_angle: float = 0.0
+        self._pointer_move_max_deg: float = 15.0
+        self._pm_dragging: bool = False
+        self._pm_finished: bool = False  # i072: 1回ドラッグ完了後は再操作不可
+
         # ── ルーレット以外非表示モード ──
         self._roulette_only_mode: bool = False
         # i469: roulette_only_mode 中のログ可視性を一箇所で決定するフラグ。
@@ -456,6 +465,43 @@ class RoulettePanel(QFrame):
     @property
     def result_overlay(self) -> ResultOverlay:
         return self._result_overlay
+
+    @property
+    def pointer_move_mode_active(self) -> bool:
+        """ポインター操作モード中かどうか (i069)。"""
+        return self._pointer_move_active
+
+    def enter_pointer_move_mode(self, max_deg: float) -> None:
+        """ポインター操作モードに入る。結果表示中かつ未使用時のみ MainWindow から呼ぶ (i069)。"""
+        self._pointer_move_active = True
+        self._pm_finished = False  # i072: 操作可能状態にリセット
+        self._pointer_move_base_angle = self._wheel._pointer_angle
+        self._pointer_move_max_deg = max(1.0, max_deg)
+        self._wheel.set_pointer_move_range(self._pointer_move_base_angle,
+                                           self._pointer_move_max_deg)
+        self._result_overlay.set_pointer_move_mode(True)
+
+    def exit_pointer_move_mode(self) -> None:
+        """ポインター操作モードを終了する (i069)。"""
+        if not self._pointer_move_active:
+            return
+        self._pointer_move_active = False
+        self._pm_dragging = False
+        self._pm_finished = False  # i072: リセット
+        self._wheel.clear_pointer_move_range()
+        self._result_overlay.set_pointer_move_mode(False)
+
+    def get_current_result(self) -> str | None:
+        """現在ポインターが指している結果テキストを返す (i069)。"""
+        return self._wheel.result_at_pointer()
+
+    def _clamp_pm_angle(self, raw_angle: float) -> float:
+        """ポインター操作モードで角度を可動範囲内にクランプする (i069)。"""
+        base = self._pointer_move_base_angle
+        delta = ((raw_angle - base + 180.0) % 360.0) - 180.0
+        delta = max(-self._pointer_move_max_deg,
+                    min(self._pointer_move_max_deg, delta))
+        return (base + delta) % 360.0
 
     @property
     def roulette_only_mode(self) -> bool:
@@ -593,6 +639,7 @@ class RoulettePanel(QFrame):
         """スピンを開始する。"""
         if self._spin_ctrl.is_spinning:
             return
+        self.exit_pointer_move_mode()  # i069: ポインター操作モードを終了
         self._result_overlay.dismiss()
         self._spin_ctrl.start_spin()
 
@@ -775,8 +822,15 @@ class RoulettePanel(QFrame):
             wheel_pos = self._wheel.mapFrom(self, event.pos())
             zone = self._wheel.hit_zone(wheel_pos.x(), wheel_pos.y())
 
+            # i069: ポインター操作モード中 → wheel_face/pointer でのドラッグを操作として使用
+            # i072: _pm_finished が True の場合（1回操作済み）は再ドラッグ不可
+            if self._pointer_move_active and not self._pm_finished and zone in ("wheel_face", "pointer"):
+                self._pm_dragging = True
+                event.accept()
+                return
+
             # ポインター上 → ポインタードラッグ（最優先）
-            if not self._spin_ctrl.is_spinning and zone == "pointer":
+            if not self._spin_ctrl.is_spinning and not self._pointer_move_active and zone == "pointer":
                 self._dragging_pointer = True
                 event.accept()
                 return
@@ -793,6 +847,19 @@ class RoulettePanel(QFrame):
         event.accept()
 
     def mouseMoveEvent(self, event):
+        # i069: ポインター操作モードドラッグ中
+        if self._pm_dragging:
+            wheel_pos = self._wheel.mapFrom(self, event.pos())
+            raw_angle = self._wheel.angle_from_pos(wheel_pos.x(), wheel_pos.y())
+            clamped = self._clamp_pm_angle(raw_angle)
+            self._wheel.set_pointer_angle(clamped)
+            new_winner = self._wheel.result_at_pointer()
+            if new_winner:
+                self._result_overlay.update_provisional(new_winner)
+                self.provisional_result_changed.emit(new_winner)
+            event.accept()
+            return
+
         # ポインタードラッグ中
         if self._dragging_pointer:
             wheel_pos = self._wheel.mapFrom(self, event.pos())
@@ -835,6 +902,24 @@ class RoulettePanel(QFrame):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # i069: ポインター操作モードドラッグ完了
+            if self._pm_dragging:
+                self._pm_dragging = False
+                self._pm_finished = True  # i072: 再ドラッグ禁止
+                # 可動範囲表示をクリア（操作終了を視覚的に示す）
+                self._wheel.clear_pointer_move_range()
+                # i072: release 時の winner を再確定して結果表示を更新
+                final_winner = self._wheel.result_at_pointer()
+                if final_winner:
+                    # 結果オーバーレイを再表示（SE は pointer_move_committed 処理側で鳴らす）
+                    self._result_overlay.show_result(final_winner)
+                    # SE を再生
+                    self._spin_ctrl.play_result_sound()
+                    # 確定通知（MainWindow で記録差し替え → 成功/ドブ選択オーバーレイ表示）
+                    self.pointer_move_committed.emit(self._roulette_id, final_winner)
+                event.accept()
+                return
+
             # ポインタードラッグ完了
             if self._dragging_pointer:
                 self._dragging_pointer = False

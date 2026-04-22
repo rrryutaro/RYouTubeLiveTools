@@ -94,6 +94,10 @@ class ResultOverlay(QLabel):
         self._summary_mode: bool = False
         self._base_stylesheet: str = ""
 
+        # i069: ポインター操作モード
+        self._pointer_move_mode: bool = False
+        self._current_winner: str = ""
+
     # ================================================================
     #  公開 API
     # ================================================================
@@ -110,12 +114,31 @@ class ResultOverlay(QLabel):
         """結果テキストを表示し、安定表示する。"""
         self._stop_auto_timer()
         self._stop_flash()
-        display = (self._result_prefix + winner) if self._result_prefix else winner
-        self.setText(f"  \U0001f3af {display}  ")
+        self._current_winner = winner
+        self._update_text()
         self.show()
         self.raise_()
         self.update_position()
         self._start_auto_timer_if_needed()
+
+    def update_provisional(self, winner: str):
+        """ポインター操作中に仮結果テキストを更新する（タイマーはリセットしない）。"""
+        if winner == self._current_winner:
+            return
+        self._current_winner = winner
+        self._update_text()
+        self.update_position()
+
+    def set_pointer_move_mode(self, active: bool):
+        """ポインター操作モードの状態を保持する（i069/i070: 表示には影響しない）。"""
+        self._pointer_move_mode = active
+
+    def _update_text(self):
+        """現在の winner に基づいてテキストを更新する（i070: 操作中表示は不要）。"""
+        display = (self._result_prefix + self._current_winner
+                   if self._result_prefix else self._current_winner)
+        self.setWordWrap(False)
+        self.setText(f"  \U0001f3af {display}  ")
 
     def show_summary(self, results: list):
         """連続抽選の全結果サマリーをオーバーレイに表示する（最終回完了時に使用）。
@@ -150,6 +173,8 @@ class ResultOverlay(QLabel):
         self._stop_auto_timer()
         self._force_auto_close = False
         self._force_hold_sec = None
+        self._pointer_move_mode = False
+        self._current_winner = ""
         if self._summary_mode:
             self._summary_mode = False
             self.setWordWrap(False)
