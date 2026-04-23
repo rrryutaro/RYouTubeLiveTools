@@ -20,15 +20,15 @@ import threading
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QLineEdit, QPushButton, QCheckBox, QRadioButton,
-    QButtonGroup, QTabWidget, QWidget, QListWidget, QListWidgetItem,
+    QLabel, QLineEdit, QPushButton, QCheckBox,
+    QTabWidget, QWidget, QListWidget, QListWidgetItem,
     QComboBox, QSpinBox, QDoubleSpinBox, QScrollArea,
     QSizePolicy, QMessageBox, QFrame,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
-from constants import VERSION, PLATFORM_LABELS, COLOR_THEMES
+from constants import PLATFORM_LABELS, COLOR_THEMES
 
 
 class SettingsWindowQt(QDialog):
@@ -67,9 +67,17 @@ class SettingsWindowQt(QDialog):
         # 接続プロファイル編集データ
         self._profile_edit_data: list = []
 
-        self.setWindowTitle(f"RCommentHub v{VERSION} — 設定 [Qt Phase 4]")
+        self.setWindowTitle("RCommentHub - 設定")
         self.setMinimumSize(640, 580)
         self.resize(680, 660)
+
+        # 位置保存デバウンス（moveEvent ごとのディスク書き込みを防ぐ）
+        self._pos_save_timer = QTimer(self)
+        self._pos_save_timer.setSingleShot(True)
+        self._pos_save_timer.setInterval(400)
+        self._pos_save_timer.timeout.connect(
+            lambda: self._pos_setter([self.x(), self.y()])
+        )
 
         self._build_ui()
         self._load_values()
@@ -78,6 +86,125 @@ class SettingsWindowQt(QDialog):
     # ─── UI 構築 ───────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        # ── ダークテーマ（v0.3.2 相当の落ち着いた印象へ） ────────────────────
+        self.setStyleSheet("""
+            QDialog {
+                background: #1A1A2E;
+                color: #CCCCCC;
+            }
+            QWidget {
+                background: #1A1A2E;
+                color: #CCCCCC;
+            }
+            QTabWidget::pane {
+                border: 1px solid #333355;
+                background: #1A1A2E;
+            }
+            QTabBar::tab {
+                background: #14141E;
+                color: #888899;
+                padding: 5px 14px;
+                border: 1px solid #222233;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background: #1A1A2E;
+                color: #CCCCDD;
+                border-top: 2px solid #5555AA;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #1E1E30;
+                color: #AAAACC;
+            }
+            QLabel {
+                color: #CCCCCC;
+                background: transparent;
+            }
+            QLineEdit {
+                background: #252540;
+                color: #FFFFFF;
+                border: 1px solid #333355;
+                border-radius: 2px;
+                padding: 3px 5px;
+                selection-background-color: #3A3A7A;
+            }
+            QLineEdit:focus {
+                border: 1px solid #5555AA;
+            }
+            QComboBox {
+                background: #252540;
+                color: #CCCCCC;
+                border: 1px solid #333355;
+                border-radius: 2px;
+                padding: 2px 5px;
+            }
+            QComboBox QAbstractItemView {
+                background: #1E1E38;
+                color: #CCCCCC;
+                border: 1px solid #333355;
+                selection-background-color: #3A3A7A;
+            }
+            QCheckBox {
+                color: #CCCCCC;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 13px;
+                height: 13px;
+                border: 1px solid #555577;
+                background: #252535;
+            }
+            QCheckBox::indicator:checked {
+                background: #4444AA;
+                border: 1px solid #6666CC;
+            }
+            QPushButton {
+                background: #252535;
+                color: #CCCCCC;
+                border: none;
+                padding: 5px 14px;
+                border-radius: 2px;
+            }
+            QPushButton:hover {
+                background: #3A3A5A;
+            }
+            QPushButton:pressed {
+                background: #1A1A3A;
+            }
+            QPushButton:disabled {
+                background: #1A1A2E;
+                color: #555566;
+            }
+            QListWidget {
+                background: #14141E;
+                color: #CCCCCC;
+                border: 1px solid #333355;
+                selection-background-color: #2A2A5A;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background: #252540;
+                color: #FFFFFF;
+                border: 1px solid #333355;
+                border-radius: 2px;
+                padding: 2px 4px;
+            }
+            QScrollArea {
+                background: #1A1A2E;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #14141E;
+                width: 10px;
+            }
+            QScrollBar::handle:vertical {
+                background: #333355;
+                min-height: 20px;
+            }
+            QFrame[frameShape="4"] {
+                color: #2A2A4A;
+            }
+        """)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
@@ -115,6 +242,10 @@ class SettingsWindowQt(QDialog):
 
         btn_save = QPushButton("保存して閉じる")
         btn_save.setDefault(True)
+        btn_save.setStyleSheet(
+            "background:#2A2A4A; color:#AAAAFF; padding:5px 16px; border-radius:2px;"
+            "QPushButton:hover { background:#3A3A6A; }"
+        )
         btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(btn_save)
 
@@ -135,17 +266,6 @@ class SettingsWindowQt(QDialog):
         outer = QVBoxLayout(parent)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
-
-        # ── 認証方式 ──────────────────────────────────────────────────────────
-        self._section(layout, "認証方式")
-
-        self._auth_mode_group = QButtonGroup(self)
-        self._radio_oauth    = QRadioButton("Google アカウントで認証（OAuth 2.0）— 標準")
-        self._radio_api_key  = QRadioButton("API キー（補助モード / 簡易利用・検証用）")
-        self._auth_mode_group.addButton(self._radio_oauth,   0)
-        self._auth_mode_group.addButton(self._radio_api_key, 1)
-        layout.addWidget(self._radio_oauth)
-        layout.addWidget(self._radio_api_key)
 
         # ── OAuth 2.0 認証 ────────────────────────────────────────────────────
         self._section(layout, "OAuth 2.0 認証")
@@ -194,36 +314,6 @@ class SettingsWindowQt(QDialog):
         note_oauth.setStyleSheet("color: #888888; font-size: 8pt;")
         note_oauth.setWordWrap(True)
         layout.addWidget(note_oauth)
-
-        # ── API キー（補助モード） ─────────────────────────────────────────────
-        self._section(layout, "API キー（補助モード）")
-
-        layout.addWidget(QLabel("API キー（補助モード）: 公開データ・検証・小規模デモ向け"))
-
-        key_row = QHBoxLayout()
-        self._api_key_edit = QLineEdit()
-        self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_edit.setPlaceholderText("API キーを入力")
-        key_row.addWidget(self._api_key_edit)
-
-        btn_show_key = QPushButton("表示")
-        btn_show_key.setCheckable(True)
-        btn_show_key.setFixedWidth(54)
-        btn_show_key.toggled.connect(
-            lambda checked: self._api_key_edit.setEchoMode(
-                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
-            )
-        )
-        key_row.addWidget(btn_show_key)
-        layout.addLayout(key_row)
-
-        note_key = QLabel(
-            "※ 設定ファイルには平文では保存されません（DPAPI 暗号化）。\n"
-            "※ API キーはリポジトリや共有ファイルに含めないでください。"
-        )
-        note_key.setStyleSheet("color: #888888; font-size: 8pt;")
-        note_key.setWordWrap(True)
-        layout.addWidget(note_key)
 
         # ── Twitch 認証 ───────────────────────────────────────────────────────
         self._section(layout, "Twitch 認証")
@@ -274,18 +364,13 @@ class SettingsWindowQt(QDialog):
         # ── YouTube 接続オプション ─────────────────────────────────────────────
         self._section(layout, "YouTube 接続オプション")
 
-        self._yt_polling_fallback_chk = QCheckBox(
-            "streamList 失敗時に list ポーリングへ切り替える（デフォルト OFF）")
-        layout.addWidget(self._yt_polling_fallback_chk)
-
         self._yt_notify_overlay_chk = QCheckBox(
             "YouTube 切断通知を配信用 Overlay にも表示する（デフォルト OFF）")
         layout.addWidget(self._yt_notify_overlay_chk)
 
         note_yt = QLabel(
             "※ 切断通知はアプリ内コメントリスト・ログへは常に表示されます。\n"
-            "※ Overlay への表示はデフォルト OFF です。\n"
-            "※ ポーリング切替は streamList 再試行 5 回後に有効になります。"
+            "※ Overlay への表示はデフォルト OFF です。"
         )
         note_yt.setStyleSheet("color: #888888; font-size: 8pt;")
         note_yt.setWordWrap(True)
@@ -567,16 +652,6 @@ class SettingsWindowQt(QDialog):
         """settings_mgr から設定値を読み込んで UI に反映する。"""
         sm = self._sm
 
-        # 認証方式
-        mode = self._resolve_display_auth_mode()
-        if mode == "oauth":
-            self._radio_oauth.setChecked(True)
-        else:
-            self._radio_api_key.setChecked(True)
-
-        # API キー（表示用は空文字、実際のキーはマスク）
-        self._api_key_edit.setText(sm.api_key or "")
-
         # Twitch クライアントID
         self._twitch_id_edit.setText(sm.get("twitch_client_id", ""))
 
@@ -597,8 +672,6 @@ class SettingsWindowQt(QDialog):
             self._twitch_status_lbl.setText(tw_auth.status_label())
 
         # YouTube 接続オプション
-        self._yt_polling_fallback_chk.setChecked(
-            sm.get("youtube_polling_fallback_enabled", False))
         self._yt_notify_overlay_chk.setChecked(
             sm.get("youtube_disconnect_notify_overlay", False))
 
@@ -667,15 +740,6 @@ class SettingsWindowQt(QDialog):
         """設定を保存してコールバックを呼ぶ。成功時 True。"""
         sm = self._sm
 
-        # API キー
-        api_key = self._api_key_edit.text().strip()
-        if api_key != (sm.api_key or ""):
-            try:
-                sm.set_api_key(api_key)
-            except Exception as e:
-                QMessageBox.critical(self, "エラー", f"API キーの保存に失敗しました:\n{e}")
-                return False
-
         # Twitch クライアントID
         twitch_id = self._twitch_id_edit.text().strip()
         tw_auth = self._twitch_auth_getter()
@@ -683,9 +747,7 @@ class SettingsWindowQt(QDialog):
             tw_auth.client_id = twitch_id
 
         updates = {
-            "auth_mode": "oauth" if self._radio_oauth.isChecked() else "api_key",
             # YouTube 接続オプション
-            "youtube_polling_fallback_enabled":  self._yt_polling_fallback_chk.isChecked(),
             "youtube_disconnect_notify_overlay": self._yt_notify_overlay_chk.isChecked(),
             # 表示設定
             "color_theme":        self._theme_combo.currentText(),
@@ -1027,7 +1089,7 @@ class SettingsWindowQt(QDialog):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        self._pos_setter([self.x(), self.y()])
+        self._pos_save_timer.start()
 
     def closeEvent(self, event):
         """X ボタンでは非表示にするだけ（reject と同じ動作）"""
@@ -1051,13 +1113,3 @@ class SettingsWindowQt(QDialog):
         line.setStyleSheet("color: #333355;")
         layout.addWidget(line)
 
-    def _resolve_display_auth_mode(self) -> str:
-        auth_svc = self._auth_service_getter()
-        if auth_svc is not None:
-            return auth_svc.mode
-        saved = self._sm.get("auth_mode", None)
-        if saved is not None:
-            return saved
-        if self._sm.api_key:
-            return "api_key"
-        return "oauth"

@@ -415,14 +415,25 @@ class CommentController:
         self._last_recv_time = item.recv_time
         self._user_mgr.on_comment(item)
         self.apply_tts_from_settings()
-        # バックログ・システムメッセージは TTS 対象外
+        # バックログは TTS 対象外
+        # システムメッセージは tts_system_message 設定が ON のときのみ読み上げ
         is_backlog  = raw.get("_is_backlog", False)
         is_system   = raw.get("_is_system_message", False)
-        if not is_backlog and not is_system:
+        if is_backlog:
+            item.tts_target = False
+        elif is_system:
+            tts_sys_enabled = (
+                self._tts.enabled
+                and bool(self._sm.get("tts_system_message", True))
+            )
+            if tts_sys_enabled:
+                item.tts_target = True
+                self._tts.enqueue_comment(item)
+            else:
+                item.tts_target = False
+        else:
             item.tts_target = self._tts.should_read(item)
             self._tts.enqueue_comment(item)
-        else:
-            item.tts_target = False
         rule_matches = self._filter_mgr.evaluate(item, self._user_mgr)
         item.filter_rule_ids = rule_matches
         item.filter_match    = bool(rule_matches)

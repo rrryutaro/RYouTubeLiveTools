@@ -20,6 +20,68 @@ from PySide6.QtGui import QFont
 
 from constants import PLATFORM_LABELS
 
+# ─── ダークテーマ定義 ─────────────────────────────────────────────────────────
+_DIALOG_STYLE = """
+QDialog {
+    background: #1A1A2E;
+    color: #CCCCCC;
+}
+QLabel {
+    color: #CCCCCC;
+    background: transparent;
+}
+QLineEdit {
+    background: #252540;
+    color: #FFFFFF;
+    border: 1px solid #333355;
+    border-radius: 2px;
+    padding: 4px 6px;
+    selection-background-color: #3A3A7A;
+}
+QLineEdit:focus {
+    border: 1px solid #5555AA;
+}
+QComboBox {
+    background: #252540;
+    color: #CCCCCC;
+    border: 1px solid #333355;
+    border-radius: 2px;
+    padding: 3px 6px;
+}
+QComboBox::drop-down {
+    border: none;
+}
+QComboBox QAbstractItemView {
+    background: #1E1E38;
+    color: #CCCCCC;
+    border: 1px solid #333355;
+    selection-background-color: #3A3A7A;
+}
+QPushButton {
+    background: #252535;
+    color: #CCCCCC;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 2px;
+}
+QPushButton:hover {
+    background: #3A3A5A;
+}
+QPushButton:pressed {
+    background: #1A1A3A;
+}
+QPushButton:disabled {
+    background: #1A1A2E;
+    color: #555566;
+}
+"""
+
+_BTN_VERIFY  = "background:#2A4A2A; color:#AAFFAA; padding:5px 16px; border-radius:2px;"
+_BTN_VERIFY_H = ("background:#2A4A2A; color:#AAFFAA; padding:5px 16px; border-radius:2px;"
+                 "QPushButton:hover { background:#3A6A3A; }")
+_BTN_CONNECT = "background:#2A2A4A; color:#AAAAFF; padding:5px 16px; border-radius:2px;"
+_BTN_CONNECT_DISABLED = "background:#1A1A2E; color:#555566; padding:5px 16px; border-radius:2px;"
+
 
 class ConnectDialogQt(QDialog):
     """
@@ -31,8 +93,7 @@ class ConnectDialogQt(QDialog):
     verify_fn:           (platform: str, url: str) -> dict   接続確認（失敗時は例外）
     connect_fn:          (profile_id: str, verify_result: dict) -> None  接続開始
     profiles_getter:     () -> list[dict]                    接続プロファイル一覧
-    auth_checker:        () -> bool                          YouTube 認証済みか
-    auth_mode_getter:    () -> str                           YouTube 認証モード
+    auth_checker:        () -> bool                          YouTube 認証済みか（OAuth）
     twitch_auth_checker: () -> bool                          Twitch 認証済みか
     url_getter:          () -> str                           初期 URL プリフィル
     url_saver:           (url: str) -> None                  URL 保存
@@ -45,7 +106,6 @@ class ConnectDialogQt(QDialog):
                  connect_fn,
                  profiles_getter=None,
                  auth_checker=None,
-                 auth_mode_getter=None,
                  twitch_auth_checker=None,
                  url_getter=None,
                  url_saver=None,
@@ -56,7 +116,6 @@ class ConnectDialogQt(QDialog):
         self._connect_fn          = connect_fn
         self._profiles_getter     = profiles_getter     or (lambda: [])
         self._auth_checker        = auth_checker        or (lambda: True)
-        self._auth_mode_getter    = auth_mode_getter    or (lambda: "api_key")
         self._twitch_auth_checker = twitch_auth_checker or (lambda: False)
         self._url_getter          = url_getter          or (lambda: "")
         self._url_saver           = url_saver           or (lambda url: None)
@@ -66,6 +125,14 @@ class ConnectDialogQt(QDialog):
         self._verify_result: dict | None = None
         self._profile_map:   dict        = {}   # display_name -> profile dict
 
+        # 位置保存デバウンス（moveEvent ごとのディスク書き込みを防ぐ）
+        self._pos_save_timer = QTimer(self)
+        self._pos_save_timer.setSingleShot(True)
+        self._pos_save_timer.setInterval(400)
+        self._pos_save_timer.timeout.connect(
+            lambda: self._pos_setter([self.x(), self.y()])
+        )
+
         self._build_ui()
         self._load_profiles()
         self._restore_pos()
@@ -73,61 +140,74 @@ class ConnectDialogQt(QDialog):
     # ─── UI 構築 ───────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        self.setWindowTitle("配信に接続")
-        self.setMinimumWidth(520)
+        self.setWindowTitle("RCommentHub - 接続")
+        # v0.3.2 相当: 固定幅・コンパクト高さ・リサイズ不可
+        self.setFixedWidth(540)
+        self.setSizeGripEnabled(False)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
             Qt.WindowType.WindowCloseButtonHint
         )
+        # ダークテーマ適用
+        self.setStyleSheet(_DIALOG_STYLE)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
 
-        # タイトル
+        # ── タイトルラベル ─────────────────────────────────────────────────────
         title_lbl = QLabel("接続先を入力してください")
         f = QFont()
         f.setBold(True)
         f.setPointSize(10)
         title_lbl.setFont(f)
+        title_lbl.setStyleSheet("color: #DDDDEE;")
         root.addWidget(title_lbl)
 
-        # プロファイル行
+        # ── プロファイル行 ─────────────────────────────────────────────────────
         prof_row = QHBoxLayout()
         prof_row.setSpacing(8)
-        prof_row.addWidget(QLabel("接続プロファイル:"))
+        prof_lbl = QLabel("接続プロファイル:")
+        prof_lbl.setStyleSheet("color: #AAAACC;")
+        prof_row.addWidget(prof_lbl)
         self._profile_combo = QComboBox()
         self._profile_combo.setMinimumWidth(160)
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         prof_row.addWidget(self._profile_combo)
         self._platform_lbl = QLabel("")
+        self._platform_lbl.setStyleSheet("color: #88AACC; font-weight: bold;")
         prof_row.addWidget(self._platform_lbl)
         prof_row.addStretch()
         root.addLayout(prof_row)
 
-        # URL 入力
-        self._url_label = QLabel("URL / ID:")
+        # ── URL 入力 ────────────────────────────────────────────────────────────
+        self._url_label = QLabel("YouTube URL または 動画ID:")
+        self._url_label.setStyleSheet("color: #AAAACC;")
         root.addWidget(self._url_label)
         self._url_edit = QLineEdit()
-        self._url_edit.setPlaceholderText("YouTube URL / 動画ID または Twitch チャンネル名")
+        self._url_edit.setPlaceholderText(
+            "YouTube URL / 動画ID または Twitch チャンネル名")
         self._url_edit.returnPressed.connect(self._on_verify)
         root.addWidget(self._url_edit)
 
-        # 結果ラベル
+        # ── 結果ラベル ──────────────────────────────────────────────────────────
         self._result_lbl = QLabel("")
         self._result_lbl.setWordWrap(True)
+        self._result_lbl.setMinimumHeight(20)
         root.addWidget(self._result_lbl)
 
-        # ボタン行
+        # ── ボタン行 ────────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
         self._btn_verify = QPushButton("確認")
+        self._btn_verify.setStyleSheet(_BTN_VERIFY)
         self._btn_verify.clicked.connect(self._on_verify)
         btn_row.addWidget(self._btn_verify)
 
         self._btn_connect = QPushButton("接続開始")
         self._btn_connect.setEnabled(False)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
         self._btn_connect.clicked.connect(self._on_connect)
         btn_row.addWidget(self._btn_connect)
 
@@ -157,6 +237,7 @@ class ConnectDialogQt(QDialog):
         self._verify_result = None
         self._result_lbl.setText("")
         self._btn_connect.setEnabled(False)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
 
         p        = self._current_profile()
         platform = p.get("platform", "youtube") if p else "youtube"
@@ -197,19 +278,16 @@ class ConnectDialogQt(QDialog):
                 return
         else:
             if not self._auth_checker():
-                mode = self._auth_mode_getter()
-                msg = (
-                    "Google アカウントで認証されていません。設定ウィンドウから認証してください。"
-                    if mode == "oauth" else
-                    "API キーが未設定です（補助モード）。設定ウィンドウから登録してください。"
-                )
-                self._set_result(msg, "error")
+                self._set_result(
+                    "Google アカウントで認証されていません。設定ウィンドウから認証してください。",
+                    "error")
                 return
 
         self._verify_result = None
         self._set_result("確認中...", "info")
         self._btn_verify.setEnabled(False)
         self._btn_connect.setEnabled(False)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
 
         def _work():
             try:
@@ -226,6 +304,7 @@ class ConnectDialogQt(QDialog):
         self._set_result(f"✓ 確認OK: {title}", "ok")
         self._btn_verify.setEnabled(True)
         self._btn_connect.setEnabled(True)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT)
         if platform == "youtube":
             self._url_saver(url)
 
@@ -234,6 +313,7 @@ class ConnectDialogQt(QDialog):
         self._set_result(f"✗ エラー: {msg}", "error")
         self._btn_verify.setEnabled(True)
         self._btn_connect.setEnabled(False)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
 
     # ─── 接続開始 ──────────────────────────────────────────────────────────────
 
@@ -250,13 +330,13 @@ class ConnectDialogQt(QDialog):
 
     def _set_result(self, text: str, kind: str = "info"):
         _colors = {
-            "info":    "#AAAAAA",
+            "info":    "#888899",
             "ok":      "#44CC44",
             "warning": "#FFAA44",
             "error":   "#FF4444",
         }
         self._result_lbl.setText(text)
-        self._result_lbl.setStyleSheet(f"color: {_colors.get(kind, '#AAAAAA')};")
+        self._result_lbl.setStyleSheet(f"color: {_colors.get(kind, '#888899')};")
 
     def _restore_pos(self):
         pos = self._pos_getter()
@@ -265,7 +345,7 @@ class ConnectDialogQt(QDialog):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        self._pos_setter([self.x(), self.y()])
+        self._pos_save_timer.start()
 
     def open(self):
         """Tk版 ConnectDialog との API 互換メソッド。既存コーディネーターから呼び出せる。"""
@@ -275,6 +355,7 @@ class ConnectDialogQt(QDialog):
         self._result_lbl.setText("")
         self._verify_result = None
         self._btn_connect.setEnabled(False)
+        self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
         self.show()
         self.raise_()
         self.activateWindow()

@@ -2,8 +2,9 @@
 RCommentHub — YouTube Live Chat API クライアント
 
 取得方式:
-  主軸: liveChatMessages.streamList（公式推奨・低レイテンシ）
-  補助: liveChatMessages.list（ポーリング・フォールバック）
+  主軸: liveChatMessages.stream（REST streaming endpoint / 長時間接続）
+        URL: /youtube/v3/liveChat/messages/stream
+  補助: なし（list ポーリングは廃止）
 
 認証方式:
   標準: OAuth 2.0 (AuthService 経由)
@@ -11,8 +12,8 @@ RCommentHub — YouTube Live Chat API クライアント
 
 接続フロー:
   1. liveChatId を取得（videos.list）
-  2. streamList で接続を試みる（接続維持方式: iter_content でサーバーからのJSONを逐次処理）
-  3. streamList が利用できない場合 list ポーリングへ自動フォールバック
+  2. /liveChat/messages/stream で接続を試みる（httpx HTTP/2 / iter_text で JSON を逐次処理）
+  3. stream 失敗時はユーザーへ通知して停止（list ポーリングへのフォールバックなし）
   4. nextPageToken は切断後の再開用として保持し、正常継続中の新規GETトリガにはしない
 
 別スレッドで動作。UI コールバックはメインスレッド側で root.after() して使うこと。
@@ -24,6 +25,7 @@ import logging
 import threading
 import time
 import requests
+import httpx
 
 from auth_service import AuthService, AUTH_MODE_OAUTH, AUTH_MODE_API_KEY
 
@@ -87,10 +89,12 @@ class YouTubeClient:
         self._use_stream: bool       = True   # True: streamList 試行, False: list のみ
         self._polling_fallback_allowed: bool = False   # streamList 失敗時に list へ切替許可するか
         self._notify_overlay: bool   = False  # youtube_error.log 記録用（コントローラから設定）
+        self._stream_connected: bool = False  # streamList で一度でも応答受信したか（終了判定用）
         # セッション追跡（API 使用量ログ用）
-        self._session_id: str  = ""
-        self._session_seq: int = 0
+        self._session_id: str   = ""
+        self._session_seq: int  = 0
         self._session_stats: dict = {}
+        self._reset_session_stats()  # verify() 呼び出し時も _log_api_call() が安全に動作するよう初期化
 
     # ─── 認証サービス設定 ────────────────────────────────────────────────────
 
@@ -217,6 +221,7 @@ class YouTubeClient:
         self._notify_overlay            = notify_overlay
         self._stop_event.clear()
         self._is_first_fetch            = True
+        self._stream_connected          = False
         self._reset_session_stats()
 
         # API キーを直接渡された場合の後方互換処理
@@ -378,6 +383,80 @@ class YouTubeClient:
                 except json.JSONDecodeError:
                     break  # 不完全な JSON → 次のチャンクを待つ
 
+    def _read_stream_responses_httpx(self, resp):
+        """
+        httpx ストリーミング接続から完全な JSON オブジェクト（dict）をジェネレーターで返す。
+
+        Google の REST streaming endpoint (/stream) は Streaming JSON 形式を使用する。
+        レスポンス全体が JSON 配列 [ {dict1} , {dict2} , ... ] として送られてくるため、
+        外側の '[' / ',' / ']' を読み飛ばして内側の dict を逐次 yield する。
+
+        応答形式の自動判定:
+          先頭文字が '[' → streaming array モード（外側ラッパーを剥がして yield）
+          先頭文字が '{' → NDJSON モード（各 dict を直接 yield）
+
+        接続が閉じられると（iter_text が尽きると）ジェネレーターが終了する。
+        呼び出し元は httpx.ReadTimeout を別途処理すること。
+        """
+        decoder          = json.JSONDecoder()
+        buffer           = ""
+        stream_array     = None  # None=未判定, True=配列ラッパーあり, False=NDJSON
+
+        for chunk in resp.iter_text():
+            if not chunk:
+                continue
+            buffer += chunk
+
+            # 先頭文字でレスポンス形式を判定（初回のみ）
+            if stream_array is None:
+                head = buffer.lstrip()
+                if not head:
+                    continue
+                if head[0] == "[":
+                    stream_array = True
+                    buffer = head[1:]  # '[' を消費
+                    _logger.debug("_read_stream_responses_httpx: streaming array mode")
+                else:
+                    stream_array = False
+                    _logger.debug("_read_stream_responses_httpx: NDJSON mode")
+
+            # バッファ内の完全な JSON オブジェクトをすべて抽出する
+            while True:
+                stripped = buffer.lstrip()
+                if not stripped:
+                    buffer = ""
+                    break
+
+                # 配列モード: ',' セパレータと末尾 ']' を読み飛ばす
+                if stream_array:
+                    if stripped[0] == "]":
+                        buffer = stripped[1:]
+                        break  # 配列終端
+                    if stripped[0] == ",":
+                        buffer = stripped[1:]
+                        continue  # セパレータを消費して次の要素へ
+
+                try:
+                    obj, idx = decoder.raw_decode(stripped)
+                    buffer   = stripped[idx:]
+                    if isinstance(obj, dict):
+                        yield obj
+                    elif isinstance(obj, list):
+                        # フォールバック: ネストした配列が来た場合
+                        _logger.debug(
+                            "_read_stream_responses_httpx: unexpected list of %d items", len(obj)
+                        )
+                        for item in obj:
+                            if isinstance(item, dict):
+                                yield item
+                    else:
+                        _logger.warning(
+                            "_read_stream_responses_httpx: unexpected type=%s, skipping",
+                            type(obj).__name__,
+                        )
+                except json.JSONDecodeError:
+                    break  # 不完全な JSON → 次のチャンクを待つ
+
     # ─── 受信ループ（ワーカースレッド） ──────────────────────────────────────
 
     def _receive_loop(self):
@@ -416,83 +495,73 @@ class YouTubeClient:
             if (self._auth_service and self._auth_service.is_oauth_mode())
             else "api_key"
         )
-        initial_route = "streamList" if should_try_stream else "list_fallback"
+        initial_route = "streamList" if should_try_stream else "stopped"
         _route.info("[route-check] session_connect mode=%s initial=%s", auth_mode, initial_route)
 
         if not should_try_stream:
-            # API キーモード等: streamList を試みず直接 list（許可確認不要）
-            _route.info("[route-check] effective_route=list_fallback reason=no_stream_attempt")
+            # API キーモード等: streamList には OAuth 必須のため接続不可
+            _route.info("[route-check] effective_route=stopped reason=no_stream_attempt")
+            self._notify_status(
+                STATUS_DISCONNECTED,
+                "YouTube streamList には OAuth 認証が必要です",
+            )
+            self._notify_system_message(
+                "[YouTube] streamList には OAuth 認証が必要です。API キーモードでは接続できません。"
+            )
+            return
 
         if should_try_stream:
             stream_result = self._try_stream_loop()
-            # stream_result: "completed" / "stopped" / "fallback" / "permanent"
+            # stream_result: "completed" / "stopped" / "fallback" / "permanent" / "normal_end"
 
-            if stream_result == "stopped":
-                return
-
-            if stream_result == "completed":
-                # 自然なストリーム終了 — _try_stream_loop 内で DISCONNECTED 通知済み
+            if stream_result in ("stopped", "completed", "normal_end"):
+                # normal_end: 配信終了/削除による正常終了 — _try_stream_loop 内で通知済み
                 return
 
             if stream_result == "permanent":
-                # 永続的な失敗（liveChatEnded / liveChatDisabled / quotaExceeded / 404 等）
-                # → ポーリング設定に関わらず停止
-                self._notify_status(STATUS_DISCONNECTED, "YouTube 接続が終了しました")
-                self._notify_system_message(
-                    "[YouTube] 接続が終了しました（liveChatEnded / liveChatDisabled / quotaExceeded 等）"
-                )
+                # 永続的な失敗（quotaExceeded / forbidden 等）— _try_stream_loop 内で通知済み
                 _yt_error.info(
-                    "EVENT stream_stopped source=youtube route=streamList "
-                    "reason=permanent_failure polling_fallback=%s notify_overlay=%s",
-                    self._polling_fallback_allowed, self._notify_overlay,
-                )
-                return
-
-            # stream_result == "fallback": 一時失敗の再試行上限到達
-            if self._polling_fallback_allowed:
-                _route.info("[route-check] fallback_allowed_by_setting")
-                _route.info("[route-check] effective_route=list_fallback reason=stream_failed")
-                self._notify_status(STATUS_CONNECTING, "list 方式で継続中...")
-                self._notify_system_message(
-                    f"[YouTube] streamList 失敗 — list ポーリングへ切り替えます"
-                )
-                _yt_error.info(
-                    "EVENT stream_polling_fallback source=youtube route=list_polling "
-                    "reason=retry_exhausted polling_fallback=True notify_overlay=%s",
-                    self._notify_overlay,
-                )
-            else:
-                _route.info("[route-check] fallback_denied_by_setting")
-                _route.info("[route-check] effective_route=stopped reason=stream_failed_no_fallback")
-                # _try_stream_loop 内で DISCONNECTED 通知・システムメッセージ発行済み
-                _yt_error.info(
-                    "EVENT stream_stopped source=youtube route=streamList "
-                    "reason=retry_exhausted polling_fallback=False notify_overlay=%s",
+                    "EVENT stream_fatal_error source=youtube route=streamList "
+                    "reason=permanent_failure notify_overlay=%s",
                     self._notify_overlay,
                 )
                 return
 
-        self._poll_loop()
+            # stream_result == "fallback": 一時失敗の再試行上限到達（list フォールバックなし）
+            _route.info("[route-check] effective_route=stopped reason=stream_failed_no_fallback")
+            _yt_error.info(
+                "EVENT stream_fatal_error source=youtube route=streamList "
+                "reason=retry_exhausted polling_fallback=disabled notify_overlay=%s",
+                self._notify_overlay,
+            )
+            self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました")
+            self._notify_system_message("接続に失敗しました")
 
     def _try_stream_loop(self) -> str:
         """
-        liveChatMessages.streamList による接続を試みる。
+        liveChatMessages.streamList による接続を試みる（httpx HTTP/2 使用）。
 
         接続維持方式:
-          _read_stream_responses() で HTTP 接続を保ったまま、サーバーから
-          流れる JSON を逐次処理する。
+          httpx.Client(http2=True) を使い HTTP/2 でストリーミング接続を確立する。
+          HTTP/2 ではサーバーがストリームを開いたまま新規メッセージを push できる。
+          _read_stream_responses_httpx() で接続を保ったまま JSON を逐次処理する。
           接続が実際に閉じられた時だけ再接続する（疑似ポーリング防止）。
           nextPageToken は切断後の再開用として使用し、
-          正常継続中の新規 HTTP GET トリガにはしない。
+          正常継続中の新規 GET は発行しない。
+
+          【重要】HTTP/1.1（requests）では YouTube サーバーが streamList に対し
+          1 JSON レスポンスを返して即時クローズするため実質ポーリングになっていた。
+          HTTP/2 ではサーバーが接続を維持して後続メッセージを push できる。
 
         戻り値:
-          "completed" — ストリームが正常に終了した（ライブ終了など）
-          "stopped"   — 停止指示により中断した
-          "fallback"  — 接続失敗または非対応。list フォールバックへ移行すべき状態
-          "permanent" — 永続的な失敗（liveChatEnded / quotaExceeded / 404 等）
+          "completed"   — ストリームが正常に終了した（ライブ終了など）
+          "stopped"     — 停止指示により中断した
+          "fallback"    — 接続失敗（再試行上限到達）
+          "permanent"   — 永続的な失敗（quotaExceeded / forbidden 等）
+          "normal_end"  — 配信終了・配信削除による正常終了（エラー扱いしない）
         """
 
-        url              = f"{_API_BASE}/liveChat/messages"
+        url              = f"{_API_BASE}/liveChat/messages/stream"
         first_msg_logged = False
         reconnect_count  = 0    # 実際の再接続回数（サーバー側の接続close時のみカウント）
         failure_count    = 0    # 一時失敗の連続カウント（5回で上限）
@@ -501,16 +570,21 @@ class YouTubeClient:
 
         _route.info("[route-check] stream_attempt")
 
+        _stream_client = httpx.Client(
+            http2=True,
+            timeout=httpx.Timeout(STREAM_READ_TIMEOUT, connect=STREAM_CONNECT_TIMEOUT),
+        )
         while not self._stop_event.is_set():
 
             # ─── HTTP リクエスト構築（ループ毎に再構築してトークン更新に対応）───
             kwargs      = self._build_request_kwargs()
+            req_headers = kwargs.get("headers", {})
             base_params = {
                 "liveChatId": self._live_chat_id,
                 "part":       "id,snippet,authorDetails",
             }
             if "params" in kwargs:
-                base_params.update(kwargs.pop("params"))
+                base_params.update(kwargs["params"])
             if self._next_token:
                 base_params["pageToken"] = self._next_token
 
@@ -521,13 +595,11 @@ class YouTubeClient:
             seq = self._next_api_seq()
             t0  = time.monotonic()
             try:
-                resp = requests.get(
-                    url, params=base_params,
-                    timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
-                    stream=True,
-                    **kwargs,
+                _req = _stream_client.build_request(
+                    "GET", url, params=base_params, headers=req_headers,
                 )
-            except requests.RequestException as e:
+                resp = _stream_client.send(_req, stream=True)
+            except httpx.TransportError as e:
                 elapsed_ms    = int((time.monotonic() - t0) * 1000)
                 failure_count += 1
                 _route_label  = "stream_reconnect" if reconnect_count > 0 else "streamList"
@@ -586,24 +658,36 @@ class YouTubeClient:
                     method="liveChatMessages.streamList", route=_route_label,
                     seq=seq, reconnect_seq=reconnect_count,
                     page_token=bool(self._next_token), next_page_token=False,
-                    http_status=404, api_reason="-",
+                    http_status=404, api_reason="liveChatNotFound",
                     items=0, polling_ms=None, elapsed_ms=connect_elapsed_ms,
                 )
-                _route.info("[route-check] stream_permanent reason=http_404")
-                _yt_error.info(
-                    "EVENT stream_disconnect_detected source=youtube route=streamList "
-                    "retry_count=0/%d reason=http_404 http_status=404 api_reason=- "
-                    "exception_type=- exception_msg=- offline_at=- "
-                    "polling_fallback=%s notify_overlay=%s has_token=%s",
-                    STREAM_MAX_RETRIES_ON_FAILURE,
-                    self._polling_fallback_allowed, self._notify_overlay,
-                    "yes" if self._next_token else "no",
-                )
                 resp.close()
-                return "permanent"
+                if self._stream_connected:
+                    # 接続成立後の 404 = 配信削除 → 正常終了扱い
+                    _route.info("[route-check] stream_normal_end reason=liveChatNotFound_after_connected")
+                    _yt_error.info(
+                        "EVENT stream_normal_end source=youtube route=streamList "
+                        "reason=liveChatNotFound_after_connected http_status=404 "
+                        "notify_overlay=%s", self._notify_overlay,
+                    )
+                    self._notify_status(STATUS_DISCONNECTED, "配信が削除されたため接続を終了しました")
+                    self._notify_system_message("配信が削除されたため接続を終了しました")
+                    return "normal_end"
+                else:
+                    # 未接続時の 404 = 無効な liveChatId → 永続的失敗
+                    _route.info("[route-check] stream_fatal_error reason=liveChatNotFound_initial")
+                    _yt_error.info(
+                        "EVENT stream_fatal_error source=youtube route=streamList "
+                        "reason=liveChatNotFound_initial http_status=404 "
+                        "notify_overlay=%s", self._notify_overlay,
+                    )
+                    self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました（ライブチャットが見つかりません）")
+                    self._notify_system_message("接続に失敗しました（ライブチャットが見つかりません）")
+                    return "permanent"
 
             if resp.status_code == 403:
                 try:
+                    resp.read()
                     err_body   = resp.json()
                     reason_403 = (err_body.get("error", {})
                                   .get("errors", [{}])[0]
@@ -660,19 +744,55 @@ class YouTubeClient:
                     resp.close()
                     return "permanent"
 
-                # liveChatEnded / liveChatDisabled / forbidden 等 → 永続的失敗
-                _route.info("[route-check] stream_permanent reason=%s status=403",
+                # liveChatEnded → 配信終了（正常終了）
+                if reason_403 == "liveChatEnded":
+                    _route.info("[route-check] stream_normal_end reason=liveChatEnded status=403")
+                    _yt_error.info(
+                        "EVENT stream_normal_end source=youtube route=streamList "
+                        "reason=liveChatEnded http_status=403 offline_at=%s "
+                        "notify_overlay=%s", offline_at, self._notify_overlay,
+                    )
+                    self._notify_status(STATUS_DISCONNECTED, "配信が終了したため接続を終了しました")
+                    self._notify_system_message("配信が終了したため接続を終了しました")
+                    resp.close()
+                    return "normal_end"
+
+                # liveChatNotFound (403 版) → 接続成立後は正常終了、初回は fatal
+                if reason_403 == "liveChatNotFound":
+                    resp.close()
+                    if self._stream_connected:
+                        _route.info("[route-check] stream_normal_end reason=liveChatNotFound_after_connected status=403")
+                        _yt_error.info(
+                            "EVENT stream_normal_end source=youtube route=streamList "
+                            "reason=liveChatNotFound_after_connected http_status=403 "
+                            "notify_overlay=%s", self._notify_overlay,
+                        )
+                        self._notify_status(STATUS_DISCONNECTED, "配信が削除されたため接続を終了しました")
+                        self._notify_system_message("配信が削除されたため接続を終了しました")
+                        return "normal_end"
+                    else:
+                        _route.info("[route-check] stream_fatal_error reason=liveChatNotFound_initial status=403")
+                        _yt_error.info(
+                            "EVENT stream_fatal_error source=youtube route=streamList "
+                            "reason=liveChatNotFound_initial http_status=403 "
+                            "notify_overlay=%s", self._notify_overlay,
+                        )
+                        self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました（ライブチャットが見つかりません）")
+                        self._notify_system_message("接続に失敗しました（ライブチャットが見つかりません）")
+                        return "permanent"
+
+                # forbidden / liveChatDisabled / その他の 403 → 非再試行エラー
+                _route.info("[route-check] stream_fatal_error reason=%s status=403",
                             reason_403 or "forbidden")
                 _yt_error.info(
-                    "EVENT stream_disconnect_detected source=youtube route=streamList "
-                    "retry_count=0/%d reason=http_403 http_status=403 api_reason=%s "
-                    "exception_type=- exception_msg=- offline_at=%s "
-                    "polling_fallback=%s notify_overlay=%s has_token=%s",
-                    STREAM_MAX_RETRIES_ON_FAILURE,
-                    reason_403 or "forbidden", offline_at,
-                    self._polling_fallback_allowed, self._notify_overlay,
-                    "yes" if self._next_token else "no",
+                    "EVENT stream_fatal_error source=youtube route=streamList "
+                    "reason=%s http_status=403 api_reason=%s offline_at=%s "
+                    "notify_overlay=%s",
+                    reason_403 or "forbidden", reason_403 or "forbidden",
+                    offline_at, self._notify_overlay,
                 )
+                self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました")
+                self._notify_system_message("接続に失敗しました")
                 resp.close()
                 return "permanent"
 
@@ -781,13 +901,14 @@ class YouTubeClient:
                     failure_count, STREAM_MAX_RETRIES_ON_FAILURE,
                     self._polling_fallback_allowed, self._notify_overlay,
                 )
-                self._notify_system_message("[YouTube] 接続を回復しました")
+                self._notify_system_message("再接続に成功しました")
                 failure_count = 0
                 _route.info("[route-check] stream_retry_success attempt=%d", reconnect_count)
             else:
                 _route.info("[route-check] stream_reconnect_success attempt=%d", reconnect_count)
 
             self._notify_status(STATUS_RECEIVING, "コメント受信中 (streamList)")
+            self._stream_connected = True  # 一度でも応答受信 → 接続成立フラグ
 
             if self._stop_event.is_set():
                 resp.close()
@@ -801,12 +922,22 @@ class YouTubeClient:
             t_conn_start     = time.monotonic()
 
             try:
-                for data in self._read_stream_responses(resp):
+                for data in self._read_stream_responses_httpx(resp):
                     if self._stop_event.is_set():
                         resp.close()
                         return "stopped"
 
                     conn_responses += 1
+
+                    # 型ガード: _read_stream_responses_httpx が dict を返すはずだが念のため防衛
+                    if not isinstance(data, dict):
+                        _route.warning(
+                            "[route-check] stream_parse_type_error type=%s conn_responses=%d "
+                            "— skipping non-dict response",
+                            type(data).__name__, conn_responses,
+                        )
+                        continue
+
                     items      = data.get("items", [])
                     has_token  = "nextPageToken" in data
                     polling_ms = data.get("pollingIntervalMillis")
@@ -815,6 +946,12 @@ class YouTubeClient:
 
                     if has_token:
                         self._next_token = data["nextPageToken"]
+                    else:
+                        # nextPageToken なし: keys を診断ログに記録（原因特定用）
+                        _route.info(
+                            "[route-check] stream_no_token keys=%s conn_responses=%d",
+                            list(data.keys()), conn_responses,
+                        )
 
                     _route.info(
                         "[route-check] stream_response_parsed items=%d has_token=%s "
@@ -865,7 +1002,7 @@ class YouTubeClient:
                         reconnect_count, conn_responses,
                     )
 
-            except requests.exceptions.ReadTimeout:
+            except httpx.ReadTimeout:
                 # 接続は保たれていたがデータが来なかった（正常な待機タイムアウト）
                 # reconnect_count を増やし、nextPageToken で続きから接続し直す
                 _route.info(
@@ -873,8 +1010,8 @@ class YouTubeClient:
                     reconnect_count, conn_responses,
                 )
 
-            except (requests.exceptions.ChunkedEncodingError,
-                    requests.exceptions.ConnectionError) as e:
+            except (httpx.RemoteProtocolError,
+                    httpx.ConnectError, httpx.ReadError) as e:
                 # ストリーム読み取り中に接続が切れた（一時失敗）
                 failure_count += 1
                 _route.info(
@@ -899,25 +1036,15 @@ class YouTubeClient:
                         failure_count, STREAM_MAX_RETRIES_ON_FAILURE,
                         self._polling_fallback_allowed, self._notify_overlay,
                     )
-                    self._notify_status(
-                        STATUS_DISCONNECTED,
-                        f"YouTube 接続エラー — 再試行上限 ({STREAM_MAX_RETRIES_ON_FAILURE}回) に達しました",
-                    )
-                    self._notify_system_message(
-                        f"[YouTube] 接続が切れました。再試行 {STREAM_MAX_RETRIES_ON_FAILURE} 回に達したため停止します。"
-                    )
+                    self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました")
+                    self._notify_system_message("接続に失敗しました")
                     try:
                         resp.close()
                     except Exception:
                         pass
                     return "fallback"
-                self._notify_status(
-                    STATUS_RECONNECTING,
-                    f"YouTube 接続切断 — 再接続試行中 ({failure_count}/{STREAM_MAX_RETRIES_ON_FAILURE})...",
-                )
-                self._notify_system_message(
-                    f"[YouTube] 接続が切れました — 再接続試行中 ({failure_count}/{STREAM_MAX_RETRIES_ON_FAILURE})"
-                )
+                self._notify_status(STATUS_RECONNECTING, "接続が切れたため再接続します")
+                self._notify_system_message("接続が切れたため再接続します")
                 try:
                     resp.close()
                 except Exception:
@@ -933,35 +1060,25 @@ class YouTubeClient:
                     failure_count, STREAM_MAX_RETRIES_ON_FAILURE, e,
                 )
                 _yt_error.info(
-                    "EVENT stream_disconnect_detected source=youtube route=streamList "
+                    "EVENT stream_retryable_error source=youtube route=streamList "
                     "retry_count=%d/%d reason=unexpected_error http_status=200 api_reason=- "
-                    "exception_type=%s exception_msg=%s offline_at=- "
-                    "polling_fallback=%s notify_overlay=%s has_token=%s",
+                    "exception_type=%s exception_msg=%s "
+                    "notify_overlay=%s has_token=%s",
                     failure_count, STREAM_MAX_RETRIES_ON_FAILURE,
                     type(e).__name__, str(e)[:200],
-                    self._polling_fallback_allowed, self._notify_overlay,
+                    self._notify_overlay,
                     "yes" if self._next_token else "no",
                 )
                 if failure_count >= STREAM_MAX_RETRIES_ON_FAILURE:
-                    self._notify_status(
-                        STATUS_DISCONNECTED,
-                        f"YouTube エラー — 再試行上限 ({STREAM_MAX_RETRIES_ON_FAILURE}回) に達しました",
-                    )
-                    self._notify_system_message(
-                        f"[YouTube] エラーが連続しました。再試行 {STREAM_MAX_RETRIES_ON_FAILURE} 回に達したため停止します。"
-                    )
+                    self._notify_status(STATUS_DISCONNECTED, "接続に失敗しました")
+                    self._notify_system_message("接続に失敗しました")
                     try:
                         resp.close()
                     except Exception:
                         pass
                     return "fallback"
-                self._notify_status(
-                    STATUS_RECONNECTING,
-                    f"YouTube エラー — 再接続試行中 ({failure_count}/{STREAM_MAX_RETRIES_ON_FAILURE})...",
-                )
-                self._notify_system_message(
-                    f"[YouTube] エラーが発生しました — 再接続試行中 ({failure_count}/{STREAM_MAX_RETRIES_ON_FAILURE})"
-                )
+                self._notify_status(STATUS_RECONNECTING, "接続が切れたため再接続します")
+                self._notify_system_message("接続が切れたため再接続します")
                 try:
                     resp.close()
                 except Exception:
@@ -1020,6 +1137,10 @@ class YouTubeClient:
                 self._wait(3.0)
 
         # stop_event によって停止
+        try:
+            _stream_client.close()
+        except Exception:
+            pass
         self._notify_status(STATUS_DISCONNECTED, "受信停止")
         return "stopped"
 
