@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
-from constants import PLATFORM_LABELS, COLOR_THEMES
+from constants import PLATFORM_LABELS, COLOR_THEMES, VERSION
 
 
 class SettingsWindowQt(QDialog):
@@ -230,6 +230,9 @@ class SettingsWindowQt(QDialog):
 
         # ボタン行
         btn_row = QHBoxLayout()
+        ver_lbl = QLabel(f"RCommentHub v{VERSION}")
+        ver_lbl.setStyleSheet("color: #555577; font-size: 8pt;")
+        btn_row.addWidget(ver_lbl)
         btn_row.addStretch()
 
         btn_cancel = QPushButton("キャンセル")
