@@ -30,6 +30,7 @@ _VPAD          = 4      # 行の上下パディング (px)
 _NAME_BODY_GAP = 2      # 2行モード: 名前行と本文行の間隔 (px)
 _BG_BASE       = QColor("#0D0D1A")   # ベース背景色
 _SEP_COLOR     = QColor("#1A1A30")   # 行区切り線
+_SEL_COLOR     = QColor("#2A3A5A")   # 選択行ハイライト色
 
 
 # ─── 行データ ─────────────────────────────────────────────────────────────────
@@ -98,6 +99,11 @@ class CommentView(QAbstractScrollArea):
         self._auto_scroll = True
         self.verticalScrollBar().sliderPressed.connect(self._on_slider_pressed)
         self.verticalScrollBar().sliderReleased.connect(self._on_slider_released)
+
+        # 行選択（None=未選択、int=選択中行インデックス）
+        self._selected_row: int | None = None
+        # 選択行変更コールバック（外部からセット可能）: f(index: int | None) -> None
+        self.on_row_selected = None
 
         # プロフィール画像キャッシュ（URL → QPixmap または None=ロード済み失敗/読込中）
         self._icon_pixmap_cache: dict = {}
@@ -178,7 +184,7 @@ class CommentView(QAbstractScrollArea):
     # ─── Qt イベント ───────────────────────────────────────────────────────────
 
     def viewportEvent(self, event):
-        """viewport への Paint イベントを自前描画にルーティングする。"""
+        """viewport への Paint・クリックイベントを処理する。"""
         if event.type() == QEvent.Type.Paint:
             painter = QPainter(self.viewport())
             try:
@@ -186,6 +192,14 @@ class CommentView(QAbstractScrollArea):
             finally:
                 painter.end()
             return True
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                idx = self._row_at_y(int(event.position().y()))
+                self._selected_row = idx
+                self.viewport().update()
+                if self.on_row_selected is not None:
+                    self.on_row_selected(idx)
+            return False
         return super().viewportEvent(event)
 
     def scrollContentsBy(self, dx, dy):
@@ -272,6 +286,29 @@ class CommentView(QAbstractScrollArea):
 
     def _total_height(self, vp_width: int) -> int:
         return sum(self._compute_row_height(r, vp_width) for r in self._rows)
+
+    def _row_at_y(self, click_y: int) -> int | None:
+        """viewport 座標 click_y 位置の行インデックスを返す（なければ None）。"""
+        vp_w     = self.viewport().width()
+        scroll_y = self.verticalScrollBar().value()
+        y = 0
+        for i, row in enumerate(self._rows):
+            row_h  = self._compute_row_height(row, vp_w)
+            draw_y = y - scroll_y
+            if draw_y <= click_y < draw_y + row_h:
+                return i
+            y += row_h
+        return None
+
+    @property
+    def selected_row_index(self) -> int | None:
+        """現在選択中の行インデックス（未選択なら None）。"""
+        return self._selected_row
+
+    def deselect(self) -> None:
+        """選択を解除する。"""
+        self._selected_row = None
+        self.viewport().update()
 
     def _update_scrollbar(self) -> None:
         vp_h  = self.viewport().height()
@@ -382,7 +419,7 @@ class CommentView(QAbstractScrollArea):
         fm_b = QFontMetrics(fb)
 
         y = 0  # 全体座標系での各行 top
-        for row in self._rows:
+        for i, row in enumerate(self._rows):
             row_h  = self._compute_row_height(row, vp_w)
             draw_y = y - scroll_y  # viewport 座標系での top
 
@@ -395,7 +432,9 @@ class CommentView(QAbstractScrollArea):
                 break
 
             # ── 行背景 ─────────────────────────────────────────────────────
-            if row.bg_color:
+            if i == self._selected_row:
+                painter.fillRect(0, draw_y, vp_w, row_h, _SEL_COLOR)
+            elif row.bg_color:
                 painter.fillRect(0, draw_y, vp_w, row_h, row.bg_color)
 
             # ── 行区切り線 ─────────────────────────────────────────────────

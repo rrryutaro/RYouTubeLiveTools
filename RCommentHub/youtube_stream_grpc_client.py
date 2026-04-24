@@ -155,13 +155,17 @@ class YouTubeStreamGrpcClient:
     def __init__(self, auth_service: AuthService):
         self._auth_service = auth_service
         # gRPC ストリーミング統計（run() 実行後に youtube_client.py が読み取る）
+        # 注意: grpc_stream_calls は StreamList RPC 呼び出し回数。
+        # YouTube Data API quota との対応関係は公式には未公開。
+        # quota 消費量を断定するには Google Cloud Console での実測が必要。
         self.stats: dict = {
-            "grpc_stream_calls":         0,
-            "grpc_server_close_resumes": 0,
-            "grpc_failure_reconnects":   0,
-            "grpc_total_responses":      0,
-            "grpc_total_items":          0,
-            "grpc_zero_responses":       0,
+            "grpc_stream_calls":    0,  # StreamList RPC 呼び出し（接続試行）回数
+            "grpc_resume_count":    0,  # iterator 正常終了後の通常 resume 回数
+            "grpc_error_reconnects": 0, # RpcError 等のエラー起因の再接続回数
+            "grpc_rpc_errors":      0,  # grpc.RpcError 発生回数（一時・永続含む）
+            "grpc_total_responses": 0,  # 全接続通算の response 受信回数
+            "grpc_total_items":     0,  # 全接続通算の item 受信合計数
+            "grpc_zero_responses":  0,  # items=0 だった response 回数
         }
 
     # ─── 認証 ───────────────────────────────────────────────────────────────
@@ -252,12 +256,20 @@ class YouTubeStreamGrpcClient:
 
         while not stop_event.is_set():
 
-            # ─── 再接続ログ ──────────────────────────────────────────────────
+            # ─── resume / reconnect ログ（分岐）──────────────────────────────
             if reconnect_count > 0:
-                _route.info(
-                    "[route-check] grpc_reconnect_start attempt=%d next_token=%s",
-                    reconnect_count, "yes" if next_page_token else "no",
-                )
+                if was_transient_reconnect:
+                    # エラー起因の再接続
+                    _route.info(
+                        "[route-check] grpc_error_reconnect_start attempt=%d next_token=%s",
+                        reconnect_count, "yes" if next_page_token else "no",
+                    )
+                else:
+                    # iterator 正常終了後の通常 resume
+                    _route.info(
+                        "[route-check] grpc_resume_start attempt=%d next_token=%s",
+                        reconnect_count, "yes" if next_page_token else "no",
+                    )
 
             # ─── 認証メタデータ構築（毎回再構築してトークンリフレッシュに対応）──
             metadata = self._build_metadata()
@@ -316,15 +328,15 @@ class YouTubeStreamGrpcClient:
                                 )
                             elif reconnect_count > 0 and conn_responses == 1:
                                 if was_transient_reconnect:
-                                    # エラー起因の再接続成功 → 状態を receiving に戻してユーザー通知
+                                    # エラー起因の再接続成功 → receiving に戻してユーザー通知
                                     _route.info(
-                                        "[route-check] grpc_reconnect_success attempt=%d",
+                                        "[route-check] grpc_error_reconnect_success attempt=%d",
                                         reconnect_count,
                                     )
                                     on_status("receiving", "コメント受信中 (gRPC streamList)")
                                     on_system_message("再接続に成功しました")
                                 else:
-                                    # サーバークローズ後の通常 resume → サイレント（ユーザー通知不要）
+                                    # iterator 正常終了後の resume 成功 → サイレント継続
                                     _route.info(
                                         "[route-check] grpc_resume_success attempt=%d",
                                         reconnect_count,
@@ -409,6 +421,7 @@ class YouTubeStreamGrpcClient:
                         detail = e.details() or ""
                         conn_duration_ms = int((time.monotonic() - t_conn_start) * 1000)
 
+                        self.stats["grpc_rpc_errors"] += 1
                         _yt_error.info(
                             "EVENT grpc_rpc_error route=grpc attempt=%d "
                             "conn_responses=%d status_code=%s detail=%.200s "
@@ -492,13 +505,14 @@ class YouTubeStreamGrpcClient:
                         if stop_event.is_set():
                             return "stopped"
                         was_transient_reconnect = True
-                        self.stats["grpc_failure_reconnects"] += 1
+                        self.stats["grpc_error_reconnects"] += 1
                         reconnect_count += 1
                         continue  # while ループへ戻る
 
             except Exception as e:
                 # gRPC チャンネル生成・その他の予期しないエラー
                 failure_count += 1
+                self.stats["grpc_error_reconnects"] += 1
                 _yt_error.info(
                     "EVENT grpc_unexpected_error route=grpc attempt=%d "
                     "exception_type=%s exception_msg=%.200s notify_overlay=%s",
@@ -511,14 +525,15 @@ class YouTubeStreamGrpcClient:
                 _wait_interruptible(stop_event, GRPC_RETRY_DELAY)
                 if stop_event.is_set():
                     return "stopped"
+                was_transient_reconnect = True
                 reconnect_count += 1
                 continue
 
-            # ─── ストリーム正常終了の処理 ─────────────────────────────────────
+            # ─── ストリーム iterator 正常終了の処理 ──────────────────────────
             if normal_stream_end:
                 conn_duration_ms = int((time.monotonic() - t_conn_start) * 1000)
                 _route.info(
-                    "[route-check] grpc_stream_server_close attempt=%d "
+                    "[route-check] grpc_stream_iterator_completed attempt=%d "
                     "conn_responses=%d conn_duration_ms=%d chat_ended=%s",
                     reconnect_count, conn_responses, conn_duration_ms, chat_ended,
                 )
@@ -532,14 +547,14 @@ class YouTubeStreamGrpcClient:
                 if stop_event.is_set():
                     return "stopped"
 
-                # 配信終了でない正常クローズ → next_page_token で resume 再接続
+                # 配信終了でない通常 iterator 終了 → next_page_token で resume
                 # gRPC では pollingIntervalMillis がないため、最小待機のみ入れる
                 failure_count = 0
-                was_transient_reconnect = False  # サーバークローズ起因の resume はエラー扱いしない
-                self.stats["grpc_server_close_resumes"] += 1
+                was_transient_reconnect = False  # resume はエラー扱いしない
+                self.stats["grpc_resume_count"] += 1
                 reconnect_count += 1
                 _route.info(
-                    "[route-check] grpc_server_close_resume reconnect_count=%d",
+                    "[route-check] grpc_resume_queued resume_count=%d",
                     reconnect_count,
                 )
                 _wait_interruptible(stop_event, GRPC_SERVER_CLOSE_MIN_WAIT)

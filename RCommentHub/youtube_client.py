@@ -325,12 +325,15 @@ class YouTubeClient:
             "rate_limited":   0,
             "quota_exceeded": 0,
             # gRPC ストリーミング集計（YouTubeStreamGrpcClient.stats からマージ）
-            "grpc_stream_calls":         0,
-            "grpc_server_close_resumes": 0,
-            "grpc_failure_reconnects":   0,
-            "grpc_total_responses":      0,
-            "grpc_total_items":          0,
-            "grpc_zero_responses":       0,
+            # 注意: grpc_stream_calls と YouTube Data API quota の対応は公式未公開。
+            # quota 実測には Google Cloud Console の確認が必要。
+            "grpc_stream_calls":     0,
+            "grpc_resume_count":     0,
+            "grpc_error_reconnects": 0,
+            "grpc_rpc_errors":       0,
+            "grpc_total_responses":  0,
+            "grpc_total_items":      0,
+            "grpc_zero_responses":   0,
         }
 
     def _next_api_seq(self) -> int:
@@ -385,9 +388,9 @@ class YouTubeClient:
             "SESSION_SUMMARY session=%s total_calls=%d videos_list=%d "
             "streamList=%d list_polling=%d reconnects=%d zero_items=%d "
             "http_403=%d http_404=%d http_5xx=%d rate_limited=%d quota_exceeded=%d "
-            "grpc_stream_calls=%d grpc_server_close_resumes=%d "
-            "grpc_failure_reconnects=%d grpc_total_responses=%d "
-            "grpc_total_items=%d grpc_zero_responses=%d",
+            "grpc_stream_calls=%d grpc_resume_count=%d "
+            "grpc_error_reconnects=%d grpc_rpc_errors=%d "
+            "grpc_total_responses=%d grpc_total_items=%d grpc_zero_responses=%d",
             self._session_id,
             s.get("total_calls", 0),    s.get("videos_list", 0),
             s.get("streamList", 0),     s.get("list_polling", 0),
@@ -396,8 +399,9 @@ class YouTubeClient:
             s.get("http_5xx", 0),       s.get("rate_limited", 0),
             s.get("quota_exceeded", 0),
             s.get("grpc_stream_calls", 0),
-            s.get("grpc_server_close_resumes", 0),
-            s.get("grpc_failure_reconnects", 0),
+            s.get("grpc_resume_count", 0),
+            s.get("grpc_error_reconnects", 0),
+            s.get("grpc_rpc_errors", 0),
             s.get("grpc_total_responses", 0),
             s.get("grpc_total_items", 0),
             s.get("grpc_zero_responses", 0),
