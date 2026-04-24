@@ -6,7 +6,10 @@ v0.2.0: 固定2接続（conn1/conn2）同時表示対応
 """
 
 import datetime
+import logging
 import threading
+
+_log = logging.getLogger("comment_controller")
 
 from tts_service import TTSService
 from tts_name import make_tts_name
@@ -187,7 +190,7 @@ class CommentController:
     def __init__(self, dispatch_to_main, settings_mgr, base_dir: str):
         # メインスレッドへのディスパッチ関数（ワーカースレッドからの安全な呼び出し用）
         # Tk: lambda cb: root.after(0, cb)
-        # PySide6: lambda cb: QTimer.singleShot(0, cb)
+        # PySide6: _MainThreadDispatcher.dispatch（Signal/Slot QueuedConnection）
         self._dispatch = dispatch_to_main
         self._sm   = settings_mgr
 
@@ -401,6 +404,10 @@ class CommentController:
 
     # コメント追加（統一入口）
     def add_comment(self, raw: dict):
+        _log.info("add_comment: source=%s author=%s body=%.40s",
+                  raw.get("_source_id", "?"),
+                  raw.get("authorDetails", {}).get("displayName", "?"),
+                  raw.get("snippet", {}).get("displayMessage", ""))
         source_id = raw.get("_source_id", "conn1")
         msg_id    = raw.get("id", "")
         composite_key = f"{source_id}:{msg_id}" if msg_id else ""
@@ -434,12 +441,15 @@ class CommentController:
         else:
             item.tts_target = self._tts.should_read(item)
             self._tts.enqueue_comment(item)
+        _log.info("add_comment: is_backlog=%s tts_target=%s author=%s",
+                  is_backlog, item.tts_target, item.author_name[:30])
         rule_matches = self._filter_mgr.evaluate(item, self._user_mgr)
         item.filter_rule_ids = rule_matches
         item.filter_match    = bool(rule_matches)
         if item.filter_match:
             item.proc_status = "matched"
         self._write_session_log(item)
+        _log.info("add_comment: UI コールバックへ渡す (cbs=%d)", len(self._on_comment_added_cbs))
         for cb in self._on_comment_added_cbs:
             cb(item)
         return item

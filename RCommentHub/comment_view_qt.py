@@ -13,10 +13,14 @@ QListWidget + delegate ベース構成から脱却した新しいコメント表
 """
 
 import hashlib
+import logging
 
 from PySide6.QtWidgets import QAbstractScrollArea, QSizePolicy
-from PySide6.QtCore import Qt, QRect, QEvent
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtCore import Qt, QRect, QRectF, QEvent, QUrl
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+
+_log = logging.getLogger("comment_view_qt")
 
 
 # ─── 定数 ─────────────────────────────────────────────────────────────────────
@@ -41,16 +45,17 @@ class _RowData:
     fg_color: 前景色
     cached_h: 計算済み行高（-1=未計算）
     """
-    __slots__ = ('header', 'body', 'author', 'bg_color', 'fg_color', 'cached_h')
+    __slots__ = ('header', 'body', 'author', 'bg_color', 'fg_color', 'cached_h', 'profile_url')
 
     def __init__(self, header: str, body: str,
-                 author, bg_color, fg_color: QColor):
-        self.header   = header
-        self.body     = body
-        self.author   = author    # str | None
-        self.bg_color = bg_color  # QColor | None
-        self.fg_color = fg_color
-        self.cached_h = -1        # 未計算
+                 author, bg_color, fg_color: QColor, profile_url: str = ""):
+        self.header      = header
+        self.body        = body
+        self.author      = author       # str | None
+        self.bg_color    = bg_color     # QColor | None
+        self.fg_color    = fg_color
+        self.cached_h    = -1           # 未計算
+        self.profile_url = profile_url  # プロフィール画像 URL（空文字 = なし）
 
 
 # ─── CommentView ──────────────────────────────────────────────────────────────
@@ -94,6 +99,10 @@ class CommentView(QAbstractScrollArea):
         self.verticalScrollBar().sliderPressed.connect(self._on_slider_pressed)
         self.verticalScrollBar().sliderReleased.connect(self._on_slider_released)
 
+        # プロフィール画像キャッシュ（URL → QPixmap または None=ロード済み失敗/読込中）
+        self._icon_pixmap_cache: dict = {}
+        self._nam = QNetworkAccessManager(self)
+
         self.setStyleSheet(
             "QAbstractScrollArea { background: #0D0D1A; border: none; }"
             "QScrollBar:vertical { background: #1A1A2A; width: 8px; }"
@@ -104,18 +113,25 @@ class CommentView(QAbstractScrollArea):
     # ─── 外部向け API ──────────────────────────────────────────────────────────
 
     def add_row(self, header: str, body: str,
-                author, bg_color, fg_color: QColor) -> None:
+                author, bg_color, fg_color: QColor,
+                profile_url: str = "") -> None:
         """
         コメント行を追加する。
 
-        header: 表示テキスト 1行目（2行モードでは投稿者名+時刻、1行モードでは全体）
-        body:   表示テキスト 2行目の本文（1行モード時や空の場合は ""）
-        author: 投稿者名（str）または None（システムメッセージ）
-        bg_color: 行背景色（QColor または None）
-        fg_color: 前景色（QColor）
+        header:      表示テキスト 1行目（2行モードでは投稿者名+時刻、1行モードでは全体）
+        body:        表示テキスト 2行目の本文（1行モード時や空の場合は ""）
+        author:      投稿者名（str）または None（システムメッセージ）
+        bg_color:    行背景色（QColor または None）
+        fg_color:    前景色（QColor）
+        profile_url: プロフィール画像 URL（空文字=なし → 頭文字プレースホルダー）
         """
-        row = _RowData(header, body, author, bg_color, fg_color)
+        _log.info("add_row: author=%s url=%s", author, profile_url[:40] if profile_url else "")
+        row = _RowData(header, body, author, bg_color, fg_color, profile_url)
         self._rows.append(row)
+
+        # プロフィール画像を非同期フェッチ（未キャッシュの場合のみ）
+        if profile_url and self._icon_visible:
+            self._fetch_icon(profile_url)
 
         # 最大件数を超えたら先頭から削除（残行の cached_h は有効のまま）
         while len(self._rows) > self.MAX_ROWS:
@@ -124,7 +140,11 @@ class CommentView(QAbstractScrollArea):
         self._update_scrollbar()
         if self._auto_scroll:
             self.scroll_to_bottom()
-        self.viewport().update()
+        # 1件目は即時描画（repaint）、以降はバッチ処理（update）
+        if len(self._rows) == 1:
+            self.viewport().repaint()
+        else:
+            self.viewport().update()
 
     def apply_settings(self, display_rows: int, font_size_name: int,
                        font_size_body: int, icon_visible: bool) -> None:
@@ -262,6 +282,30 @@ class CommentView(QAbstractScrollArea):
         sb.setPageStep(vp_h)
         sb.setSingleStep(max(1, vp_h // 10))
 
+    # ─── プロフィール画像フェッチ ─────────────────────────────────────────────
+
+    def _fetch_icon(self, url: str) -> None:
+        """プロフィール画像を非同期でダウンロードする（未フェッチの場合のみ）。"""
+        if url in self._icon_pixmap_cache:
+            return  # 既にキャッシュ済み（成功/失敗問わず）
+        self._icon_pixmap_cache[url] = None  # フェッチ中マーク（None = ロード待ち）
+        req = QNetworkRequest(QUrl(url))
+        reply = self._nam.get(req)
+        reply.finished.connect(lambda r=reply, u=url: self._on_icon_reply(r, u))
+
+    def _on_icon_reply(self, reply: QNetworkReply, url: str) -> None:
+        """画像ダウンロード完了 → キャッシュに格納して再描画をトリガーする。"""
+        try:
+            if reply.error() == QNetworkReply.NetworkError.NoError:
+                pm = QPixmap()
+                if pm.loadFromData(reply.readAll()) and not pm.isNull():
+                    self._icon_pixmap_cache[url] = pm
+                    self.viewport().update()  # アイコン差し替えのための再描画
+        except Exception:
+            pass
+        finally:
+            reply.deleteLater()
+
     # ─── 描画 ─────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -271,11 +315,41 @@ class CommentView(QAbstractScrollArea):
         hue    = int.from_bytes(digest[:2], "big") % 360
         return QColor.fromHsv(hue, 140, 170)
 
-    def _draw_icon(self, painter: QPainter, rect: QRect, author: str) -> None:
-        """著者名の頭文字を使ったプレースホルダーアイコンを円形で描画する。"""
-        color = self._author_icon_color(author)
+    def _draw_icon(self, painter: QPainter, rect: QRect,
+                   author: str, profile_url: str = "") -> None:
+        """
+        プロフィール画像アイコンを描画する。
+
+        profile_url が指定されてキャッシュ済み QPixmap がある場合は円形クリップで描画。
+        未取得またはロード失敗の場合は著者名の頭文字プレースホルダーにフォールバック。
+        """
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # ── プロフィール画像（キャッシュ済みの場合）──────────────────────────
+        if profile_url:
+            pm = self._icon_pixmap_cache.get(profile_url)
+            if pm is not None and not pm.isNull():
+                # 正方形にクロップしてからアイコンサイズへスケール
+                src_size = min(pm.width(), pm.height())
+                dx = (pm.width()  - src_size) // 2
+                dy = (pm.height() - src_size) // 2
+                pm_sq = pm.copy(dx, dy, src_size, src_size)
+                pm_sc = pm_sq.scaled(
+                    rect.width(), rect.height(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                # 円形クリップパスを適用してから描画
+                clip_path = QPainterPath()
+                clip_path.addEllipse(QRectF(rect))
+                painter.setClipPath(clip_path)
+                painter.drawPixmap(rect, pm_sc)
+                painter.restore()
+                return
+
+        # ── フォールバック: 頭文字プレースホルダー ─────────────────────────────
+        color = self._author_icon_color(author)
         painter.setBrush(color)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(rect)
@@ -336,6 +410,7 @@ class CommentView(QAbstractScrollArea):
                     painter,
                     QRect(4, icon_y, _ICON_SIZE, _ICON_SIZE),
                     row.author,
+                    row.profile_url,
                 )
 
             # ── テキスト ───────────────────────────────────────────────────

@@ -1,6 +1,9 @@
 requests>=2.28.0
-# HTTP/2 ストリーミング接続（streamList 長時間保持用）
-httpx[http2]>=0.28.0
+# gRPC ストリーミング接続（YouTube streamList 公式準拠実装）
+# proto/stream_list.proto から生成したスタブを使用
+# grpcio-tools はスタブ再生成時のみ必要（実行時は grpcio のみ必要）
+grpcio>=1.80.0
+grpcio-tools>=1.80.0
 Pillow>=9.0.0
 # TTS: win32com (SAPI5 直接利用) — PowerShell 外部起動を置き換え
 pywin32>=306
@@ -9,3 +12,5 @@ google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
 # GUI フレームワーク（Phase 1〜: PySide6 移行用）
 PySide6>=6.5.0
+# 【退避中・削除予定】旧 REST httpx 実装で使用。gRPC 移行後に削除予定。
+httpx[http2]>=0.28.0

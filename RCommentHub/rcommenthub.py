@@ -16,7 +16,7 @@ import sys
 import logging
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QObject, Signal, Qt
 
 from constants import VERSION, CONFIG_FILENAME
 from comment_controller import CommentController
@@ -29,10 +29,40 @@ from overlay_window_qt import OverlayWindowQt
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  メインスレッドディスパッチャ（ワーカースレッド → Qt メインスレッド）
+# ════════════════════════════════════════════════════════════════════════════
+
+class _MainThreadDispatcher(QObject):
+    """
+    ワーカースレッドから Qt メインスレッドへ callable を安全にディスパッチする。
+
+    Signal/Slot の queued 接続を使うことで、emit したスレッドに関わらず
+    slot (_invoke) は常にメインスレッドで実行される。
+    QTimer.singleShot(0, ...) はワーカースレッドから呼ぶと Qt が保証しないため使わない。
+    """
+    _sig = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 明示的に QueuedConnection を指定（ワーカースレッドからの emit を確実にキュー化）
+        self._sig.connect(self._invoke, Qt.ConnectionType.QueuedConnection)
+
+    def dispatch(self, cb):
+        """任意のスレッドから呼び出し可能。cb はメインスレッドのイベントループで実行される。"""
+        self._sig.emit(cb)
+
+    def _invoke(self, cb):
+        cb()
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  単一起動制御（Windows Named Mutex）
 # ════════════════════════════════════════════════════════════════════════════
 
 _SINGLE_INSTANCE_MUTEX: list = []  # GC 回避のためモジュール変数で保持
+
+# Local\ プレフィックスで同一セッション内に限定。v2 サフィックスで旧実装との衝突を回避
+_MUTEX_NAME = "Local\\RCommentHub_SingleInstance_v2"
 
 
 def _acquire_single_instance() -> bool:
@@ -40,19 +70,39 @@ def _acquire_single_instance() -> bool:
     True  : このインスタンスが唯一の起動 → 続行可。
     False : すでに起動済みのインスタンスが存在 → 終了すべき。
 
-    RRoulette の _acquire_instance_number と同じ Named Mutex 方式。
-    ハンドルはプロセス終了時に OS が自動解放する。
+    Windows Named Mutex 方式。
+    ハンドルはプロセス終了時（正常・異常問わず）に OS が自動解放する。
+
+    失敗時の方針（安全側）:
+      CreateMutexW が 0/None を返した（API 失敗）場合は単一起動チェック不能として
+      起動を継続する。理由: 二重起動を誤検出して起動不能になるより、
+      起動できる方が切り分けしやすいため。
     """
+    _log.info("Mutex 名: %s", _MUTEX_NAME)
     _ERROR_ALREADY_EXISTS = 183
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _kernel32.CreateMutexW.restype = ctypes.c_void_p
-    handle = _kernel32.CreateMutexW(None, False, "RCommentHub_SingleInstance")
-    err = ctypes.get_last_error()
-    if handle and err == _ERROR_ALREADY_EXISTS:
+    _kernel32.CreateMutexW.restype  = ctypes.c_void_p
+    _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    _kernel32.CloseHandle.argtypes  = [ctypes.c_void_p]
+
+    handle = _kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    err    = ctypes.get_last_error()
+    _log.info("CreateMutexW → handle=%s  last_error=%d", handle, err)
+
+    if not handle:
+        # API 失敗: 単一起動チェック不能 → 安全側として起動継続
+        _log.warning("CreateMutexW が失敗 (handle=0) → 単一起動チェックをスキップして起動継続")
+        return True
+
+    if err == _ERROR_ALREADY_EXISTS:
+        # handle は取得できたが既存 Mutex が存在 → 二重起動
+        _log.info("handle 取得済み + last_error=183 (ERROR_ALREADY_EXISTS) → 既存起動ありと判定")
         _kernel32.CloseHandle(handle)
         return False
-    if handle:
-        _SINGLE_INSTANCE_MUTEX.append(handle)
+
+    # 新規 Mutex 作成成功
+    _log.info("Mutex 新規作成成功 (last_error=%d) → 単一起動確認 OK", err)
+    _SINGLE_INSTANCE_MUTEX.append(handle)
     return True
 
 
@@ -78,6 +128,37 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
+
+
+def _setup_file_logging(base_dir: str):
+    """
+    Tk 版相当のファイルログ出力設定を復元する。
+    route_check / youtube_api_usage / youtube_error の各ロガーに FileHandler を追加する。
+    出力先: base_dir/logs/<logger_name>.log
+    """
+    logs_dir = os.path.join(base_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    _file_log_targets = [
+        ("route_check",       "route_check.log"),
+        ("youtube_api_usage", "youtube_api_usage.log"),
+        ("youtube_error",     "youtube_error.log"),
+    ]
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for logger_name, filename in _file_log_targets:
+        log_path = os.path.join(logs_dir, filename)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(fmt)
+        logger = logging.getLogger(logger_name)
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = True  # basicConfig の stdout ハンドラへも引き続き出力
+
+
+_setup_file_logging(BASE_DIR)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -108,9 +189,10 @@ class RCommentHubQtApp:
         self._sm  = SettingsManager(CONFIG_FILE)
         self._sm.load()
 
-        # dispatch_to_main: QTimer.singleShot(0, cb) でメインスレッドへディスパッチ
+        # dispatch_to_main: Signal/Slot queued 接続でワーカースレッドからメインスレッドへ安全に戻す
+        self._dispatcher = _MainThreadDispatcher(self._app)
         self._ctrl = CommentController(
-            dispatch_to_main=lambda cb: QTimer.singleShot(0, cb),
+            dispatch_to_main=self._dispatcher.dispatch,
             settings_mgr=self._sm,
             base_dir=BASE_DIR,
         )
@@ -140,6 +222,7 @@ class RCommentHubQtApp:
             url_saver=self._save_first_profile_url,
             pos_getter=lambda: self._sm.get("cd_pos", None),
             pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
+            log_fn=self._ctrl.log,
         )
 
         # DetailWindow（補助画面）
@@ -174,6 +257,8 @@ class RCommentHubQtApp:
         # ── 起動: コメントビュー（正規メイン）を前面表示 ──────────────────────
         self._comment_win.open()
 
+        # ── ペンディングログ（起動時に生成されたログ）を UI へフラッシュ ──────
+        self._ctrl.flush_pending_logs()
         self._ctrl.log(f"RCommentHub v{VERSION} 起動完了")
 
     # ─── ConnectDialog 操作 ───────────────────────────────────────────────────
@@ -231,6 +316,7 @@ class RCommentHubQtApp:
 
     def _on_conn_status(self, status: str):
         """接続状態変化 → CommentWindowQt のステータスバーに反映"""
+        _log.info("接続状態更新コールバックが UI 側へ届いた: status=%s", status)
         title = self._ctrl.video_title if status == "receiving" else ""
         self._comment_win.set_conn_status(status, title)
 

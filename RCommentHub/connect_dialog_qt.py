@@ -9,16 +9,19 @@ Phase 2 時点では Tk版と並存し、既存ロジック（verify_fn / connec
   → 認証確認 → 確認（verify, 非同期） → 接続開始（connect）
 """
 
+import logging
 import threading
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 
 from constants import PLATFORM_LABELS
+
+_log = logging.getLogger("connect_dialog_qt")
 
 # ─── ダークテーマ定義 ─────────────────────────────────────────────────────────
 _DIALOG_STYLE = """
@@ -76,10 +79,8 @@ QPushButton:disabled {
 }
 """
 
-_BTN_VERIFY  = "background:#2A4A2A; color:#AAFFAA; padding:5px 16px; border-radius:2px;"
-_BTN_VERIFY_H = ("background:#2A4A2A; color:#AAFFAA; padding:5px 16px; border-radius:2px;"
-                 "QPushButton:hover { background:#3A6A3A; }")
-_BTN_CONNECT = "background:#2A2A4A; color:#AAAAFF; padding:5px 16px; border-radius:2px;"
+_BTN_VERIFY           = "background:#2A4A2A; color:#AAFFAA; padding:5px 16px; border-radius:2px;"
+_BTN_CONNECT          = "background:#2A2A4A; color:#AAAAFF; padding:5px 16px; border-radius:2px;"
 _BTN_CONNECT_DISABLED = "background:#1A1A2E; color:#555566; padding:5px 16px; border-radius:2px;"
 
 
@@ -89,6 +90,9 @@ class ConnectDialogQt(QDialog):
 
     Tk版 ConnectDialog と同じコールバック群を受け取る設計。
     既存の controller.verify_target / connect_all_enabled_after を再利用する。
+
+    verify ワーカースレッドからメインスレッドへの通知は Signal/Slot で行う。
+    QTimer.singleShot(0, ...) はワーカースレッドから呼ぶと Qt が保証しないため使わない。
 
     verify_fn:           (platform: str, url: str) -> dict   接続確認（失敗時は例外）
     connect_fn:          (profile_id: str, verify_result: dict) -> None  接続開始
@@ -101,6 +105,10 @@ class ConnectDialogQt(QDialog):
     pos_setter:          (pos: list) -> None                 ウィンドウ位置保存
     """
 
+    # ワーカースレッドから emit → メインスレッドで slot 実行（自動 QueuedConnection）
+    _sig_verify_ok   = Signal(object, str, str)  # result dict, platform, url
+    _sig_verify_fail = Signal(str)               # error message
+
     def __init__(self, parent=None, *,
                  verify_fn,
                  connect_fn,
@@ -110,7 +118,8 @@ class ConnectDialogQt(QDialog):
                  url_getter=None,
                  url_saver=None,
                  pos_getter=None,
-                 pos_setter=None):
+                 pos_setter=None,
+                 log_fn=None):
         super().__init__(parent)
         self._verify_fn           = verify_fn
         self._connect_fn          = connect_fn
@@ -121,9 +130,15 @@ class ConnectDialogQt(QDialog):
         self._url_saver           = url_saver           or (lambda url: None)
         self._pos_getter          = pos_getter          or (lambda: None)
         self._pos_setter          = pos_setter          or (lambda pos: None)
+        # UI ログ表示コールバック（DetailWindowQt のログエリアへ転送）
+        self._log_fn              = log_fn              or (lambda msg: None)
 
         self._verify_result: dict | None = None
         self._profile_map:   dict        = {}   # display_name -> profile dict
+
+        # verify 完了 → メインスレッドへの Signal/Slot 接続
+        self._sig_verify_ok.connect(self._on_verify_ok)
+        self._sig_verify_fail.connect(self._on_verify_fail)
 
         # 位置保存デバウンス（moveEvent ごとのディスク書き込みを防ぐ）
         self._pos_save_timer = QTimer(self)
@@ -288,19 +303,27 @@ class ConnectDialogQt(QDialog):
         self._btn_verify.setEnabled(False)
         self._btn_connect.setEnabled(False)
         self._btn_connect.setStyleSheet(_BTN_CONNECT_DISABLED)
+        self._log_fn(f"[verify 開始] platform={platform} url={text[:60]}")
 
         def _work():
+            _log.info("verify ワーカースレッド開始: platform=%s", platform)
             try:
                 result = self._verify_fn(platform, text)
-                QTimer.singleShot(0, lambda r=result, u=text: self._on_verify_ok(r, platform, u))
+                _log.info("verify 成功: title=%s", result.get("title", result.get("display_name", "")))
+                _log.info("verify 完了通知をメインスレッドへポスト")
+                self._sig_verify_ok.emit(result, platform, text)
             except Exception as e:
-                QTimer.singleShot(0, lambda msg=str(e): self._on_verify_fail(msg))
+                _log.info("verify 失敗: %s", e)
+                _log.info("verify 失敗通知をメインスレッドへポスト")
+                self._sig_verify_fail.emit(str(e))
 
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_verify_ok(self, result: dict, platform: str, url: str):
+        _log.info("verify 成功通知: メインスレッドで UI 反映")
         self._verify_result = result
         title = result.get("title", result.get("display_name", ""))
+        self._log_fn(f"[verify 成功] {title}")
         self._set_result(f"✓ 確認OK: {title}", "ok")
         self._btn_verify.setEnabled(True)
         self._btn_connect.setEnabled(True)
@@ -309,6 +332,8 @@ class ConnectDialogQt(QDialog):
             self._url_saver(url)
 
     def _on_verify_fail(self, msg: str):
+        _log.info("verify 失敗通知: メインスレッドで UI 反映: %s", msg)
+        self._log_fn(f"[verify 失敗] {msg}")
         self._verify_result = None
         self._set_result(f"✗ エラー: {msg}", "error")
         self._btn_verify.setEnabled(True)

@@ -834,8 +834,13 @@ class SettingsWindowQt(QDialog):
         self._set_oauth_buttons(authenticating=False)
         try:
             self._oauth_status_lbl.setText(auth_svc.status_label())
+            # ラベル更新を即時描画に反映させる（ブラウザ操作後に描画キューが溜まっている場合の対策）
+            self._oauth_status_lbl.repaint()
         except Exception:
             pass
+        # ブラウザ操作後にウィンドウを前面に出してから完了ダイアログを表示する
+        self.raise_()
+        self.activateWindow()
         if success:
             QMessageBox.information(self, "認証完了", "Google アカウントでの認証が完了しました。")
         else:

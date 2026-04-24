@@ -21,7 +21,10 @@ Phase 3 で維持する責務:
 
 import ctypes
 import ctypes.wintypes
+import logging
 from datetime import datetime
+
+_log = logging.getLogger("comment_window_qt")
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -311,6 +314,8 @@ class CommentWindowQt(QMainWindow):
         コメント1件をビューに追加する（コントローラの on_comment_added コールバック用）。
         メインスレッドから呼ばれる前提（dispatch_to_main 経由）。
         """
+        _log.info("add_comment: author=%s body=%.40s",
+                  getattr(item, "author_name", "?"), getattr(item, "body", ""))
         recv_time = getattr(item, "recv_time", None)
         if self._time_mode == "経過時間" and recv_time is not None:
             time_str = self._elapsed_str(recv_time)
@@ -360,7 +365,11 @@ class CommentWindowQt(QMainWindow):
         else:
             fg_color = QColor("#CCCCCC")
 
-        self._comment_view.add_row(header_line, body_text, row_author, bg_color, fg_color)
+        profile_url = getattr(item, "profile_url", "") or ""
+        self._comment_view.add_row(
+            header_line, body_text, row_author, bg_color, fg_color,
+            profile_url=profile_url,
+        )
 
     def set_conn_status(self, status: str, title: str = "") -> None:
         """
