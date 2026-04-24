@@ -327,6 +327,7 @@ class YouTubeClient:
             # gRPC ストリーミング集計（YouTubeStreamGrpcClient.stats からマージ）
             # 注意: grpc_stream_calls と YouTube Data API quota の対応は公式未公開。
             # quota 実測には Google Cloud Console の確認が必要。
+            "grpc_channel_creates":  0,
             "grpc_stream_calls":     0,
             "grpc_resume_count":     0,
             "grpc_error_reconnects": 0,
@@ -384,13 +385,25 @@ class YouTubeClient:
         if not self._session_id:
             return
         s = self._session_stats
+        # 推定 quota（2026-04-24 実測に基づく推定値。公式未公開）
+        # StreamList 1 RPC ≈ 5 units, videos.list 1 ≈ 1 unit, liveChatMessages.list 1 ≈ 5 units
+        # rest_estimated_quota_units: REST API 分（videos.list + list_polling）
+        # grpc_estimated_quota_units: gRPC StreamList RPC 分
+        # estimated_total_quota_units: 両者の合計
+        rest_estimated_quota_units = (
+            s.get("videos_list", 0) * 1
+            + s.get("list_polling", 0) * 5
+        )
+        grpc_estimated_quota_units = s.get("grpc_stream_calls", 0) * 5
+        estimated_total_quota_units = rest_estimated_quota_units + grpc_estimated_quota_units
         _api_usage.info(
             "SESSION_SUMMARY session=%s total_calls=%d videos_list=%d "
             "streamList=%d list_polling=%d reconnects=%d zero_items=%d "
             "http_403=%d http_404=%d http_5xx=%d rate_limited=%d quota_exceeded=%d "
-            "grpc_stream_calls=%d grpc_resume_count=%d "
+            "grpc_channel_creates=%d grpc_stream_calls=%d grpc_resume_count=%d "
             "grpc_error_reconnects=%d grpc_rpc_errors=%d "
-            "grpc_total_responses=%d grpc_total_items=%d grpc_zero_responses=%d",
+            "grpc_total_responses=%d grpc_total_items=%d grpc_zero_responses=%d "
+            "rest_estimated_quota_units=%d grpc_estimated_quota_units=%d estimated_total_quota_units=%d",
             self._session_id,
             s.get("total_calls", 0),    s.get("videos_list", 0),
             s.get("streamList", 0),     s.get("list_polling", 0),
@@ -398,6 +411,7 @@ class YouTubeClient:
             s.get("http_403", 0),       s.get("http_404", 0),
             s.get("http_5xx", 0),       s.get("rate_limited", 0),
             s.get("quota_exceeded", 0),
+            s.get("grpc_channel_creates", 0),
             s.get("grpc_stream_calls", 0),
             s.get("grpc_resume_count", 0),
             s.get("grpc_error_reconnects", 0),
@@ -405,6 +419,9 @@ class YouTubeClient:
             s.get("grpc_total_responses", 0),
             s.get("grpc_total_items", 0),
             s.get("grpc_zero_responses", 0),
+            rest_estimated_quota_units,
+            grpc_estimated_quota_units,
+            estimated_total_quota_units,
         )
 
     # ─── ストリーミング JSON パーサー ──────────────────────────────────────────
