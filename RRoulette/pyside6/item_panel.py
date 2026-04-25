@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits, validate_item_limits
-from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu
+from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree
 from settings_panel import _calc_item_probs, _populate_weight_combo
 
 from design_models import DesignSettings
@@ -269,6 +269,7 @@ class ItemPanel(QFrame):
         # テキスト編集モード開始時のスナップショット（キャンセル時ロールバック用）
         self._text_edit_snapshot: list | None = None
 
+        self._transparent = False
         self.setStyleSheet(f"background-color: {design.panel};")
         self.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
 
@@ -1456,8 +1457,9 @@ class ItemPanel(QFrame):
     def update_design(self, design: DesignSettings):
         """デザイン変更時に配色を更新する。"""
         self._design = design
-        self.setStyleSheet(f"background-color: {design.panel};")
-        self._rows_content.setStyleSheet(f"background-color: {design.panel};")
+        if not getattr(self, '_transparent', False):
+            self.setStyleSheet(f"background-color: {design.panel};")
+            self._rows_content.setStyleSheet(f"background-color: {design.panel};")
         self._apply_scroll_style(self._rows_scroll, design)
         self._resize_grip.update_design(design)
         self._drag_bar.update_design(design)
@@ -1489,4 +1491,26 @@ class ItemPanel(QFrame):
         # シンプルリストを再構築してデザイン反映
         if self._display_mode == 1:
             self._refresh_simple_list()
+
+    def set_transparent(self, enabled: bool):
+        """パネル背景の透過モードを切り替える（実験的）。"""
+        self._transparent = enabled
+        d = self._design
+        if enabled:
+            # i108: クラス名修飾セレクタを使うことで QFrame 自身の背景塗りを確実に透過する。
+            self.setStyleSheet("ItemPanel { background-color: transparent; }")
+            # QStackedWidget と simple_page の中間コンテナも透過する。
+            self._stack.setStyleSheet(
+                "QStackedWidget { background-color: transparent; }"
+            )
+            if hasattr(self, '_simple_page') and self._simple_page is not None:
+                self._simple_page.setStyleSheet("background-color: transparent;")
+        else:
+            self.setStyleSheet(f"background-color: {d.panel};")
+            self._stack.setStyleSheet(
+                f"QStackedWidget {{ background-color: {d.panel}; }}"
+            )
+            if hasattr(self, '_simple_page') and self._simple_page is not None:
+                self._simple_page.setStyleSheet(f"background-color: {d.panel};")
+        apply_transparent_to_widget_tree(self, enabled)
 

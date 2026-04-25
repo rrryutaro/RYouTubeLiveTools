@@ -269,6 +269,15 @@ class PanelGeometryMixin:
             tp_h = s.ticket_panel_height if s.ticket_panel_height is not None else 460
             self._apply_panel_geometry(tp, tp_x, tp_y, tp_w, tp_h, 360, 300)
 
+        # LinkPanel (Phase 1)
+        lp = getattr(self, "_link_panel", None)
+        if lp is not None:
+            lp_x = s.link_panel_x if s.link_panel_x is not None else (defaults["manage"][0] + defaults["manage"][2] + 12)
+            lp_y = s.link_panel_y if s.link_panel_y is not None else (defaults["manage"][1] + 480)
+            lp_w = s.link_panel_width if s.link_panel_width is not None else 560
+            lp_h = s.link_panel_height if s.link_panel_height is not None else 300
+            self._apply_panel_geometry(lp, lp_x, lp_y, lp_w, lp_h, 480, 200)
+
         # i058: フローティング変換を show() より前に行う。
         # パネルが非表示のままフローティング化するため、
         # 「埋め込みとして show → hide → フローティングとして show」の
@@ -302,6 +311,7 @@ class PanelGeometryMixin:
                 "settings":               s.settings_panel_visible,
                 "manage":                 s.manage_panel_visible or _is_first_launch,
                 "ticket":                 s.ticket_panel_visible if tp is not None else False,
+                "link":                   s.link_panel_visible if lp is not None else False,
                 "settings_panel_visible": s.settings_panel_visible,
                 "window_transparent":     s.window_transparent,
                 "roulette_transparent":   s.roulette_transparent,
@@ -348,6 +358,10 @@ class PanelGeometryMixin:
                 tp.show()
                 tp.raise_()
 
+            if lp is not None and s.link_panel_visible:
+                lp.show()
+                lp.raise_()
+
         # ManagePanel のチェックボックスを実状態と同期
         self._sync_manage_panel_checks()
 
@@ -367,6 +381,7 @@ class PanelGeometryMixin:
             getattr(self, "_item_panel", None),
             getattr(self, "_manage_panel", None),
             getattr(self, "_ticket_panel", None),
+            getattr(self, "_link_panel", None),
         ):
             if p is None:
                 continue
@@ -395,6 +410,10 @@ class PanelGeometryMixin:
             self._manage_panel.set_ticket_visible(
                 self._ticket_panel.isVisible()
                 if hasattr(self, "_ticket_panel") else False
+            )
+            self._manage_panel.set_link_visible(
+                self._link_panel.isVisible()
+                if hasattr(self, "_link_panel") else False
             )
             seq_visible = (
                 hasattr(self, "_seq_dialog")
@@ -497,6 +516,13 @@ class PanelGeometryMixin:
             tp_x = defaults["manage"][0] + defaults["manage"][2] + 12
             tp_y = defaults["manage"][1]
             self._apply_panel_geometry(tp, tp_x, tp_y, 400, 460, 360, 300)
+        # LinkPanel (Phase 1)
+        lp = getattr(self, "_link_panel", None)
+        if lp is not None:
+            defaults = self._default_panel_positions()
+            lp_x = defaults["manage"][0] + defaults["manage"][2] + 12
+            lp_y = defaults["manage"][1] + 480
+            self._apply_panel_geometry(lp, lp_x, lp_y, 560, 300, 480, 200)
         # チェックボックスと AppSettings を同期
         self._sync_manage_panel_checks()
         self._settings.items_panel_visible = True
@@ -602,6 +628,13 @@ class PanelGeometryMixin:
             s.ticket_panel_y = tp.y()
             s.ticket_panel_width = tp.width()
             s.ticket_panel_height = tp.height()
+        # LinkPanel (Phase 1)
+        lp = getattr(self, "_link_panel", None)
+        if lp is not None and lp.isVisible():
+            s.link_panel_x = lp.x()
+            s.link_panel_y = lp.y()
+            s.link_panel_width = lp.width()
+            s.link_panel_height = lp.height()
         self._save_config()
 
     def _restore_settings_panel_visibility(self):
@@ -869,11 +902,24 @@ class PanelGeometryMixin:
             s.ticket_panel_height = tp.height()
         if tp is not None:
             s.ticket_panel_visible = tp.isVisible()
+        # LinkPanel (Phase 1)
+        lp = getattr(self, "_link_panel", None)
+        if lp is not None and lp.isVisible():
+            s.link_panel_x = lp.x()
+            s.link_panel_y = lp.y()
+            s.link_panel_width = lp.width()
+            s.link_panel_height = lp.height()
+        if lp is not None:
+            s.link_panel_visible = lp.isVisible()
 
         self._save_config()
 
     def closeEvent(self, event):
         self._save_window_state()
+        # 外部連携リスナーを安全に停止する (Phase 1)
+        listener = getattr(self, "_external_listener", None)
+        if listener is not None:
+            listener.stop()
         super().closeEvent(event)
 
     # ================================================================
@@ -924,6 +970,7 @@ class PanelGeometryMixin:
                         self._item_panel,
                         self._manage_panel,
                         getattr(self, "_ticket_panel", None),
+                        getattr(self, "_link_panel", None),
                     ):
                         if p is not None:
                             f._enable_tracking_recursive(p)

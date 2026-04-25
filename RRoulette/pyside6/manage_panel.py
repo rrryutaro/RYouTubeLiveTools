@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from app_constants import VERSION
 from design_models import DesignSettings
-from panel_widgets import _PanelDragBar, install_panel_context_menu
+from panel_widgets import _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree
 
 
 class _RouletteNameBtn(QPushButton):
@@ -75,9 +75,16 @@ class ManagePanel(QFrame):
     auto_hide_seconds_changed = Signal(int)          # i485: 自動非表示秒数
     auto_hide_fade_changed = Signal(bool)            # i486: 自動非表示フェードアウト ON/OFF
     auto_hide_fade_seconds_changed = Signal(float)   # i487: フェードアウト時間（秒）
+    auto_hide_only_roulette_only_changed = Signal(bool)   # i098: ルーレット以外非表示時のみ有効
+    auto_hide_after_spin_restore_changed = Signal(bool)   # i098: 再表示後スピン後に有効
+    link_enabled_changed = Signal(bool)           # i099: 連携受信 ON/OFF
+    link_port_changed = Signal(int)               # i099: 連携受信ポート
+    link_max_hold_changed = Signal(int)           # i099: 連携メッセージ保持件数
+    link_show_time_changed = Signal(bool)         # i100: 連携パネル時刻列表示
     roulette_rename_requested = Signal(str, str)  # roulette_id, new_name
     ticket_panel_toggled = Signal(bool)   # i051: チケットパネル表示切替
     seq_panel_toggled = Signal(bool)      # i051: 実行パネル表示切替
+    link_panel_toggled = Signal(bool)     # Phase1: 連携メッセージパネル表示切替
 
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
@@ -95,11 +102,19 @@ class ManagePanel(QFrame):
                  roulette_only_show_settings_panel: bool = False,
                  roulette_only_show_execution_panel: bool = True,
                  roulette_only_show_ticket_panel: bool = False,
+                 link_visible: bool = False,
+                 roulette_only_show_link_panel: bool = False,
                  manage_panel_float: bool = False,
                  auto_hide_enabled: bool = True,
                  auto_hide_seconds: int = 10,
                  auto_hide_fade_enabled: bool = True,
                  auto_hide_fade_seconds: float = 0.6,
+                 auto_hide_only_in_roulette_only_mode: bool = False,
+                 auto_hide_after_spin_after_restore: bool = False,
+                 link_integration_enabled: bool = False,
+                 link_integration_port: int = 12345,
+                 link_integration_max_hold: int = 200,
+                 link_panel_show_time: bool = False,
                  parent=None):
         super().__init__(parent)
         self._design = design
@@ -206,6 +221,13 @@ class ManagePanel(QFrame):
         self._seq_cb.setChecked(seq_visible)
         self._seq_cb.toggled.connect(self.seq_panel_toggled.emit)
         _pgc.addWidget(self._seq_cb)
+
+        self._link_cb = QCheckBox("連携パネルを表示 (F6)")
+        self._link_cb.setFont(QFont("Meiryo", 9))
+        self._link_cb.setStyleSheet(f"color: {design.text};")
+        self._link_cb.setChecked(link_visible)
+        self._link_cb.toggled.connect(self.link_panel_toggled.emit)
+        _pgc.addWidget(self._link_cb)
 
         _pgc.addSpacing(4)
 
@@ -416,6 +438,12 @@ class ManagePanel(QFrame):
         )
         _ro_panels_layout.addWidget(self._ro_show_ticket_panel_cb)
 
+        self._ro_show_link_panel_cb = _make_cb(
+            "連携パネル", roulette_only_show_link_panel, "link_panel",
+            "ONにすると、ルーレット以外非表示中も連携パネルを表示します"
+        )
+        _ro_panels_layout.addWidget(self._ro_show_link_panel_cb)
+
         self._ro_panels_content.setVisible(False)  # デフォルト折りたたみ
         _ro_content_layout.addWidget(self._ro_panels_content)
 
@@ -574,8 +602,128 @@ class ManagePanel(QFrame):
         _fade_sec_row.addStretch()
         _app_content_layout.addLayout(_fade_sec_row)
 
+        # ルーレット以外非表示時のみ有効 (i098)
+        self._auto_hide_roulette_only_cb = QCheckBox("ルーレット以外非表示時のみ有効")
+        self._auto_hide_roulette_only_cb.setFont(QFont("Meiryo", 9))
+        self._auto_hide_roulette_only_cb.setStyleSheet(f"color: {design.text};")
+        self._auto_hide_roulette_only_cb.setChecked(auto_hide_only_in_roulette_only_mode)
+        self._auto_hide_roulette_only_cb.setToolTip(
+            "ON: ルーレット以外非表示モード中のみ自動全面非表示を有効にします\n"
+            "OFF: 通常状態でも自動全面非表示を有効にします"
+        )
+        self._auto_hide_roulette_only_cb.toggled.connect(
+            self.auto_hide_only_roulette_only_changed.emit
+        )
+        _app_content_layout.addWidget(self._auto_hide_roulette_only_cb)
+
+        # 再表示後、次にルーレットを回した後に有効 (i098)
+        self._auto_hide_after_spin_restore_cb = QCheckBox("再表示後、次のスピン後に有効")
+        self._auto_hide_after_spin_restore_cb.setFont(QFont("Meiryo", 9))
+        self._auto_hide_after_spin_restore_cb.setStyleSheet(f"color: {design.text};")
+        self._auto_hide_after_spin_restore_cb.setChecked(auto_hide_after_spin_after_restore)
+        self._auto_hide_after_spin_restore_cb.setToolTip(
+            "ON: 全面非表示から復帰した直後は自動非表示カウントを無効にします\n"
+            "    次にスピンを開始したら自動非表示カウントを再度有効にします\n"
+            "OFF: 復帰後もすぐに自動非表示カウントを開始します"
+        )
+        self._auto_hide_after_spin_restore_cb.toggled.connect(
+            self.auto_hide_after_spin_restore_changed.emit
+        )
+        _app_content_layout.addWidget(self._auto_hide_after_spin_restore_cb)
+
         self._app_settings_content.setVisible(False)
         body_layout.addWidget(self._app_settings_content)
+
+        body_layout.addSpacing(4)
+
+        # ── 外部連携設定 (i099: 設定パネルから移動, i101: デザイン統一) ─────────
+        self._link_int_toggle_btn = QPushButton("▶ 外部連携設定")
+        self._link_int_toggle_btn.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._link_int_toggle_btn.setCheckable(True)
+        self._link_int_toggle_btn.setChecked(False)
+        self._link_int_toggle_btn.setStyleSheet(_grp_toggle_style)
+        self._link_int_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._link_int_toggle_btn.toggled.connect(self._on_link_int_toggle)
+        body_layout.addWidget(self._link_int_toggle_btn)
+
+        self._link_int_content = QWidget(body)
+        _lic_layout = QVBoxLayout(self._link_int_content)
+        _lic_layout.setContentsMargins(8, 4, 8, 4)
+        _lic_layout.setSpacing(4)
+
+        # 有効/無効
+        self._link_int_enabled_cb = QCheckBox("連携受信を有効にする (RCommentHub)")
+        self._link_int_enabled_cb.setFont(QFont("Meiryo", 9))
+        self._link_int_enabled_cb.setStyleSheet(f"color: {design.text};")
+        self._link_int_enabled_cb.setChecked(link_integration_enabled)
+        self._link_int_enabled_cb.setToolTip(
+            "RCommentHub からのフィルタ一致通知を受信する。\n変更後は即時反映されます。"
+        )
+        self._link_int_enabled_cb.toggled.connect(self.link_enabled_changed.emit)
+        _lic_layout.addWidget(self._link_int_enabled_cb)
+
+        # ポート
+        _port_row = QHBoxLayout()
+        _port_row.setSpacing(4)
+        _port_lbl = QLabel("受信ポート:")
+        _port_lbl.setFont(QFont("Meiryo", 9))
+        _port_lbl.setStyleSheet(f"color: {design.text_sub};")
+        _port_row.addWidget(_port_lbl)
+        self._link_int_port_spin = QSpinBox()
+        self._link_int_port_spin.setFont(QFont("Meiryo", 9))
+        self._link_int_port_spin.setRange(1024, 65535)
+        self._link_int_port_spin.setValue(link_integration_port)
+        self._link_int_port_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"}}"
+        )
+        self._link_int_port_spin.setToolTip("RCommentHub側と同じポートにすること。変更後は即時反映。")
+        self._link_int_port_spin.valueChanged.connect(self.link_port_changed.emit)
+        _port_row.addWidget(self._link_int_port_spin)
+        _port_row.addStretch()
+        _lic_layout.addLayout(_port_row)
+
+        # 保持件数
+        _hold_row = QHBoxLayout()
+        _hold_row.setSpacing(4)
+        _hold_lbl = QLabel("保持件数上限:")
+        _hold_lbl.setFont(QFont("Meiryo", 9))
+        _hold_lbl.setStyleSheet(f"color: {design.text_sub};")
+        _hold_row.addWidget(_hold_lbl)
+        self._link_int_max_hold_spin = QSpinBox()
+        self._link_int_max_hold_spin.setFont(QFont("Meiryo", 9))
+        self._link_int_max_hold_spin.setRange(1, 1000)
+        self._link_int_max_hold_spin.setValue(link_integration_max_hold)
+        self._link_int_max_hold_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 2px 4px;"
+            f"}}"
+        )
+        self._link_int_max_hold_spin.valueChanged.connect(self.link_max_hold_changed.emit)
+        _hold_row.addWidget(self._link_int_max_hold_spin)
+        _hold_row.addStretch()
+        _lic_layout.addLayout(_hold_row)
+
+        # 時刻列表示
+        self._link_int_show_time_cb = QCheckBox("連携パネルに時刻を表示")
+        self._link_int_show_time_cb.setFont(QFont("Meiryo", 9))
+        self._link_int_show_time_cb.setStyleSheet(f"color: {design.text};")
+        self._link_int_show_time_cb.setChecked(link_panel_show_time)
+        self._link_int_show_time_cb.setToolTip("連携パネルの時刻列の表示/非表示を切り替えます。")
+        self._link_int_show_time_cb.toggled.connect(self.link_show_time_changed.emit)
+        _lic_layout.addWidget(self._link_int_show_time_cb)
+
+        # 状態表示
+        self._link_int_status_lbl = QLabel("状態: 停止中")
+        self._link_int_status_lbl.setFont(QFont("Meiryo", 9))
+        self._link_int_status_lbl.setStyleSheet(f"color: {design.text_sub};")
+        _lic_layout.addWidget(self._link_int_status_lbl)
+
+        self._link_int_content.setVisible(False)
+        body_layout.addWidget(self._link_int_content)
 
         body_layout.addSpacing(4)
 
@@ -601,6 +749,7 @@ class ManagePanel(QFrame):
         self._scroll.setStyleSheet(f"background-color: {design.panel};")
         outer.addWidget(self._scroll, stretch=1)
 
+        self._transparent = False
         self.setStyleSheet(f"background-color: {design.panel};")
         self.setMinimumSize(240, 280)
 
@@ -657,6 +806,13 @@ class ManagePanel(QFrame):
             ("▼ アプリ設定" if expanded else "▶ アプリ設定")
         )
 
+    def _on_link_int_toggle(self, expanded: bool):
+        """外部連携設定セクションの展開/折りたたみ (i101: デザイン統一)。"""
+        self._link_int_content.setVisible(expanded)
+        self._link_int_toggle_btn.setText(
+            ("▼ 外部連携設定" if expanded else "▶ 外部連携設定")
+        )
+
     def _on_fade_cb_toggled(self, enabled: bool):
         """フェードアウト ON/OFF — シグナル発火 + スピンボックス有効/無効切替。"""
         self._auto_hide_fade_spin.setEnabled(enabled)
@@ -674,11 +830,33 @@ class ManagePanel(QFrame):
         self._ticket_cb.setChecked(visible)
         self._ticket_cb.blockSignals(False)
 
+    def set_link_visible(self, visible: bool):
+        """連携パネルチェック状態を外部から同期する (シグナルなし)。"""
+        self._link_cb.blockSignals(True)
+        self._link_cb.setChecked(visible)
+        self._link_cb.blockSignals(False)
+
     def set_seq_visible(self, visible: bool):
         """実行パネルチェック状態を外部から同期する (シグナルなし)。"""
         self._seq_cb.blockSignals(True)
         self._seq_cb.setChecked(visible)
         self._seq_cb.blockSignals(False)
+
+    def set_link_listener_status(self, status: str) -> None:
+        """連携リスナーの状態ラベルを更新する (i099)。"""
+        lbl = getattr(self, "_link_int_status_lbl", None)
+        if lbl is None:
+            return
+        if status.startswith("started:"):
+            port = status.split(":", 1)[1]
+            lbl.setText(f"状態: 受信中 (ポート {port})")
+        elif status == "stopped":
+            lbl.setText("状態: 停止中")
+        elif status.startswith("error:"):
+            msg = status.split(":", 1)[1]
+            lbl.setText(f"状態: エラー ({msg})")
+        else:
+            lbl.setText(f"状態: {status}")
 
     def set_roulette_list(self, entries: list) -> None:
         """ルーレット一覧を更新する。
@@ -862,6 +1040,7 @@ class ManagePanel(QFrame):
             "settings_panel": self._ro_show_settings_panel_cb,
             "execution_panel": self._ro_show_execution_panel_cb,
             "ticket_panel": self._ro_show_ticket_panel_cb,
+            "link_panel": self._ro_show_link_panel_cb,
         }
         cb = cb_map.get(key)
         if cb:
@@ -921,6 +1100,17 @@ class ManagePanel(QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.geometry_changed.emit()
+
+    def set_transparent(self, enabled: bool):
+        """パネル背景の透過モードを切り替える（実験的）。"""
+        self._transparent = enabled
+        d = self._design
+        if enabled:
+            # i108: クラス名修飾セレクタを使うことで QFrame 自身の背景塗りを確実に透過する。
+            self.setStyleSheet("ManagePanel { background-color: transparent; }")
+        else:
+            self.setStyleSheet(f"background-color: {d.panel};")
+        apply_transparent_to_widget_tree(self, enabled)
 
     def mousePressEvent(self, event):
         # クリックは吸収。ドラッグはドラッグバーからのみ。

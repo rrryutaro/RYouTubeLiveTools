@@ -6,8 +6,10 @@ v0.2.0: 固定2接続（conn1/conn2）同時表示対応
 """
 
 import datetime
+import json
 import logging
 import threading
+import urllib.request
 
 _log = logging.getLogger("comment_controller")
 
@@ -23,6 +25,7 @@ from constants import (
     EVENT_TYPE_LABELS, PROC_STATUS_LABELS,
     ROLE_OWNER, ROLE_MODERATOR, ROLE_MEMBER, ROLE_VERIFIED,
     SOURCE_DEFAULT_NAMES, get_profile_color,
+    INPUT_SOURCE_DEBUG,
 )
 
 
@@ -101,6 +104,12 @@ class CommentItem:
         self.filter_match:            bool  = False
         self.filter_rule_ids:         list  = []
         self.tts_target:              bool  = False
+
+        # i112: RRoulette送信状態
+        self.roulette_send_status: str  = "未判定"   # 未判定/送信中/送信済み/手動送信済み/除外/失敗
+        self.roulette_send_reason: str  = ""          # 除外・失敗の理由
+        self.roulette_sent_at                = None   # 送信成功時刻 (datetime)
+        self.roulette_send_error: str   = ""          # 失敗時のエラー詳細
 
     def _parse_time(self, s: str):
         if not s:
@@ -224,6 +233,10 @@ class CommentController:
         saved_rules = settings_mgr.get("filter_rules", [])
         if saved_rules:
             self._filter_mgr.from_list(saved_rules)
+        # i110: 保存済みユーザーフラグを復元
+        saved_flags = settings_mgr.get("user_flags", {})
+        if saved_flags:
+            self._user_mgr.load_saved_flags(saved_flags)
 
         # 接続アダプタ（profile_id -> SourceAdapter）
         self._adapters: dict = {}
@@ -256,6 +269,7 @@ class CommentController:
         self._on_connect_ui_cbs:    list = []   # (conn_en|None, stop_en|None, msg|None, fg|None) -> None
         self._on_debug_mode_cbs:    list = []   # (debug_mode: bool, open_sender: bool) -> None
         self._on_user_cleared_cbs:  list = []   # () -> None
+        self._on_roulette_status_cbs: list = [] # i112: (item) -> None
 
     # プロパティ
     @property
@@ -316,6 +330,43 @@ class CommentController:
     def on_connect_ui(self,    cb): self._on_connect_ui_cbs.append(cb)
     def on_debug_mode(self,    cb): self._on_debug_mode_cbs.append(cb)
     def on_user_cleared(self,  cb): self._on_user_cleared_cbs.append(cb)
+    def on_roulette_status(self, cb): self._on_roulette_status_cbs.append(cb)  # i112
+
+    # i113: RRoulette 送信状態ヘルパー
+    def _set_roulette_status(self, item, status, *,
+                              reason: str = "", error: str = "", sent_at=None) -> None:
+        """送信状態を item に設定し、全 UI コールバックへ通知する（メインスレッドから呼ぶこと）。"""
+        item.roulette_send_status = status
+        item.roulette_send_reason = reason
+        item.roulette_send_error  = error
+        if sent_at is not None:
+            item.roulette_sent_at = sent_at
+        for cb in self._on_roulette_status_cbs:
+            cb(item)
+
+    def update_roulette_status(self, item, status, *,
+                                reason: str = "", error: str = "", sent_at=None) -> None:
+        """外部（UI 層）から送信状態を更新してコールバックで通知する。"""
+        self._set_roulette_status(item, status, reason=reason, error=error, sent_at=sent_at)
+
+    def build_roulette_payload(self, item, *, matched_rule_name: str = "") -> dict:
+        """RRoulette へ送信する payload を生成する（手動・自動送信共用）。"""
+        filter_name = matched_rule_name or (
+            ", ".join(item.filter_rule_ids) if getattr(item, "filter_rule_ids", None) else ""
+        )
+        source = getattr(item, "source", "") or ""
+        platform = source.replace("live_", "") if source else ""
+        return {
+            "source_app":        "RCommentHub",
+            "platform":          platform,
+            "profile_name":      getattr(item, "source_name", "") or "",
+            "filter_name":       filter_name,
+            "author_name":       getattr(item, "author_name", "") or "",
+            "author_channel_id": getattr(item, "channel_id", "") or "",
+            "comment_text":      getattr(item, "body", "") or "",
+            "message_type":      "filter_match",
+            "received_at":       item.recv_time.isoformat() if getattr(item, "recv_time", None) else "",
+        }
 
     # 公開ログメソッド
     def log(self, msg: str): self._notify_log(msg)
@@ -448,11 +499,131 @@ class CommentController:
         item.filter_match    = bool(rule_matches)
         if item.filter_match:
             item.proc_status = "matched"
+        # i111: filter_match に関わらず呼ぶ（関数内でフィルタ状態を判断）
+        self._notify_roulette_link(item)
         self._write_session_log(item)
         _log.info("add_comment: UI コールバックへ渡す (cbs=%d)", len(self._on_comment_added_cbs))
         for cb in self._on_comment_added_cbs:
             cb(item)
         return item
+
+    def _notify_roulette_link(self, item) -> None:
+        """コメントを RRoulette へ HTTP POST で自動送信する (Phase 1)。
+
+        - 送信先: 127.0.0.1:{port}/api/link-message
+        - 送信失敗 (RRoulette 未起動・接続拒否等) は握りつぶして処理続行
+        i113: _set_roulette_status() で除外時もUI通知統一。dry_run対応。
+              rr_auto_send_debug_enabled ONの場合、デバッグコメントも通常判定へ進む。
+              build_roulette_payload() で手動・自動のpayload形式を統一。
+        """
+        # デバッグコメント判定
+        is_debug = getattr(item, 'source', '') == INPUT_SOURCE_DEBUG
+        if is_debug:
+            debug_enabled = bool(self._sm.get("rr_auto_send_debug_enabled", False))
+            if not debug_enabled:
+                self._set_roulette_status(item, "除外", reason="デバッグ")
+                _log.debug("_notify_roulette_link: skip debug source")
+                return
+            # debug_enabled=True → 通常判定へ進む
+
+        cfg = self._sm.get("roulette_integration", {})
+        if not cfg.get("enabled", False):
+            self._set_roulette_status(item, "除外", reason="連携送信OFF")
+            return
+
+        auto_mode = self._sm.get("rr_auto_send_mode", "off")
+        _log.debug("_notify_roulette_link: author=%s mode=%s filter_match=%s",
+                   item.author_name[:20], auto_mode, item.filter_match)
+        if auto_mode == "off":
+            self._set_roulette_status(item, "除外", reason="自動送信OFF")
+            return
+
+        # dry_run チェック（手動送信と統一: roulette_integration.dry_run を参照）
+        dry_run = bool(cfg.get("dry_run", False))
+        if dry_run:
+            self._set_roulette_status(item, "dry-run", reason="dry_run ON")
+            _log.info("_notify_roulette_link: dry-run author=%s mode=%s", item.author_name[:20], auto_mode)
+            return
+
+        # フィルタ一致チェックは "filter_match" モード専用
+        if auto_mode == "filter_match":
+            if not item.filter_match:
+                self._set_roulette_status(item, "除外", reason="フィルタ不一致")
+                _log.debug("_notify_roulette_link: skip filter_match=False in filter_match mode")
+                return
+
+        # ブラックリスト最優先除外（全モード共通）
+        cid = item.channel_id or item.author_name
+        if cid and self._user_mgr.is_blacklisted(cid):
+            self._set_roulette_status(item, "除外", reason="ブラック指定")
+            _log.debug("_notify_roulette_link: skip blacklisted: %s", (cid or "")[:20])
+            return
+
+        # ホワイト/対象者フィルタ
+        if auto_mode == "whitelist":
+            rec = self._user_mgr.get(cid) if cid else None
+            if rec is None or not rec.is_whitelist:
+                self._set_roulette_status(item, "除外", reason="ホワイト未指定")
+                return
+        elif auto_mode == "target":
+            rec = self._user_mgr.get(cid) if cid else None
+            if rec is None or not rec.is_filter_target:
+                self._set_roulette_status(item, "除外", reason="対象者未指定")
+                return
+        # "all" / "filter_match" (通過済み) はブラック除外のみで通過
+
+        port = int(cfg.get("port", 12345))
+        url  = f"http://127.0.0.1:{port}/api/link-message"
+        payload = self.build_roulette_payload(item)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        # 送信開始をUIへ通知
+        self._set_roulette_status(item, "送信中")
+        _log.info("_notify_roulette_link: 自動送信 author=%s mode=%s filter=%s port=%d",
+                  item.author_name[:20], auto_mode, item.filter_match, port)
+
+        def _post():
+            try:
+                req = urllib.request.Request(
+                    url, data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=1.0):
+                    pass
+                def _ok():
+                    self._set_roulette_status(item, "送信済み",
+                                              sent_at=datetime.datetime.now())
+                    _log.info("_notify_roulette_link: 送信成功 author=%s", item.author_name[:20])
+                self._dispatch(_ok)
+            except OSError:
+                def _fail_os():
+                    self._set_roulette_status(item, "失敗", error="RRoulette未起動")
+                    _log.debug("_notify_roulette_link: RRoulette not reachable (port=%d)", port)
+                self._dispatch(_fail_os)
+            except Exception as e:
+                _err = str(e)[:60]
+                def _fail_ex():
+                    self._set_roulette_status(item, "失敗", error=_err)
+                    _log.warning("_notify_roulette_link: error: %s", _err)
+                self._dispatch(_fail_ex)
+
+        threading.Thread(target=_post, daemon=True, name="RouletteLinkPost").start()
+
+    def test_roulette_link(self, item) -> None:
+        """i112: テスト用 — debug source チェックをバイパスして自動送信経路を通す。
+        デバッグコメントで自動送信フローを確認する際に使用する。
+        """
+        original_source = item.source
+        # debug_manual を live_youtube に偽装してルート全体を通す
+        item.source = "live_youtube"
+        item.roulette_send_status = "未判定"
+        item.roulette_send_reason = ""
+        item.roulette_send_error  = ""
+        try:
+            self._notify_roulette_link(item)
+        finally:
+            item.source = original_source
 
     def _write_session_log(self, item) -> None:
         if not self._session_log.is_open:

@@ -39,6 +39,7 @@ from item_text_helpers import serialize_items_text, parse_items_text, enforce_it
 from panel_widgets import (
     _SectionHeader, CollapsibleSection, _PanelGrip, _PanelDragBar,
     install_panel_context_menu, _PlaceholderSection, _MW_DRAG_BAR_H,
+    apply_transparent_to_widget_tree,
 )
 from manage_panel import ManagePanel
 
@@ -125,6 +126,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._design = design
         self._settings = settings
         self._item_entries = item_entries
+        self._transparent = False
         self.setStyleSheet(f"background-color: {design.panel};")
 
         outer = QVBoxLayout(self)
@@ -170,7 +172,6 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._build_sound_section(settings, design)
         self._build_log_section(settings, design)
         self._build_replay_section(settings, design)
-
         # ── パターン管理セクション ──
         self._pattern_names = list(pattern_names or ["デフォルト"])
         self._current_pattern = current_pattern
@@ -819,3 +820,14 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         # 項目編集プレースホルダーセクション
         for section in self._item_edit_sections:
             section._apply_style(design)
+
+    def set_transparent(self, enabled: bool):
+        """パネル背景の透過モードを切り替える（実験的）。"""
+        self._transparent = enabled
+        d = self._design
+        if enabled:
+            # i108: クラス名修飾セレクタを使うことで QFrame 自身の背景塗りを確実に透過する。
+            self.setStyleSheet("SettingsPanel { background-color: transparent; }")
+        else:
+            self.setStyleSheet(f"background-color: {d.panel};")
+        apply_transparent_to_widget_tree(self, enabled)

@@ -73,6 +73,9 @@ class SpinFlowMixin:
             ctx.segments = segs
             panel.set_segments(ctx.segments)
         self._settings_panel.set_spinning(True)
+        # i098: 再表示後スピン後に有効オプション — スピン開始でフラグをクリア
+        if getattr(self, '_auto_hide_waiting_spin_after_restore', False):
+            self._auto_hide_waiting_spin_after_restore = False
         self._reset_idle_timer()
         panel.start_spin()
         return True
@@ -166,6 +169,9 @@ class SpinFlowMixin:
     def _on_spin_finished(self, winner: str, seg_idx: int,
                           roulette_id: str = ""):
         self._settings_panel.set_spinning(False)
+        # i102: スピン終了時も waiting フラグをクリア（_spin_by_action 未経由時に備える）
+        if getattr(self, '_auto_hide_waiting_spin_after_restore', False):
+            self._auto_hide_waiting_spin_after_restore = False
         # スピン終了時点でアイドルカウントを開始（結果表示中もカウント継続）
         self._reset_idle_timer()
         # 直前当選結果を更新（manual / macro 共通の唯一の更新地点）
@@ -234,6 +240,10 @@ class SpinFlowMixin:
         if (_seq is not None and _seq.is_running
                 and roulette_id == getattr(self, '_seq_runner_roulette_id', None)):
             _seq.on_spin_finished(winner)
+        # i114: 連携スピンキューの次の要求を処理する
+        _proc = getattr(self, '_process_link_spin_queue', None)
+        if _proc is not None:
+            _proc()
 
     # ------------------------------------------------------------------
     #  i071: pending クリーンアップ（即時記録済み / pointer_move 差し替え対応）

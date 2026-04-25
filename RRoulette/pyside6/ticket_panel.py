@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from design_models import DesignSettings
-from panel_widgets import _PanelDragBar, _PanelGrip, install_panel_context_menu, ConfirmOverlay, ItemSelectOverlay
+from panel_widgets import _PanelDragBar, _PanelGrip, install_panel_context_menu, ConfirmOverlay, ItemSelectOverlay, apply_transparent_to_widget_tree
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,282 @@ _LABEL_RESULT = {
 # 集計軸
 _AXIS_LABELS = ["チケット名", "発行者", "チケット効果"]
 _AXIS_KEYS   = ["ticket_name", "issuer", "effect"]
+
+
+# ---------------------------------------------------------------------------
+#  チケット修正ダイアログ (i109)
+# ---------------------------------------------------------------------------
+
+class _EditTicketDialog(QDialog):
+    """既存チケットの内容を編集するダイアログ。
+
+    チケット名・発行者・効果メモ・効果タイプ・効果パラメータを編集できる。
+    OK で保存、キャンセルで破棄。
+    バリデーション:
+      - チケット名は必須
+      - 効果タイプごとの必須パラメータを確認
+    """
+
+    def __init__(self, holding: dict, design: "DesignSettings", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("チケット修正")
+        self.setModal(True)
+        self._result_holding: dict | None = None
+
+        d = design
+        _field_style = (
+            f"QLineEdit, QPlainTextEdit {{ background: {d.bg}; color: {d.text}; "
+            f"border: 1px solid {d.separator}; border-radius: 2px; padding: 2px 4px; }}"
+        )
+        _combo_style = (
+            f"QComboBox {{ background: {d.bg}; color: {d.text}; "
+            f"border: 1px solid {d.separator}; border-radius: 2px; padding: 2px 4px; }}"
+            f"QComboBox::drop-down {{ border: none; }}"
+            f"QComboBox QAbstractItemView {{ background: {d.panel}; color: {d.text}; }}"
+        )
+        _spin_style = (
+            f"QDoubleSpinBox {{ background: {d.bg}; color: {d.text}; "
+            f"border: 1px solid {d.separator}; border-radius: 2px; padding: 2px 4px; }}"
+        )
+        _lbl_style = f"color: {d.text};"
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        layout.setContentsMargins(12, 10, 12, 10)
+
+        # チケット名
+        lbl_name = QLabel("チケット名 *")
+        lbl_name.setFont(QFont("Meiryo", 8))
+        lbl_name.setStyleSheet(_lbl_style)
+        layout.addWidget(lbl_name)
+        self._inp_name = QLineEdit(holding.get("ticket_name", ""))
+        self._inp_name.setFont(QFont("Meiryo", 9))
+        self._inp_name.setStyleSheet(_field_style)
+        layout.addWidget(self._inp_name)
+
+        # 発行者
+        lbl_issuer = QLabel("発行者")
+        lbl_issuer.setFont(QFont("Meiryo", 8))
+        lbl_issuer.setStyleSheet(_lbl_style)
+        layout.addWidget(lbl_issuer)
+        self._inp_issuer = QLineEdit(holding.get("issuer", ""))
+        self._inp_issuer.setFont(QFont("Meiryo", 9))
+        self._inp_issuer.setStyleSheet(_field_style)
+        layout.addWidget(self._inp_issuer)
+
+        # 効果メモ
+        lbl_effect = QLabel("効果メモ")
+        lbl_effect.setFont(QFont("Meiryo", 8))
+        lbl_effect.setStyleSheet(_lbl_style)
+        layout.addWidget(lbl_effect)
+        self._inp_effect = QPlainTextEdit(holding.get("effect", ""))
+        self._inp_effect.setFont(QFont("Meiryo", 9))
+        self._inp_effect.setMaximumHeight(68)
+        self._inp_effect.setStyleSheet(_field_style)
+        layout.addWidget(self._inp_effect)
+
+        # 効果タイプ
+        lbl_etype = QLabel("効果タイプ")
+        lbl_etype.setFont(QFont("Meiryo", 8))
+        lbl_etype.setStyleSheet(_lbl_style)
+        layout.addWidget(lbl_etype)
+        self._effect_type_combo = QComboBox()
+        self._effect_type_combo.setFont(QFont("Meiryo", 9))
+        self._effect_type_combo.setStyleSheet(_combo_style)
+        for label in _EFFECT_TYPE_LABELS:
+            self._effect_type_combo.addItem(label)
+        layout.addWidget(self._effect_type_combo)
+
+        # ポインター移動量
+        self._max_deg_row = QWidget()
+        _md_layout = QHBoxLayout(self._max_deg_row)
+        _md_layout.setContentsMargins(0, 0, 0, 0)
+        lbl_deg = QLabel("最大移動量")
+        lbl_deg.setFont(QFont("Meiryo", 8))
+        lbl_deg.setStyleSheet(_lbl_style)
+        self._max_deg_spin = QDoubleSpinBox()
+        self._max_deg_spin.setFont(QFont("Meiryo", 9))
+        self._max_deg_spin.setStyleSheet(_spin_style)
+        self._max_deg_spin.setMinimum(0.5)
+        self._max_deg_spin.setMaximum(_MAX_DEG_LIMIT)
+        self._max_deg_spin.setSingleStep(1.0)
+        self._max_deg_spin.setValue(_DEFAULT_MAX_DEG)
+        self._max_deg_spin.setSuffix("°")
+        self._max_deg_spin.setDecimals(1)
+        _md_layout.addWidget(lbl_deg)
+        _md_layout.addWidget(self._max_deg_spin, 1)
+        self._max_deg_row.setVisible(False)
+        layout.addWidget(self._max_deg_row)
+
+        # 重み係数
+        self._weight_row = QWidget()
+        _wt_layout = QHBoxLayout(self._weight_row)
+        _wt_layout.setContentsMargins(0, 0, 0, 0)
+        lbl_wt = QLabel("係数値")
+        lbl_wt.setFont(QFont("Meiryo", 8))
+        lbl_wt.setStyleSheet(_lbl_style)
+        self._weight_spin = QDoubleSpinBox()
+        self._weight_spin.setFont(QFont("Meiryo", 9))
+        self._weight_spin.setStyleSheet(_spin_style)
+        self._weight_spin.setMinimum(_WEIGHT_VALUE_MIN)
+        self._weight_spin.setMaximum(_WEIGHT_VALUE_MAX)
+        self._weight_spin.setSingleStep(_WEIGHT_VALUE_STEP)
+        self._weight_spin.setValue(_DEFAULT_WEIGHT_VALUE)
+        self._weight_spin.setPrefix("×")
+        self._weight_spin.setDecimals(2)
+        _wt_layout.addWidget(lbl_wt)
+        _wt_layout.addWidget(self._weight_spin, 1)
+        self._weight_row.setVisible(False)
+        layout.addWidget(self._weight_row)
+
+        # 固定確率
+        self._fixed_prob_row = QWidget()
+        _fp_layout = QHBoxLayout(self._fixed_prob_row)
+        _fp_layout.setContentsMargins(0, 0, 0, 0)
+        lbl_fp = QLabel("固定確率")
+        lbl_fp.setFont(QFont("Meiryo", 8))
+        lbl_fp.setStyleSheet(_lbl_style)
+        self._fixed_prob_spin = QDoubleSpinBox()
+        self._fixed_prob_spin.setFont(QFont("Meiryo", 9))
+        self._fixed_prob_spin.setStyleSheet(_spin_style)
+        self._fixed_prob_spin.setMinimum(_PROB_VALUE_MIN)
+        self._fixed_prob_spin.setMaximum(_PROB_VALUE_MAX)
+        self._fixed_prob_spin.setSingleStep(_PROB_VALUE_STEP)
+        self._fixed_prob_spin.setValue(_DEFAULT_PROB_VALUE)
+        self._fixed_prob_spin.setSuffix("%")
+        self._fixed_prob_spin.setDecimals(1)
+        _fp_layout.addWidget(lbl_fp)
+        _fp_layout.addWidget(self._fixed_prob_spin, 1)
+        self._fixed_prob_row.setVisible(False)
+        layout.addWidget(self._fixed_prob_row)
+
+        # 追加確率
+        self._add_prob_row = QWidget()
+        _ap_layout = QHBoxLayout(self._add_prob_row)
+        _ap_layout.setContentsMargins(0, 0, 0, 0)
+        lbl_ap = QLabel("追加確率")
+        lbl_ap.setFont(QFont("Meiryo", 8))
+        lbl_ap.setStyleSheet(_lbl_style)
+        self._add_prob_spin = QDoubleSpinBox()
+        self._add_prob_spin.setFont(QFont("Meiryo", 9))
+        self._add_prob_spin.setStyleSheet(_spin_style)
+        self._add_prob_spin.setMinimum(_PROB_VALUE_MIN)
+        self._add_prob_spin.setMaximum(_PROB_VALUE_MAX)
+        self._add_prob_spin.setSingleStep(_PROB_VALUE_STEP)
+        self._add_prob_spin.setValue(_DEFAULT_PROB_VALUE)
+        self._add_prob_spin.setSuffix("%")
+        self._add_prob_spin.setDecimals(1)
+        _ap_layout.addWidget(lbl_ap)
+        _ap_layout.addWidget(self._add_prob_spin, 1)
+        self._add_prob_row.setVisible(False)
+        layout.addWidget(self._add_prob_row)
+
+        # バリデーションエラーラベル
+        self._err_lbl = QLabel("")
+        self._err_lbl.setFont(QFont("Meiryo", 8))
+        self._err_lbl.setStyleSheet("color: #ff6666;")
+        self._err_lbl.setWordWrap(True)
+        layout.addWidget(self._err_lbl)
+
+        # OK / キャンセル
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        _btn_style = (
+            f"QPushButton {{ background: {d.separator}; color: {d.text}; "
+            f"border: none; border-radius: 3px; padding: 4px 14px; }}"
+            f"QPushButton:hover {{ background: {d.accent}; }}"
+        )
+        self._btn_ok = QPushButton("OK")
+        self._btn_ok.setFont(QFont("Meiryo", 9))
+        self._btn_ok.setStyleSheet(_btn_style)
+        self._btn_ok.clicked.connect(self._on_ok)
+        self._btn_cancel = QPushButton("キャンセル")
+        self._btn_cancel.setFont(QFont("Meiryo", 9))
+        self._btn_cancel.setStyleSheet(_btn_style)
+        self._btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self._btn_ok)
+        btn_row.addWidget(self._btn_cancel)
+        layout.addLayout(btn_row)
+
+        # 既存値をフォームに反映
+        self._effect_type_combo.currentIndexChanged.connect(self._on_etype_changed)
+        self._load_holding(holding)
+
+    def _on_etype_changed(self, index: int) -> None:
+        etype = _EFFECT_TYPE_VALUES[index] if index < len(_EFFECT_TYPE_VALUES) else _EFFECT_NONE
+        self._max_deg_row.setVisible(etype == _EFFECT_POINTER_MOVE)
+        self._weight_row.setVisible(etype == _EFFECT_SET_WEIGHT)
+        self._fixed_prob_row.setVisible(etype == _EFFECT_SET_FIXED_PROB)
+        self._add_prob_row.setVisible(etype == _EFFECT_ADD_PROB)
+
+    def _load_holding(self, h: dict) -> None:
+        """既存 holding データをフォームに反映する。"""
+        effect_type = h.get("effect_type", _EFFECT_NONE)
+        effect_params = h.get("effect_params", {})
+        idx = _EFFECT_TYPE_VALUES.index(effect_type) if effect_type in _EFFECT_TYPE_VALUES else 0
+        self._effect_type_combo.setCurrentIndex(idx)
+        # パラメータ反映
+        if effect_type == _EFFECT_POINTER_MOVE:
+            deg = float(effect_params.get("max_move_deg", _DEFAULT_MAX_DEG))
+            self._max_deg_spin.setValue(max(0.5, min(_MAX_DEG_LIMIT, deg)))
+        elif effect_type == _EFFECT_SET_WEIGHT:
+            wv = float(effect_params.get("weight_value", _DEFAULT_WEIGHT_VALUE))
+            self._weight_spin.setValue(max(_WEIGHT_VALUE_MIN, min(_WEIGHT_VALUE_MAX, wv)))
+        elif effect_type == _EFFECT_SET_FIXED_PROB:
+            pv = float(effect_params.get("prob_value", _DEFAULT_PROB_VALUE))
+            self._fixed_prob_spin.setValue(max(_PROB_VALUE_MIN, min(_PROB_VALUE_MAX, pv)))
+        elif effect_type == _EFFECT_ADD_PROB:
+            pv = float(effect_params.get("prob_value", _DEFAULT_PROB_VALUE))
+            self._add_prob_spin.setValue(max(_PROB_VALUE_MIN, min(_PROB_VALUE_MAX, pv)))
+
+    def _on_ok(self) -> None:
+        name = self._inp_name.text().strip()
+        if not name:
+            self._err_lbl.setText("チケット名は必須です。")
+            return
+
+        idx = self._effect_type_combo.currentIndex()
+        etype = _EFFECT_TYPE_VALUES[idx] if idx < len(_EFFECT_TYPE_VALUES) else _EFFECT_NONE
+
+        if etype == _EFFECT_POINTER_MOVE:
+            deg = self._max_deg_spin.value()
+            if not (0.5 <= deg <= _MAX_DEG_LIMIT):
+                self._err_lbl.setText(f"移動量は 0.5 〜 {_MAX_DEG_LIMIT}° の範囲で入力してください。")
+                return
+            eparams: dict = {"max_move_deg": round(deg, 1)}
+        elif etype == _EFFECT_SET_WEIGHT:
+            wv = self._weight_spin.value()
+            if not (_WEIGHT_VALUE_MIN <= wv <= _WEIGHT_VALUE_MAX):
+                self._err_lbl.setText(f"係数値は {_WEIGHT_VALUE_MIN} 〜 {_WEIGHT_VALUE_MAX} の範囲で入力してください。")
+                return
+            eparams = {"weight_value": round(wv, 2)}
+        elif etype == _EFFECT_SET_FIXED_PROB:
+            pv = self._fixed_prob_spin.value()
+            if not (_PROB_VALUE_MIN <= pv <= _PROB_VALUE_MAX):
+                self._err_lbl.setText(f"確率は {_PROB_VALUE_MIN} 〜 {_PROB_VALUE_MAX}% の範囲で入力してください。")
+                return
+            eparams = {"prob_value": round(pv, 1)}
+        elif etype == _EFFECT_ADD_PROB:
+            pv = self._add_prob_spin.value()
+            if not (_PROB_VALUE_MIN <= pv <= _PROB_VALUE_MAX):
+                self._err_lbl.setText(f"確率は {_PROB_VALUE_MIN} 〜 {_PROB_VALUE_MAX}% の範囲で入力してください。")
+                return
+            eparams = {"prob_value": round(pv, 1)}
+        else:
+            eparams = {}
+
+        self._result_holding = {
+            "ticket_name":  name,
+            "issuer":       self._inp_issuer.text().strip(),
+            "effect":       self._inp_effect.toPlainText().strip(),
+            "effect_type":  etype,
+            "effect_params": eparams,
+        }
+        self.accept()
+
+    def edited_holding(self) -> dict | None:
+        """ダイアログ accept 後に編集済み dict を返す（ticket_id は含まない）。"""
+        return self._result_holding
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +464,8 @@ class TicketPanel(QFrame):
         self._pm_pending_effect_type: str = _EFFECT_NONE
         self._pm_pending_effect_params: dict = {}
 
+        # i110: 編集モード状態（-1 = 通常追加モード、0以上 = 編集中のholdings index）
+        self._edit_mode_idx: int = -1
 
         self.pinned_front = False
 
@@ -202,6 +480,7 @@ class TicketPanel(QFrame):
     # ================================================================
 
     def _apply_style(self):
+        self._transparent = False
         d = self._design
         self.setStyleSheet(
             f"TicketPanel {{ background: {d.panel}; "
@@ -488,6 +767,22 @@ class TicketPanel(QFrame):
             f"QPushButton:hover {{ background: {d.separator}; }}"
         )
 
+        # i110: 編集モード用ボタン・ラベル
+        self._edit_mode_lbl = QLabel("")
+        self._edit_mode_lbl.setFont(QFont("Meiryo", 8))
+        self._edit_mode_lbl.setStyleSheet(f"color: #aaccff; border: none;")
+        self._edit_mode_lbl.setVisible(False)
+
+        self._btn_cancel_edit = QPushButton("修正キャンセル")
+        self._btn_cancel_edit.setFont(QFont("Meiryo", 9))
+        self._btn_cancel_edit.setFixedHeight(28)
+        self._btn_cancel_edit.setStyleSheet(
+            f"QPushButton {{ background: {d.separator}; color: {d.text}; "
+            f"border: none; border-radius: 3px; }}"
+            f"QPushButton:hover {{ background: #664444; }}"
+        )
+        self._btn_cancel_edit.setVisible(False)
+
         form_layout.addWidget(lbl_name)
         form_layout.addWidget(self._inp_name)
         form_layout.addWidget(lbl_issuer)
@@ -500,7 +795,9 @@ class TicketPanel(QFrame):
         form_layout.addWidget(self._weight_value_row)
         form_layout.addWidget(self._fixed_prob_row)
         form_layout.addWidget(self._add_prob_row)
+        form_layout.addWidget(self._edit_mode_lbl)
         form_layout.addWidget(self._btn_add)
+        form_layout.addWidget(self._btn_cancel_edit)
 
         form_content_layout.addWidget(form_frame)
         self._form_content.setVisible(False)
@@ -519,6 +816,8 @@ class TicketPanel(QFrame):
         self._detail_lbl = QLabel("一覧から行を選択すると内容を表示します")
         self._detail_lbl.setFont(QFont("Meiryo", 8))
         self._detail_lbl.setWordWrap(True)
+        # i110: 高さを固定して一覧レイアウトを安定させる
+        self._detail_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         detail_layout.addWidget(self._detail_lbl, 1)
 
         self._btn_add_same = QPushButton("同内容で追加")
@@ -532,6 +831,8 @@ class TicketPanel(QFrame):
             f"QPushButton:disabled {{ color: {d.text_sub}; }}"
         )
         detail_layout.addWidget(self._btn_add_same)
+        # i110: 内容確認表示の高さを固定して一覧テーブルのリサイズを防ぐ
+        self._detail_frame.setFixedHeight(62)
         layout.addWidget(self._detail_frame)
 
         # 一覧ラベル
@@ -540,11 +841,11 @@ class TicketPanel(QFrame):
         lbl_list.setStyleSheet(f"color: {d.text};")
         layout.addWidget(lbl_list)
 
-        # 保有一覧テーブル
+        # 保有一覧テーブル (i109: 列追加 → 修正ボタン列)
         self._holdings_table = QTableWidget()
-        self._holdings_table.setColumnCount(6)
+        self._holdings_table.setColumnCount(7)
         self._holdings_table.setHorizontalHeaderLabels(
-            ["チケット名", "発行者", "効果", "個数", "使用", "削除"]
+            ["チケット名", "発行者", "効果", "個数", "使用", "削除", "修正"]
         )
         hh = self._holdings_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -553,8 +854,10 @@ class TicketPanel(QFrame):
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         self._holdings_table.setColumnWidth(4, 50)
         self._holdings_table.setColumnWidth(5, 50)
+        self._holdings_table.setColumnWidth(6, 50)
         self._holdings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._holdings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._holdings_table.verticalHeader().setVisible(False)
@@ -687,6 +990,7 @@ class TicketPanel(QFrame):
 
     def _connect_signals(self):
         self._btn_add.clicked.connect(self._on_add_ticket)
+        self._btn_cancel_edit.clicked.connect(self._exit_edit_mode)
         self._btn_add_same.clicked.connect(self._on_add_same_ticket)
         self._btn_save_tmpl.clicked.connect(self._on_save_template)
         self._effect_type_combo.currentIndexChanged.connect(self._on_effect_type_changed)
@@ -702,8 +1006,27 @@ class TicketPanel(QFrame):
         self._btn_clear_all.clicked.connect(self._on_clear_all)
 
     # ================================================================
-    #  外部 API — アクティブルーレット切替
+    #  外部 API — アクティブルーレット切替 / 連携パネルからのチケット追加 (i109)
     # ================================================================
+
+    def add_ticket_from_link(self,
+                             name: str,
+                             issuer: str,
+                             effect: str,
+                             qty: int = 1,
+                             effect_type: str = _EFFECT_NONE,
+                             effect_params: dict | None = None) -> None:
+        """連携パネルなど外部からチケットを追加する公開API (i109)。
+
+        _add_holding() を呼んでUIを更新し data_changed を発行する。
+        """
+        self._add_holding(name, issuer, effect, qty,
+                          effect_type=effect_type,
+                          effect_params=effect_params or {})
+        self._refresh_holdings_table()
+        if self._tabs.currentIndex() == 2:
+            self._refresh_summary()
+        self.data_changed.emit()
 
     def set_active_data(self, roulette_id: str,
                         holdings: list[dict],
@@ -861,6 +1184,14 @@ class TicketPanel(QFrame):
             btn_del.clicked.connect(lambda _, i=row_idx: self._on_delete_ticket(i))
             tbl.setCellWidget(row_idx, 5, btn_del)
 
+            # i109: 修正ボタン
+            btn_edit = QPushButton("修正")
+            btn_edit.setFixedHeight(22)
+            btn_edit.setFont(QFont("Meiryo", 8))
+            self._style_action_btn(btn_edit, "edit")
+            btn_edit.clicked.connect(lambda _, i=row_idx: self._on_edit_ticket(i))
+            tbl.setCellWidget(row_idx, 6, btn_edit)
+
         tbl.resizeRowsToContents()
         # 選択状態リセット
         self._btn_add_same.setEnabled(False)
@@ -991,10 +1322,12 @@ class TicketPanel(QFrame):
         color = {
             "use":    d.accent,
             "delete": "#884444",
+            "edit":   "#445588",   # i109: 修正ボタン
         }.get(kind, d.separator)
         btn.setStyleSheet(
             f"QPushButton {{ background: {color}; color: {d.text}; "
             f"border: none; border-radius: 2px; }}"
+            f"QPushButton:hover {{ background: {d.separator}; }}"
         )
 
     @staticmethod
@@ -1010,12 +1343,22 @@ class TicketPanel(QFrame):
     # ================================================================
 
     def _on_form_toggle(self, checked: bool):
+        if not checked and self._edit_mode_idx >= 0:
+            self._exit_edit_mode()
         self._form_content.setVisible(checked)
-        self._form_toggle_btn.setText(
-            "▼ チケット追加" if checked else "▶ チケット追加"
-        )
+        if self._edit_mode_idx >= 0:
+            self._form_toggle_btn.setText("▼ チケット修正中")
+        else:
+            self._form_toggle_btn.setText(
+                "▼ チケット追加" if checked else "▶ チケット追加"
+            )
 
     def _on_add_ticket(self) -> None:
+        # i110: 編集モード中は保存処理へ分岐
+        if self._edit_mode_idx >= 0:
+            self._save_edit()
+            return
+
         name   = self._inp_name.text().strip()
         issuer = self._inp_issuer.text().strip()
         effect = self._inp_effect.toPlainText().strip()
@@ -1033,6 +1376,84 @@ class TicketPanel(QFrame):
         self._effect_type_combo.setCurrentIndex(0)
         self._inp_name.setFocus()
 
+        self._refresh_holdings_table()
+        if self._tabs.currentIndex() == 2:
+            self._refresh_summary()
+        self.data_changed.emit()
+
+    def _enter_edit_mode(self, row: int) -> None:
+        """i110: 編集モードに入る。選択行の内容をフォームに読み込む。"""
+        holdings = self._current_holdings()
+        if row < 0 or row >= len(holdings):
+            return
+        h = holdings[row]
+        self._edit_mode_idx = row
+
+        # フォームにデータ読み込み
+        self._inp_name.setText(h.get("ticket_name", ""))
+        self._inp_issuer.setText(h.get("issuer", ""))
+        self._inp_effect.setPlainText(h.get("effect", ""))
+        self._set_effect_to_ui(
+            h.get("effect_type", _EFFECT_NONE),
+            h.get("effect_params", {}),
+        )
+
+        # UI を編集モード表示に切り替え
+        ticket_name = h.get("ticket_name", "")
+        self._edit_mode_lbl.setText(f"編集中: 【{ticket_name}】")
+        self._edit_mode_lbl.setVisible(True)
+        self._btn_add.setText("修正を保存")
+        self._btn_cancel_edit.setVisible(True)
+        self._form_toggle_btn.setText("▼ チケット修正中")
+
+        # フォームが閉じていれば開く
+        if not self._form_toggle_btn.isChecked():
+            self._form_toggle_btn.setChecked(True)
+
+    def _exit_edit_mode(self) -> None:
+        """i110: 編集モードを解除して通常の追加モードに戻す。"""
+        self._edit_mode_idx = -1
+
+        # フォームをクリア
+        self._inp_name.clear()
+        self._inp_issuer.clear()
+        self._inp_effect.clear()
+        self._effect_type_combo.setCurrentIndex(0)
+
+        # UI を通常表示に戻す
+        self._edit_mode_lbl.setVisible(False)
+        self._btn_add.setText("追加")
+        self._btn_cancel_edit.setVisible(False)
+
+        # フォームが開いていれば閉じる
+        if self._form_toggle_btn.isChecked():
+            self._form_toggle_btn.setChecked(False)
+
+    def _save_edit(self) -> None:
+        """i110: 編集モード中の保存処理。選択チケットを更新する。"""
+        holdings = self._current_holdings()
+        idx = self._edit_mode_idx
+        if idx < 0 or idx >= len(holdings):
+            self._exit_edit_mode()
+            return
+
+        name = self._inp_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "入力エラー", "チケット名は必須です。")
+            return
+
+        issuer = self._inp_issuer.text().strip()
+        effect = self._inp_effect.toPlainText().strip()
+        effect_type, effect_params = self._read_effect_from_ui()
+
+        h = holdings[idx]
+        h["ticket_name"]   = name
+        h["issuer"]        = issuer
+        h["effect"]        = effect
+        h["effect_type"]   = effect_type
+        h["effect_params"] = effect_params
+
+        self._exit_edit_mode()
         self._refresh_holdings_table()
         if self._tabs.currentIndex() == 2:
             self._refresh_summary()
@@ -1307,6 +1728,12 @@ class TicketPanel(QFrame):
         if self._tabs.currentIndex() == 2:
             self._refresh_summary()
         self.data_changed.emit()
+
+    def _on_edit_ticket(self, row: int) -> None:
+        """i110: 修正ボタン押下 → チケット追加欄に内容を読み込んで編集モードに入る。
+        ダイアログは開かない。
+        """
+        self._enter_edit_mode(row)
 
     def _on_history_cell_clicked(self, row: int, col: int) -> None:
         """履歴テーブルの結果セルクリック: ドブ → 復活 / 復活済み → 復活取り消し。"""
@@ -1875,6 +2302,22 @@ class TicketPanel(QFrame):
 
     def mouseReleaseEvent(self, event):
         event.accept()
+
+    def set_transparent(self, enabled: bool):
+        """パネル背景の透過モードを切り替える（実験的）。"""
+        self._transparent = enabled
+        d = self._design
+        if enabled:
+            self.setStyleSheet(
+                f"TicketPanel {{ background: transparent; "
+                f"border: 1px solid {d.separator}; border-radius: 4px; }}"
+            )
+        else:
+            self.setStyleSheet(
+                f"TicketPanel {{ background: {d.panel}; "
+                f"border: 1px solid {d.separator}; border-radius: 4px; }}"
+            )
+        apply_transparent_to_widget_tree(self, enabled)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

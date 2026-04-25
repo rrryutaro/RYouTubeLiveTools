@@ -16,6 +16,13 @@ YouTubeライブ配信で活用できるツール集です。
 
 ---
 
+## RCommentHub 初期設定
+
+RCommentHub で YouTube ライブチャットを受信するには、Google Cloud でプロジェクトを作成し YouTube Data API v3 を有効化する必要があります。  
+詳しくは [初期設定_GoogleCloud_YouTubeDataAPI.md](RCommentHub/docs/初期設定_GoogleCloud_YouTubeDataAPI.md) を参照してください。
+
+---
+
 ## OBSでの使用について
 
 各ツールはOBSの**ウィンドウキャプチャ**でキャプチャできます。

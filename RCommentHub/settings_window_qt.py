@@ -555,6 +555,28 @@ class SettingsWindowQt(QDialog):
         ov_fb_row.addStretch()
         layout.addLayout(ov_fb_row)
 
+        # ── RRoulette 連携設定 ──────────────────────────────────────────────────
+        self._section(layout, "RRoulette 連携設定")
+
+        self._rr_enabled_chk = QCheckBox("RRoulette 連携送信を有効にする")
+        layout.addWidget(self._rr_enabled_chk)
+
+        rr_port_row = QHBoxLayout()
+        rr_port_row.addWidget(QLabel("RRoulette 連携先ポート:"))
+        self._rr_port_spin = QSpinBox()
+        self._rr_port_spin.setRange(1024, 65535)
+        self._rr_port_spin.setValue(12345)
+        rr_port_row.addWidget(self._rr_port_spin)
+        rr_port_row.addStretch()
+        layout.addLayout(rr_port_row)
+
+        self._rr_dry_run_chk = QCheckBox("ドライラン（実際には送信しない）")
+        self._rr_dry_run_chk.setToolTip(
+            "ON の間は RRoulette への送信をスキップしてログのみ出力する。\n"
+            "動作確認時に使用すること。"
+        )
+        layout.addWidget(self._rr_dry_run_chk)
+
         layout.addStretch()
 
     # ─── 読み上げタブ ──────────────────────────────────────────────────────────
@@ -724,6 +746,12 @@ class SettingsWindowQt(QDialog):
         self._ov_fn_spin.setValue(int(sm.get("overlay_font_size_name", 9)))
         self._ov_fb_spin.setValue(int(sm.get("overlay_font_size_body", 11)))
 
+        # RRoulette 連携
+        _rr_cfg = sm.get("roulette_integration", {})
+        self._rr_enabled_chk.setChecked(bool(_rr_cfg.get("enabled", False)))
+        self._rr_port_spin.setValue(int(_rr_cfg.get("port", 12345)))
+        self._rr_dry_run_chk.setChecked(bool(_rr_cfg.get("dry_run", False)))
+
         # 読み上げ
         self._tts_enabled_chk.setChecked(sm.get("tts_enabled", False))
         self._tts_volume_spin.setValue(int(sm.get("tts_volume", 100)))
@@ -788,6 +816,15 @@ class SettingsWindowQt(QDialog):
             "tts_interval_sec":     self._tts_interval_spin.value(),
         }
         sm.update(updates)
+
+        # RRoulette 連携設定（ネスト dict として保存）
+        sm.update({
+            "roulette_integration": {
+                "enabled":  self._rr_enabled_chk.isChecked(),
+                "port":     self._rr_port_spin.value(),
+                "dry_run":  self._rr_dry_run_chk.isChecked(),
+            }
+        })
 
         if self._on_changed:
             self._on_changed()

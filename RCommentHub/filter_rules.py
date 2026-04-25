@@ -35,6 +35,8 @@ class FilterRule:
     # ユーザー管理連動
     exclude_blacklist:  bool = False   # ブラック対象を除外
     filter_target_only: bool = False   # フィルタ対象ユーザーのみ
+    # i111: 複数キーワード条件
+    keyword_condition:  str  = "OR"    # "AND" | "OR" (target_text をカンマ区切りで複数指定時)
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +55,7 @@ class FilterRule:
             "role_verified":      self.role_verified,
             "exclude_blacklist":  self.exclude_blacklist,
             "filter_target_only": self.filter_target_only,
+            "keyword_condition":  self.keyword_condition,
         }
 
     @classmethod
@@ -65,7 +68,7 @@ class FilterRule:
 
 
 def _match_text(pattern: str, text: str, match_type: str) -> bool:
-    """テキスト一致判定"""
+    """単一パターンのテキスト一致判定"""
     if not pattern:
         return True
     try:
@@ -82,6 +85,24 @@ def _match_text(pattern: str, text: str, match_type: str) -> bool:
     except re.error:
         return False
     return False
+
+
+def _match_keywords(pattern: str, text: str, match_type: str, condition: str = "OR") -> bool:
+    """i111: 複数キーワード対応テキスト一致判定。
+
+    pattern をカンマ（半角・全角）で分割して複数キーワードとして扱う。
+    condition="AND" のとき全キーワード一致、"OR" のときいずれか一致。
+    単一キーワードの場合は condition に関わらず既存と同じ動作。
+    """
+    if not pattern:
+        return True
+    keywords = [k.strip() for k in re.split(r'[,、]', pattern) if k.strip()]
+    if not keywords:
+        return True
+    results = [_match_text(kw, text, match_type) for kw in keywords]
+    if condition == "AND":
+        return all(results)
+    return any(results)
 
 
 class FilterRuleManager:
@@ -163,11 +184,12 @@ class FilterRuleManager:
             if not role_ok:
                 return False
 
-        # テキスト一致
+        # テキスト一致（i111: 複数キーワード対応）
         if rule.target_text:
             text = (item.author_name if rule.target_field == "投稿者名"
                     else item.body or "")
-            if not _match_text(rule.target_text, text, rule.match_type):
+            if not _match_keywords(rule.target_text, text, rule.match_type,
+                                   rule.keyword_condition):
                 return False
 
         return True

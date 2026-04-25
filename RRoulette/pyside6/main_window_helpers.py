@@ -118,6 +118,7 @@ class _MainWindowDragBar(QWidget):
         self._roulette_only = False  # roulette_only 時は透過化（スペース維持）
         self.setFixedHeight(self._BAR_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+        self.setMouseTracking(True)
 
     def set_roulette_only(self, ronly: bool):
         """roulette_only ON 時はドラッグバーを透過化する。
@@ -152,17 +153,22 @@ class _MainWindowDragBar(QWidget):
             event.ignore()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            # i103: 上辺リサイズ判定を廃止 — 上端含む全領域を通常ドラッグとして扱う
             self._dragging = True
             self._drag_start = event.globalPosition().toPoint()
             self._start_pos = self._mw.pos()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._roulette_only or not self._dragging:
+        if self._roulette_only:
             return
-        delta = event.globalPosition().toPoint() - self._drag_start
-        self._mw.move(self._start_pos + delta)
-        event.accept()
+        if self._dragging:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            self._mw.move(self._start_pos + delta)
+            event.accept()
+            return
+        # i103: 上辺リサイズカーソルを廃止 — 常に移動カーソルを表示する
+        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
