@@ -182,6 +182,16 @@ class CommentWindowQt(QMainWindow):
         # フィルタ一致コメントのリングバッファ（将来の外部連携用）
         self._filter_buffer: deque = deque(maxlen=_FILTER_BUF_SIZE)
 
+        # i112: フィルタビュー行ヘッダーベース文字列（seq_no → ヘッダー）
+        self._filter_base_headers: dict = {}
+        # i112: 手動送信中のitem参照（_on_rr_result でステータス更新用）
+        self._rr_manual_item = None
+
+        # i113: 全メッセージビューの行追跡（seq_no → 全時通算インデックス）
+        self._all_row_count: int = 0
+        self._all_seq_to_abs_idx: dict = {}   # seq_no → 追加時の全時通算インデックス
+        self._all_base_headers: dict = {}     # seq_no → ベースヘッダー文字列
+
         # フィルタ設定タブで現在選択中のルール ID
         self._current_rule_id: str | None = None
 
@@ -231,6 +241,10 @@ class CommentWindowQt(QMainWindow):
         self._user_refresh_timer.setSingleShot(True)
         self._user_refresh_timer.setInterval(1000)
         self._user_refresh_timer.timeout.connect(self._refresh_user_list)
+
+        # i112: RRoulette送信状態変化コールバック登録
+        if hasattr(self._ctrl, "on_roulette_status"):
+            self._ctrl.on_roulette_status(self._on_roulette_status)
 
         self.apply_display_settings()
 
@@ -293,6 +307,21 @@ class CommentWindowQt(QMainWindow):
             btn.setStyleSheet(_btn_style)
             btn.clicked.connect(callback)
             sb_layout.addWidget(btn)
+
+        # i110: 切断ボタン（受信中のみ有効）
+        self._btn_disconnect = QPushButton("切断")
+        self._btn_disconnect.setFixedHeight(22)
+        self._btn_disconnect.setStyleSheet(
+            "QPushButton {"
+            "  background: #3A2020; color: #FFAAAA;"
+            "  border: none; padding: 1px 7px; font-size: 9pt;"
+            "}"
+            "QPushButton:hover { background: #662222; color: #FFFFFF; }"
+            "QPushButton:disabled { background: #1A1A2A; color: #444444; }"
+        )
+        self._btn_disconnect.setEnabled(False)
+        self._btn_disconnect.clicked.connect(self._on_disconnect)
+        sb_layout.addWidget(self._btn_disconnect)
 
         btn_close = QPushButton("×")
         btn_close.setFixedSize(22, 22)
@@ -368,6 +397,43 @@ class CommentWindowQt(QMainWindow):
         self._rr_send_btn.clicked.connect(self._send_to_rroulette)
         tb_layout.addWidget(self._rr_send_btn)
 
+        # i113: 連携送信 ON/OFF チェックボックス（設定画面の同名設定と同期）
+        _rr_cfg_init = self._sm.get("roulette_integration", {})
+        self._rr_enabled_cb = QCheckBox("連携送信")
+        self._rr_enabled_cb.setChecked(bool(_rr_cfg_init.get("enabled", False)))
+        self._rr_enabled_cb.setStyleSheet(
+            "QCheckBox { color: #AAAAAA; font-size: 8pt; }"
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+            "QCheckBox::indicator:checked { background: #4466AA; border: 1px solid #6688CC; }"
+            "QCheckBox::indicator:unchecked { background: #1A1A2A; border: 1px solid #2A2A4A; }"
+        )
+        self._rr_enabled_cb.setToolTip(
+            "RRoulette 連携送信を有効にする（設定画面の同名設定と連動）"
+        )
+        self._rr_enabled_cb.clicked.connect(self._on_rr_enabled_changed)
+        tb_layout.addWidget(self._rr_enabled_cb)
+
+        # i111: 自動送信モードを手動送信と同じ行に配置（i110の専用バーを廃止）
+        _auto_lbl = QLabel("自動送信:")
+        _auto_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
+        tb_layout.addWidget(_auto_lbl)
+
+        self._rr_auto_mode_combo = QComboBox()
+        self._rr_auto_mode_combo.setFixedHeight(22)
+        self._rr_auto_mode_combo.setStyleSheet(
+            "QComboBox { background: #1A1A2A; color: #CCCCCC; border: 1px solid #2A2A4A;"
+            "  padding: 1px 4px; font-size: 8pt; }"
+            "QComboBox QAbstractItemView { background: #1A1A2A; color: #CCCCCC; }"
+        )
+        # i112: モード値: off / all / filter_match / whitelist / target (5モード)
+        for label in ["OFF", "無条件送信", "フィルタ一致のみ", "ホワイトのみ", "対象者のみ"]:
+            self._rr_auto_mode_combo.addItem(label)
+        saved_mode = self._sm.get("rr_auto_send_mode", "off")
+        _mode_idx = {"off": 0, "all": 1, "filter_match": 2, "whitelist": 3, "target": 4}.get(saved_mode, 0)
+        self._rr_auto_mode_combo.setCurrentIndex(_mode_idx)
+        self._rr_auto_mode_combo.currentIndexChanged.connect(self._on_rr_auto_mode_changed)
+        tb_layout.addWidget(self._rr_auto_mode_combo)
+
         self._rr_selected_lbl = QLabel("（行を選択してください）")
         self._rr_selected_lbl.setStyleSheet("color: #555555; font-size: 8pt;")
         self._rr_selected_lbl.setSizePolicy(
@@ -376,21 +442,199 @@ class CommentWindowQt(QMainWindow):
         tb_layout.addWidget(self._rr_selected_lbl)
 
         layout.addWidget(tb)
+
+        # i112: RR送信状態バー（ツールバーの下段）
+        sb = QWidget()
+        sb.setFixedHeight(22)
+        sb.setStyleSheet("background: #141428;")
+        sb_layout = QHBoxLayout(sb)
+        sb_layout.setContentsMargins(6, 2, 6, 2)
+        sb_layout.setSpacing(6)
+
+        self._rr_status_lbl = QLabel("RR: [未判定]")
+        self._rr_status_lbl.setStyleSheet("color: #666688; font-size: 8pt;")
+        self._rr_status_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        sb_layout.addWidget(self._rr_status_lbl)
+
+        # i113: デバッグコメント試験設定
+        self._rr_debug_cb = QCheckBox("デバッグも対象（試験）")
+        self._rr_debug_cb.setChecked(bool(self._sm.get("rr_auto_send_debug_enabled", False)))
+        self._rr_debug_cb.setStyleSheet(
+            "QCheckBox { color: #666688; font-size: 8pt; }"
+            "QCheckBox::indicator { width: 11px; height: 11px; }"
+            "QCheckBox::indicator:checked { background: #334466; border: 1px solid #446688; }"
+            "QCheckBox::indicator:unchecked { background: #0D0D1A; border: 1px solid #1A1A30; }"
+        )
+        self._rr_debug_cb.setToolTip(
+            "ONにするとデバッグコメントも自動送信対象になります（試験用・通常配信ではOFFのままにしてください）"
+        )
+        self._rr_debug_cb.clicked.connect(self._on_rr_debug_changed)
+        sb_layout.addWidget(self._rr_debug_cb)
+
+        # テスト経路ボタン（フィルタタブ行を選択して自動送信経路を手動確認）
+        _test_btn_style = (
+            "QPushButton {"
+            "  background: #1A2A3A; color: #8888AA;"
+            "  border: none; padding: 1px 6px; font-size: 8pt;"
+            "}"
+            "QPushButton:hover { background: #2A3A4A; color: #AAAACC; }"
+            "QPushButton:disabled { background: #0A0A1A; color: #333344; }"
+        )
+        self._rr_test_btn = QPushButton("テスト経路")
+        self._rr_test_btn.setFixedHeight(18)
+        self._rr_test_btn.setStyleSheet(_test_btn_style)
+        self._rr_test_btn.setEnabled(False)
+        self._rr_test_btn.setToolTip(
+            "選択行を自動送信経路でテスト送信"
+        )
+        self._rr_test_btn.clicked.connect(self._test_auto_send)
+        sb_layout.addWidget(self._rr_test_btn)
+
+        layout.addWidget(sb)
         return widget
+
+    def _on_rr_auto_mode_changed(self, index: int) -> None:
+        """i112: 自動送信モードをコンボ選択に合わせて設定に保存する（5モード対応）。"""
+        modes = ["off", "all", "filter_match", "whitelist", "target"]
+        mode = modes[index] if index < len(modes) else "off"
+        self._sm.update({"rr_auto_send_mode": mode})
+
+    def _on_rr_enabled_changed(self, checked: bool) -> None:
+        """i113: 連携送信 ON/OFF チェックボックスの変更を設定に保存する。"""
+        cfg = dict(self._sm.get("roulette_integration", {}))
+        cfg["enabled"] = checked
+        self._sm.update({"roulette_integration": cfg})
+        if not checked and hasattr(self, "_rr_selected_lbl"):
+            self._rr_selected_lbl.setText("連携送信OFFのため自動送信されません")
+            self._rr_selected_lbl.setStyleSheet("color: #888844; font-size: 8pt;")
+
+    def _on_rr_debug_changed(self, checked: bool) -> None:
+        """i113: デバッグコメント試験設定の変更を保存する。"""
+        self._sm.update({"rr_auto_send_debug_enabled": checked})
 
     def _on_filter_row_selected(self, index: int | None) -> None:
         """フィルタビューで行が選択されたときのコールバック。"""
         if index is None or index >= len(self._filter_buffer):
             self._rr_send_btn.setEnabled(False)
+            self._rr_test_btn.setEnabled(False)
             self._rr_selected_lbl.setText("（行を選択してください）")
             self._rr_selected_lbl.setStyleSheet("color: #555555; font-size: 8pt;")
+            self._rr_status_lbl.setText("RR: [未判定]")
+            self._rr_status_lbl.setStyleSheet("color: #666688; font-size: 8pt;")
         else:
             item = list(self._filter_buffer)[index]
             text = getattr(item, "body", "") or ""
             preview = text[:30] + ("…" if len(text) > 30 else "")
             self._rr_send_btn.setEnabled(True)
+            self._rr_test_btn.setEnabled(True)
             self._rr_selected_lbl.setText(preview)
             self._rr_selected_lbl.setStyleSheet("color: #AAAAAA; font-size: 8pt;")
+            self._update_rr_status_for_item(item)
+
+    def _rr_status_text(self, item) -> str:
+        """i112: CommentItemのRRoulette送信状態を短い文字列で返す。"""
+        status = getattr(item, "roulette_send_status", "未判定")
+        reason = getattr(item, "roulette_send_reason", "")
+        error  = getattr(item, "roulette_send_error",  "")
+        sent_at = getattr(item, "roulette_sent_at", None)
+        if reason:
+            s = f"{status}: {reason}"
+        elif error:
+            s = f"{status}: {error}"
+        else:
+            s = status
+        if sent_at is not None:
+            s += f" ({sent_at.strftime('%H:%M:%S')})"
+        return s
+
+    def _update_rr_status_for_item(self, item) -> None:
+        """i112: _rr_status_lbl を指定itemのRR状態で更新する（選択行と一致している場合）。"""
+        if not hasattr(self, "_rr_status_lbl"):
+            return
+        text = self._rr_status_text(item)
+        status = getattr(item, "roulette_send_status", "未判定")
+        if status == "送信済み" or status == "手動送信済み":
+            color = "#44CC88"
+        elif status.startswith("失敗"):
+            color = "#FF6666"
+        elif status == "除外":
+            color = "#888844"
+        elif status == "送信中" or status == "送信中(手動)":
+            color = "#4488FF"
+        else:
+            color = "#666688"
+        self._rr_status_lbl.setText(f"RR: [{text}]")
+        self._rr_status_lbl.setStyleSheet(f"color: {color}; font-size: 8pt;")
+
+    def _update_filter_row_header(self, item) -> None:
+        """i112: フィルタビューの対応行ヘッダーをRR状態付きで更新する。"""
+        if not hasattr(self, "_filter_view"):
+            return
+        buf_list = list(self._filter_buffer)
+        try:
+            idx = next(i for i, x in enumerate(buf_list) if x is item)
+        except StopIteration:
+            return
+        seq_no = getattr(item, "seq_no", None)
+        base = self._filter_base_headers.get(seq_no, "") if seq_no is not None else ""
+        if not base:
+            return
+        status = getattr(item, "roulette_send_status", "未判定")
+        reason = getattr(item, "roulette_send_reason", "")
+        if reason:
+            tag = f" [RR:{status}:{reason}]"
+        else:
+            tag = f" [RR:{status}]"
+        self._filter_view.update_row_header(idx, base + tag)
+
+    def _update_all_row_header(self, item) -> None:
+        """i113: 全メッセージビューの対応行ヘッダーをRR状態付きで更新する。"""
+        if not hasattr(self, "_comment_view"):
+            return
+        seq_no = getattr(item, "seq_no", None)
+        if seq_no is None or seq_no not in self._all_seq_to_abs_idx:
+            return
+        abs_idx = self._all_seq_to_abs_idx[seq_no]
+        from comment_view_qt import CommentView as _CV
+        pruned = max(0, self._all_row_count - _CV.MAX_ROWS)
+        current_idx = abs_idx - pruned
+        if current_idx < 0:
+            return   # 行が既に削除済み
+        base = self._all_base_headers.get(seq_no, "")
+        if not base:
+            return
+        status = getattr(item, "roulette_send_status", "未判定")
+        reason = getattr(item, "roulette_send_reason", "")
+        tag = f" [RR:{status}:{reason}]" if reason else f" [RR:{status}]"
+        self._comment_view.update_row_header(current_idx, base + tag)
+
+    def _on_roulette_status(self, item) -> None:
+        """i112/i113: RRoulette送信状態変化コールバック（メインスレッドで実行）。"""
+        # フィルタビューの行ヘッダーを更新
+        self._update_filter_row_header(item)
+        # 全メッセージビューの行ヘッダーを更新（i113）
+        self._update_all_row_header(item)
+        # 現在選択行が変化したitemなら状態ラベルも更新
+        idx = self._filter_view.selected_row_index
+        if idx is not None:
+            buf_list = list(self._filter_buffer)
+            if 0 <= idx < len(buf_list) and buf_list[idx] is item:
+                self._update_rr_status_for_item(item)
+
+    def _test_auto_send(self) -> None:
+        """i112: テスト経路ボタン — 選択行を自動送信経路でテスト送信する。
+        debug source チェックをバイパスするので、デバッグコメントでも確認可能。
+        """
+        idx = self._filter_view.selected_row_index
+        if idx is None or idx >= len(self._filter_buffer):
+            return
+        item = list(self._filter_buffer)[idx]
+        if not hasattr(self._ctrl, "test_roulette_link"):
+            return
+        self._ctrl.test_roulette_link(item)
+        self._update_rr_status_for_item(item)
 
     def _send_to_rroulette(self) -> None:
         """選択中フィルタ行を外部（RRoulette 等）へ送信する（dry-run / HTTP POST）。
@@ -424,27 +668,38 @@ class CommentWindowQt(QMainWindow):
                 _rule = _fmgr.get_rule(matched_rule_id)
                 matched_rule_name = _rule.name if _rule else ""
 
-        # 設定読み込み
-        dry_run      = bool(self._sm.get(_RR_KEY_DRY_RUN, True))
-        endpoint_url = str(self._sm.get(_RR_KEY_ENDPOINT, _RR_API_URL_DEFAULT))
+        # 設定読み込み（Phase 1: roulette_integration dict 経由）
+        _rr_cfg     = self._sm.get("roulette_integration", {})
+        dry_run     = bool(_rr_cfg.get("dry_run", False))
+        port        = int(_rr_cfg.get("port", 12345))
+        endpoint_url = f"http://127.0.0.1:{port}/api/link-message"
 
-        payload = {
-            "event_type":        "filter_match",
-            "schema_version":    1,
-            "source":            source,
-            "message_id":        message_id,
-            "author_name":       author_name,
-            "text":              text,
-            "matched_rule_id":   matched_rule_id,
-            "matched_rule_name": matched_rule_name,
-            "mode":              "manual",
-        }
+        # i113: コントローラの build_roulette_payload() で手動・自動送信のpayloadを統一
+        if hasattr(self._ctrl, "build_roulette_payload"):
+            payload = self._ctrl.build_roulette_payload(item, matched_rule_name=matched_rule_name)
+        else:
+            # フォールバック（後方互換）
+            author_channel_id = getattr(item, "channel_id", "") or ""
+            payload = {
+                "source_app":        "RCommentHub",
+                "platform":          source,
+                "profile_name":      "",
+                "filter_name":       matched_rule_name,
+                "author_name":       author_name,
+                "author_channel_id": author_channel_id,
+                "comment_text":      text,
+                "message_type":      "filter_match",
+                "received_at":       "",
+            }
 
+        # i112: 手動送信中のitem参照を保持してステータス更新に使う
+        self._rr_manual_item = item
+        item.roulette_send_status = "送信中(手動)"
         self._rr_send_btn.setEnabled(False)
 
         if dry_run:
             # dry-run: HTTP 送信せず JSON をログに出す
-            _log.info("[dry-run] filter_match payload: %s",
+            _log.info("[dry-run] link-message payload: %s",
                       json.dumps(payload, ensure_ascii=False))
             self._on_rr_result(
                 {"ok": True,
@@ -496,6 +751,37 @@ class CommentWindowQt(QMainWindow):
         else:
             preview = text[:20] + ("…" if len(text) > 20 else "")
             msg = f"RRouletteへ送信しました: {preview}"
+
+        # i112/i113: 手動送信アイテムのステータス更新（update_roulette_status でUI通知統一）
+        manual_item = self._rr_manual_item
+        self._rr_manual_item = None
+        if manual_item is not None:
+            if error is not None or (resp is not None and not resp.get("ok")
+                                     and resp.get("reason") != "dry_run"):
+                _err_str = error if error is not None else (resp.get("message", "?") if resp else "?")
+                if hasattr(self._ctrl, "update_roulette_status"):
+                    self._ctrl.update_roulette_status(manual_item, "失敗(手動)", error=_err_str)
+                else:
+                    manual_item.roulette_send_status = "失敗(手動)"
+                    manual_item.roulette_send_error  = _err_str
+                    self._update_rr_status_for_item(manual_item)
+                    self._update_filter_row_header(manual_item)
+            elif resp is not None and resp.get("reason") == "dry_run":
+                if hasattr(self._ctrl, "update_roulette_status"):
+                    self._ctrl.update_roulette_status(manual_item, "dry-run")
+                else:
+                    manual_item.roulette_send_status = "dry-run"
+                    self._update_rr_status_for_item(manual_item)
+                    self._update_filter_row_header(manual_item)
+            else:
+                if hasattr(self._ctrl, "update_roulette_status"):
+                    self._ctrl.update_roulette_status(manual_item, "手動送信済み",
+                                                      sent_at=datetime.now())
+                else:
+                    manual_item.roulette_send_status = "手動送信済み"
+                    manual_item.roulette_sent_at     = datetime.now()
+                    self._update_rr_status_for_item(manual_item)
+                    self._update_filter_row_header(manual_item)
 
         try:
             import time as _time
@@ -579,6 +865,8 @@ class CommentWindowQt(QMainWindow):
         self._user_table.customContextMenuRequested.connect(
             self._user_context_menu
         )
+        # i110: WL/BL/対象列クリックでON/OFF切り替え
+        self._user_table.cellClicked.connect(self._on_user_cell_clicked)
         layout.addWidget(self._user_table)
         return widget
 
@@ -649,8 +937,21 @@ class CommentWindowQt(QMainWindow):
         self._rule_enabled_cb  = QCheckBox("有効")
         self._rule_name_edit   = QLineEdit()
         self._rule_name_edit.setPlaceholderText("ルール名")
+        # i111: テキスト入力とキーワード条件 (AND/OR) を同じ行に配置
         self._rule_text_edit   = QLineEdit()
-        self._rule_text_edit.setPlaceholderText("検索テキスト")
+        self._rule_text_edit.setPlaceholderText("キーワード（カンマ区切りで複数指定可）")
+        self._rule_kw_cond_combo = QComboBox()
+        self._rule_kw_cond_combo.addItems(["OR", "AND"])
+        self._rule_kw_cond_combo.setToolTip(
+            "OR: いずれかのキーワードを含む\n"
+            "AND: すべてのキーワードを含む"
+        )
+        _kw_widget = QWidget()
+        _kw_layout = QHBoxLayout(_kw_widget)
+        _kw_layout.setContentsMargins(0, 0, 0, 0)
+        _kw_layout.setSpacing(4)
+        _kw_layout.addWidget(self._rule_text_edit, 1)
+        _kw_layout.addWidget(self._rule_kw_cond_combo)
         self._rule_match_combo = QComboBox()
         self._rule_match_combo.addItems(MATCH_TYPES)
         self._rule_field_combo = QComboBox()
@@ -693,7 +994,7 @@ class CommentWindowQt(QMainWindow):
 
         form_layout.addRow("", self._rule_enabled_cb)
         form_layout.addRow("名前:", self._rule_name_edit)
-        form_layout.addRow("テキスト:", self._rule_text_edit)
+        form_layout.addRow("テキスト:", _kw_widget)
         form_layout.addRow("一致:", self._rule_match_combo)
         form_layout.addRow("対象:", self._rule_field_combo)
         form_layout.addRow("種別:", kind_w)
@@ -757,6 +1058,14 @@ class CommentWindowQt(QMainWindow):
             self.setWindowOpacity(alpha_pct / 100.0)
         else:
             self.setWindowOpacity(1.0)
+
+        # i113: 連携送信 ON/OFF チェックボックスを設定と同期（設定画面保存後の反映用）
+        if hasattr(self, "_rr_enabled_cb"):
+            _rr_cfg_sync = self._sm.get("roulette_integration", {})
+            _enabled_sync = bool(_rr_cfg_sync.get("enabled", False))
+            self._rr_enabled_cb.blockSignals(True)
+            self._rr_enabled_cb.setChecked(_enabled_sync)
+            self._rr_enabled_cb.blockSignals(False)
 
     def open(self):
         """ウィンドウを表示する。すでに開いていれば前面に出す。"""
@@ -847,6 +1156,12 @@ class CommentWindowQt(QMainWindow):
             header, body_text, author, bg_color, fg_color,
             profile_url=profile_url,
         )
+        # i113: 全メッセージビューの行インデックスを記録（RR状態更新用）
+        _seq_no = getattr(item, "seq_no", None)
+        if _seq_no is not None and not getattr(item, "is_system_message", False):
+            self._all_seq_to_abs_idx[_seq_no] = self._all_row_count
+            self._all_base_headers[_seq_no] = header
+        self._all_row_count += 1
 
         # タブ2: フィルタ一致（filter_match=True のみ）
         if getattr(item, "filter_match", False):
@@ -855,6 +1170,10 @@ class CommentWindowQt(QMainWindow):
                 header, body_text, author, bg_color, fg_color,
                 profile_url=profile_url,
             )
+            # i112: ベースヘッダーを記録（RRステータス更新時に参照）
+            seq_no = getattr(item, "seq_no", None)
+            if seq_no is not None:
+                self._filter_base_headers[seq_no] = header
             # フィルタタブのラベルに件数を反映
             self._tab_widget.setTabText(1, f"フィルタ({len(self._filter_buffer)})")
 
@@ -878,6 +1197,17 @@ class CommentWindowQt(QMainWindow):
             self.setWindowTitle(f"RCommentHub - {title}")
         else:
             self.setWindowTitle("RCommentHub - コメントビュー")
+        # i110: 受信中のみ切断ボタンを有効化
+        if hasattr(self, "_btn_disconnect"):
+            self._btn_disconnect.setEnabled(status == "receiving")
+
+    def _on_disconnect(self) -> None:
+        """i110: 切断ボタン押下 → コントローラに切断を要求する。"""
+        self._btn_disconnect.setEnabled(False)
+        try:
+            self._ctrl.disconnect()
+        except Exception as e:
+            _log.warning("_on_disconnect: %s", e)
 
     # ─── ユーザー一覧タブ ──────────────────────────────────────────────────────
 
@@ -944,7 +1274,49 @@ class CommentWindowQt(QMainWindow):
             rec.is_filter_target = not rec.is_filter_target
         else:
             return
+        self._save_user_flags()
         self._refresh_user_list()
+
+    def _on_user_cell_clicked(self, row: int, col: int) -> None:
+        """i110: WL(3) / BL(4) / 対象(5) 列クリックでフラグをトグルする。"""
+        if col not in (3, 4, 5):
+            return
+        name_item = self._user_table.item(row, 0)
+        if name_item is None:
+            return
+        channel_id = name_item.data(Qt.ItemDataRole.UserRole)
+        if not channel_id:
+            return
+        user_mgr = getattr(self._ctrl, "user_mgr", None)
+        if user_mgr is None:
+            return
+        rec = user_mgr.get(channel_id)
+        if rec is None:
+            return
+        if col == 3:
+            rec.is_whitelist = not rec.is_whitelist
+        elif col == 4:
+            rec.is_blacklist = not rec.is_blacklist
+        elif col == 5:
+            rec.is_filter_target = not rec.is_filter_target
+        self._save_user_flags()
+        self._refresh_user_list()
+
+    def _save_user_flags(self) -> None:
+        """i110: UserManager のホワイト/ブラック/対象フラグを設定に保存する。"""
+        user_mgr = getattr(self._ctrl, "user_mgr", None)
+        if user_mgr is None:
+            return
+        flags = {
+            rec.channel_id: {
+                "display_name":     rec.display_name,
+                "is_whitelist":     rec.is_whitelist,
+                "is_blacklist":     rec.is_blacklist,
+                "is_filter_target": rec.is_filter_target,
+            }
+            for rec in user_mgr.all_users()
+        }
+        self._sm.update({"user_flags": flags})
 
     # ─── フィルタ設定タブ ──────────────────────────────────────────────────────
 
@@ -1007,6 +1379,9 @@ class CommentWindowQt(QMainWindow):
         self._rule_enabled_cb.setChecked(rule.enabled)
         self._rule_name_edit.setText(rule.name)
         self._rule_text_edit.setText(rule.target_text)
+        # i111: キーワード条件 (AND/OR)
+        kw_cond = getattr(rule, 'keyword_condition', 'OR')
+        self._rule_kw_cond_combo.setCurrentIndex(1 if kw_cond == "AND" else 0)
         idx = MATCH_TYPES.index(rule.match_type) if rule.match_type in MATCH_TYPES else 0
         self._rule_match_combo.setCurrentIndex(idx)
         self._rule_field_combo.setCurrentIndex(0 if rule.target_field == "本文" else 1)
@@ -1030,10 +1405,12 @@ class CommentWindowQt(QMainWindow):
         rule = filter_mgr.get_rule(self._current_rule_id)
         if rule is None:
             return
-        rule.enabled          = self._rule_enabled_cb.isChecked()
-        rule.name             = self._rule_name_edit.text().strip()
-        rule.target_text      = self._rule_text_edit.text()
-        rule.match_type       = self._rule_match_combo.currentText()
+        rule.enabled           = self._rule_enabled_cb.isChecked()
+        rule.name              = self._rule_name_edit.text().strip()
+        rule.target_text       = self._rule_text_edit.text()
+        # i111: キーワード条件 (AND/OR)
+        rule.keyword_condition = "AND" if self._rule_kw_cond_combo.currentIndex() == 1 else "OR"
+        rule.match_type        = self._rule_match_combo.currentText()
         rule.target_field     = self._rule_field_combo.currentText()
         rule.kind_normal      = self._cb_kind_normal.isChecked()
         rule.kind_superchat   = self._cb_kind_sc.isChecked()
@@ -1098,7 +1475,8 @@ class CommentWindowQt(QMainWindow):
     def _set_filter_form_enabled(self, enabled: bool):
         """編集フォームの全コントロールの有効/無効を切り替える"""
         for w in (self._rule_enabled_cb, self._rule_name_edit,
-                  self._rule_text_edit, self._rule_match_combo,
+                  self._rule_text_edit, self._rule_kw_cond_combo,  # i111
+                  self._rule_match_combo,
                   self._rule_field_combo, self._cb_kind_normal,
                   self._cb_kind_sc, self._cb_kind_other,
                   self._cb_role_owner, self._cb_role_mod,

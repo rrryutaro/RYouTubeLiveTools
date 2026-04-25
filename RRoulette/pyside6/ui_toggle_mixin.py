@@ -94,6 +94,24 @@ class UIToggleMixin:
             if ctx and ctx.panel:
                 ctx.panel.set_transparent(enabled)
 
+    def _apply_panels_transparent(self, enabled: bool):
+        """ルーレット以外の全パネル背景の透過モードを切り替える（実験的）。
+
+        検証B 用: UI 項目以外のパネル余白・背景領域を透過させる。
+        window_transparent=True と組み合わせると、埋め込みパネルの背景が
+        デスクトップまで透過する。フローティングパネルは WA_TranslucentBackground
+        が未設定のため実質透過にならない点に注意。
+        """
+        for panel in (
+            getattr(self, '_item_panel',     None),
+            getattr(self, '_settings_panel', None),
+            getattr(self, '_manage_panel',   None),
+            getattr(self, '_ticket_panel',   None),
+            getattr(self, '_link_panel',     None),
+        ):
+            if panel is not None and hasattr(panel, 'set_transparent'):
+                panel.set_transparent(enabled)
+
     # ================================================================
     #  ルーレット以外非表示モード
     # ================================================================
@@ -127,6 +145,9 @@ class UIToggleMixin:
         _ticket = getattr(self, '_ticket_panel', None)
         if _ticket is not None:
             entries.append(("ticket", _ticket, _s.roulette_only_show_ticket_panel))
+        _link = getattr(self, '_link_panel', None)
+        if _link is not None:
+            entries.append(("link", _link, _s.roulette_only_show_link_panel))
         return entries
 
     def _apply_roulette_only_mode(self, enabled: bool, *, _preset_snapshot: dict | None = None):
@@ -273,6 +294,12 @@ class UIToggleMixin:
                     _p._roulette_only_active = False
                     _p._roulette_only_log_show = True
                     _p._refresh_log_overlay()
+
+        # i101: roulette_only_mode の ON/OFF 変更時にアイドルタイマーを再評価する。
+        # auto_hide_only_in_roulette_only_mode = ON の場合、
+        # roulette_only_mode = ON でタイマー起動、OFF でタイマー停止の切り替えが
+        # _reset_idle_timer() によって行われる。
+        self._reset_idle_timer()
 
     def _recalc_multi_roulette_only_bounds(self):
         """i335 以降: 動的ウィンドウ境界追従は無効。geometry_changed 接続先として残す。"""
@@ -641,8 +668,36 @@ class UIToggleMixin:
                 panel.show()
                 panel.raise_()
         self._all_hidden_saved_panels = {}
+        # i098: 再表示後スピン後に有効オプション — スピン待機フラグを立てる
+        if self._settings.auto_hide_after_spin_after_restore:
+            self._auto_hide_waiting_spin_after_restore = True
+        # i102: roulette_only_mode 中に最小化復帰した場合、DWM ボーダーレス属性を再適用する
+        # (Windows は minimize/restore で DWM 属性をリセットする場合がある)
+        if self._settings.roulette_only_mode:
+            self._dwm_set_borderless(int(self.winId()), True)
         # アイドルタイマー再開
         self._reset_idle_timer()
+
+    def _should_auto_hide_timer_run(self) -> bool:
+        """自動全面非表示タイマーを起動すべきか判定する。
+
+        i102: 複数ヶ所に散らばっていた条件判定を一箇所に集約する。
+        Returns:
+            True: タイマーを起動すべき / False: タイマーを停止すべき
+        """
+        if not self._settings.auto_hide_enabled:
+            return False
+        if self._settings.auto_hide_seconds <= 0:
+            return False
+        # ルーレット以外非表示時のみ有効: roulette_only_mode が OFF なら無効
+        if (self._settings.auto_hide_only_in_roulette_only_mode
+                and not self._settings.roulette_only_mode):
+            return False
+        # 再表示後スピン後に有効: スピン待機中はタイマーを起動しない
+        if (self._settings.auto_hide_after_spin_after_restore
+                and getattr(self, '_auto_hide_waiting_spin_after_restore', False)):
+            return False
+        return True
 
     def _reset_idle_timer(self):
         """アイドルタイマーをリセットする（ユーザー操作・復元時に呼ぶ）。
@@ -657,7 +712,7 @@ class UIToggleMixin:
         # フェード中なら中断して opacity を元に戻す
         if getattr(self, '_auto_hide_fading', False):
             self._cancel_auto_hide_fade()
-        if self._settings.auto_hide_enabled and self._settings.auto_hide_seconds > 0:
+        if self._should_auto_hide_timer_run():
             self._idle_timer.start(self._settings.auto_hide_seconds * 1000)
         else:
             self._idle_timer.stop()
@@ -761,6 +816,21 @@ class UIToggleMixin:
         """管理パネルの自動全面非表示秒数変更を受け取る。"""
         self._settings.auto_hide_seconds = max(1, seconds)
         self._reset_idle_timer()
+        self._save_config()
+
+    def _on_auto_hide_only_roulette_only_changed(self, enabled: bool):
+        """管理パネルのルーレット以外非表示時のみ有効オプション変更を受け取る (i098)。"""
+        self._settings.auto_hide_only_in_roulette_only_mode = enabled
+        self._reset_idle_timer()
+        self._save_config()
+
+    def _on_auto_hide_after_spin_restore_changed(self, enabled: bool):
+        """管理パネルの再表示後スピン後に有効オプション変更を受け取る (i098)。"""
+        self._settings.auto_hide_after_spin_after_restore = enabled
+        if not enabled:
+            # OFF にしたら待機フラグをクリアして通常に戻す
+            self._auto_hide_waiting_spin_after_restore = False
+            self._reset_idle_timer()
         self._save_config()
 
     def _toggle_settings_panel(self):

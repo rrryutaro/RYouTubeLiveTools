@@ -103,6 +103,7 @@ class WindowFrameMixin:
     # ================================================================
 
     def _edge_at(self, pos) -> int:
+        """i099: 8方向エッジ判定。i101: 上辺リサイズは一旦無効化（動作不安定のため）。"""
         w, h = self.width(), self.height()
         x, y = pos.x(), pos.y()
         edge = self._EDGE_NONE
@@ -110,15 +111,25 @@ class WindowFrameMixin:
             edge |= self._EDGE_RIGHT
         if y >= h - self._EDGE_SIZE:
             edge |= self._EDGE_BOTTOM
+        if x < self._EDGE_SIZE:
+            edge |= self._EDGE_LEFT
+        # i101: メインウィンドウの上辺リサイズは動作が異常なため一旦無効化する。
+        # パネル側の上方向リサイズは panel_input_filter が担当するため影響なし。
+        # if y < self._EDGE_SIZE:
+        #     edge |= self._EDGE_TOP
         return edge
 
     def _update_edge_cursor(self, pos):
+        """i099: 8方向カーソル更新。"""
         edge = self._edge_at(pos)
-        if edge == self._EDGE_CORNER:
+        _L, _R, _T, _B = self._EDGE_LEFT, self._EDGE_RIGHT, self._EDGE_TOP, self._EDGE_BOTTOM
+        if edge in (_R | _B, _L | _T):  # ↘ または ↖
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-        elif edge == self._EDGE_RIGHT:
+        elif edge in (_R | _T, _L | _B):  # ↗ または ↙
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif edge & (_R | _L):
             self.setCursor(Qt.CursorShape.SizeHorCursor)
-        elif edge == self._EDGE_BOTTOM:
+        elif edge & (_T | _B):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         else:
             self.unsetCursor()
@@ -157,6 +168,8 @@ class WindowFrameMixin:
             self._toggle_ticket_panel()
         elif event.key() == Qt.Key.Key_F5:
             self._toggle_sequential_spin_dialog()
+        elif event.key() == Qt.Key.Key_F6:
+            self._toggle_link_panel()
         # Space は _SpaceSpinFilter (QApplication レベル) が処理するため
         # ここには届かない。keyPressEvent での処理は廃止 (i344)。
         # --- 開発用ショートカット（アクション経由） ---
@@ -230,13 +243,29 @@ class WindowFrameMixin:
         if self._resizing_edge:
             delta = event.globalPosition().toPoint() - self._resize_start
             rect = self._resize_start_rect
+            new_x = rect.x()
+            new_y = rect.y()
             new_w = rect.width()
             new_h = rect.height()
+            min_w = self.minimumWidth() or 1
+            min_h = self.minimumHeight() or 1
             if self._resizing_edge & self._EDGE_RIGHT:
-                new_w = max(self.minimumWidth(), rect.width() + delta.x())
+                new_w = max(min_w, rect.width() + delta.x())
             if self._resizing_edge & self._EDGE_BOTTOM:
-                new_h = max(self.minimumHeight(), rect.height() + delta.y())
-            self.resize(new_w, new_h)
+                new_h = max(min_h, rect.height() + delta.y())
+            if self._resizing_edge & self._EDGE_LEFT:
+                raw_w = rect.width() - delta.x()
+                if raw_w < min_w:
+                    raw_w = min_w
+                new_x = rect.x() + (rect.width() - raw_w)
+                new_w = raw_w
+            if self._resizing_edge & self._EDGE_TOP:
+                raw_h = rect.height() - delta.y()
+                if raw_h < min_h:
+                    raw_h = min_h
+                new_y = rect.y() + (rect.height() - raw_h)
+                new_h = raw_h
+            self.setGeometry(new_x, new_y, new_w, new_h)
             event.accept()
             return
 

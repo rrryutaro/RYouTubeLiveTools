@@ -20,6 +20,7 @@ from PySide6.QtGui import QFont, QFontMetrics, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QMenu, QWidget,
     QApplication, QPushButton, QScrollArea, QListWidget, QListWidgetItem,
+    QAbstractScrollArea, QAbstractItemView, QGroupBox, QTabWidget,
 )
 
 from design_models import DesignSettings
@@ -414,13 +415,116 @@ class _PanelGrip(QWidget):
             self.raise_()
 
 
+# ================================================================
+#  パネル背景透過ヘルパー (i107)
+# ================================================================
+
+_TRANS_ORIG_SS  = "_transp_orig_ss"   # 元 stylesheet 保存キー
+_TRANS_ORIG_ALT = "_transp_orig_alt"  # 元 alternatingRowColors 保存キー
+
+
+def apply_transparent_to_widget_tree(root: QWidget, enabled: bool) -> None:
+    """root 配下のスクロール領域・アイテムビューに透過スタイルを適用/復元する。
+
+    enabled=True: QAbstractScrollArea (QTableWidget / QListWidget 等) の
+      背景・viewport・行背景を透過スタイルへ切り替える。
+      QScrollArea の場合は setWidget() で設定したコンテンツ widget も対象にする。
+    enabled=False: 保存済みの元スタイルを復元する。
+    """
+    for sa in root.findChildren(QAbstractScrollArea):
+        if enabled:
+            if sa.property(_TRANS_ORIG_SS) is None:
+                sa.setProperty(_TRANS_ORIG_SS, sa.styleSheet())
+            cls = type(sa).__name__
+            sa.setStyleSheet(
+                f"{cls} {{ background: transparent; }}"
+                f"{cls}::item {{ background: transparent; }}"
+                f"{cls}::item:alternate {{ background: transparent; }}"
+                f"QHeaderView::section {{ background: transparent; "
+                f"  border-bottom: 1px solid rgba(128,128,128,0.4); }}"
+                f"QScrollBar:vertical {{ background: transparent; }}"
+                f"QScrollBar:horizontal {{ background: transparent; }}"
+            )
+            if isinstance(sa, QAbstractItemView):
+                if sa.property(_TRANS_ORIG_ALT) is None:
+                    sa.setProperty(_TRANS_ORIG_ALT, sa.alternatingRowColors())
+                sa.setAlternatingRowColors(False)
+            vp = sa.viewport()
+            if vp and vp.property(_TRANS_ORIG_SS) is None:
+                vp.setProperty(_TRANS_ORIG_SS, vp.styleSheet())
+                vp.setStyleSheet("background: transparent;")
+            # i108: QScrollArea の場合、setWidget() で設定したコンテンツ widget も透過する。
+            # ManagePanel の body / SettingsPanel の _content / ItemPanel の _rows_content
+            # などの中間コンテナが solid background を保持したままになる問題を解消する。
+            if isinstance(sa, QScrollArea):
+                cw = sa.widget()
+                if cw is not None and cw.property(_TRANS_ORIG_SS) is None:
+                    cw.setProperty(_TRANS_ORIG_SS, cw.styleSheet())
+                    cw.setStyleSheet("background-color: transparent;")
+        else:
+            orig = sa.property(_TRANS_ORIG_SS)
+            if orig is not None:
+                sa.setStyleSheet(orig)
+                sa.setProperty(_TRANS_ORIG_SS, None)
+            if isinstance(sa, QAbstractItemView):
+                orig_alt = sa.property(_TRANS_ORIG_ALT)
+                if orig_alt is not None:
+                    sa.setAlternatingRowColors(bool(orig_alt))
+                    sa.setProperty(_TRANS_ORIG_ALT, None)
+            vp = sa.viewport()
+            if vp:
+                orig_vp = vp.property(_TRANS_ORIG_SS)
+                if orig_vp is not None:
+                    vp.setStyleSheet(orig_vp)
+                    vp.setProperty(_TRANS_ORIG_SS, None)
+            # i108: QScrollArea コンテンツ widget を復元する
+            if isinstance(sa, QScrollArea):
+                cw = sa.widget()
+                if cw is not None:
+                    orig_cw = cw.property(_TRANS_ORIG_SS)
+                    if orig_cw is not None:
+                        cw.setStyleSheet(orig_cw)
+                        cw.setProperty(_TRANS_ORIG_SS, None)
+
+    for gb in root.findChildren(QGroupBox):
+        if enabled:
+            if gb.property(_TRANS_ORIG_SS) is None:
+                gb.setProperty(_TRANS_ORIG_SS, gb.styleSheet())
+            gb.setStyleSheet("QGroupBox { background: transparent; }")
+        else:
+            orig = gb.property(_TRANS_ORIG_SS)
+            if orig is not None:
+                gb.setStyleSheet(orig)
+                gb.setProperty(_TRANS_ORIG_SS, None)
+
+    # i108: QTabWidget::pane はデフォルトで solid background を持つため透過対象に追加する。
+    # TicketPanel など QTabWidget を使うパネルでタブペイン背景を透過する。
+    for tw in root.findChildren(QTabWidget):
+        if enabled:
+            orig_ss = tw.property(_TRANS_ORIG_SS)
+            if orig_ss is None:
+                orig_ss = tw.styleSheet()
+                tw.setProperty(_TRANS_ORIG_SS, orig_ss)
+            # 保存済みの元スタイルに透過ルールを上乗せ（タブバーのスタイルは維持）
+            tw.setStyleSheet(
+                orig_ss
+                + " QTabWidget::pane { background: transparent; }"
+            )
+        else:
+            orig = tw.property(_TRANS_ORIG_SS)
+            if orig is not None:
+                tw.setStyleSheet(orig)
+                tw.setProperty(_TRANS_ORIG_SS, None)
+
+
 def install_panel_context_menu(panel: QWidget, drag_bar: QWidget,
                                 title: str = "パネル設定",
                                 on_drag_bar_changed=None):
     """パネル用の右クリックコンテキストメニューをインストールする。
 
-    含まれるアイテム:
-      - 「移動バーを表示」チェック (drag_bar.setVisible)
+    メインウィンドウが _show_context_menu_for_panel を持つ場合、
+    共通アプリメニュー（パネル表示・透過設定・終了等）を表示する。
+    持たない場合は移動バートグルのみのフォールバックメニューを表示する。
 
     Args:
         on_drag_bar_changed: 移動バーの表示状態が変化したときに呼ばれる
@@ -429,10 +533,16 @@ def install_panel_context_menu(panel: QWidget, drag_bar: QWidget,
     panel.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
     def _show_menu(pos):
+        global_pos = panel.mapToGlobal(pos)
+        main_win = panel.window()
+        if hasattr(main_win, '_show_context_menu_for_panel'):
+            main_win._show_context_menu_for_panel(global_pos, drag_bar, on_drag_bar_changed)
+            return
+        # フォールバック: 移動バートグルのみ
         menu = QMenu(panel)
         menu.setStyleSheet(
             "QMenu { padding: 2px; }"
-            "QMenu::item { padding: 4px 24px 4px 20px; }"  # G: 右側余白
+            "QMenu::item { padding: 4px 24px 4px 20px; }"
         )
         toggle_text = (
             "✔ 移動バーを表示"
@@ -448,7 +558,6 @@ def install_panel_context_menu(panel: QWidget, drag_bar: QWidget,
                 on_drag_bar_changed(new_vis)
 
         action.triggered.connect(_toggle)
-        global_pos = panel.mapToGlobal(pos)
         menu.exec(global_pos)
 
     panel.customContextMenuRequested.connect(_show_menu)

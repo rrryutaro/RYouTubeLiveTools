@@ -90,6 +90,19 @@ class _SectionsMixin:
         )
         bar_layout.addWidget(self._roulette_transparent_cb)
 
+        # パネル背景透過（試験）
+        self._panels_transparent_cb = QCheckBox("パネル透過（試験）")
+        self._panels_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._panels_transparent_cb.setStyleSheet(f"color: {design.text};")
+        self._panels_transparent_cb.setChecked(False)
+        self._panels_transparent_cb.setToolTip(
+            "ルーレット以外の全パネル背景を透過する（試験的機能）"
+        )
+        self._panels_transparent_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("panels_transparent", v)
+        )
+        bar_layout.addWidget(self._panels_transparent_cb)
+
         # 常に最前面
         self._aot_cb = QCheckBox("最前面")
         self._aot_cb.setFont(QFont("Meiryo", 8))

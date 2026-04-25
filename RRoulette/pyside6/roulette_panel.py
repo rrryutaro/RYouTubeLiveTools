@@ -609,7 +609,10 @@ class RoulettePanel(QFrame):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._is_active:
+        # アクティブ外枠線: 透過モード中は描画しない。
+        # 透過モードで描画すると、ルーレット外周より前面に枠が残り
+        # 複数ルーレット重ね時の見た目を壊す。
+        if self._is_active and not self._transparent:
             painter = QPainter(self)
             pen = QPen(QColor(79, 195, 247))  # アクティブカラー（水色）
             pen.setWidth(3)
@@ -619,16 +622,27 @@ class RoulettePanel(QFrame):
     def _apply_panel_background(self):
         """現在の透過状態に合わせてパネル背景の StyleSheet を設定する。"""
         if self._transparent:
-            # QFrame フレーム描画を無効化し、セレクターなし（インライン相当）で
-            # 透明スタイルを設定する。setFrameStyle(NoFrame) は stylesheet の
-            # border: none より確実にフレーム枠を消す。
+            # 透過モード: パネルが一切背景を描画しないようにする。
+            # これにより backing store 上の下層ルーレットのピクセルが保持され、
+            # 前面ルーレットの透明領域（穴）から背面ルーレットが透けて見える。
+            #
+            # - setFrameStyle(NoFrame): QFrame フレーム枠の描画を無効化
+            # - setStyleSheet(""): stylesheet engine による背景塗りを除去
+            # - setAutoFillBackground(False): パレット背景の自動塗りを無効化
+            # - WA_NoSystemBackground: システム背景塗りを無効化
+            #
+            # ※ background-color: transparent / border: none; を stylesheet に
+            #   設定すると stylesheet engine が palette 色で背景を塗り直し、
+            #   下層ルーレットのピクセルを上書きしてしまうため使用しない。
             self.setFrameStyle(QFrame.Shape.NoFrame)
-            self.setStyleSheet("background-color: transparent; border: none;")
+            self.setStyleSheet("")
+            self.setAutoFillBackground(False)
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         else:
             self.setStyleSheet(
                 f"QFrame {{ background-color: {self._design.bg}; }}"
             )
+            self.setAutoFillBackground(False)
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
 
     # ================================================================

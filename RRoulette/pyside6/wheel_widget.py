@@ -537,15 +537,10 @@ class WheelWidget(QWidget):
 
         d = self._design
         if self._transparent:
-            # 透過モード: CompositionMode_Source で実際にピクセルを α=0 にする
-            # (default の SourceOver では透明色を上書きしても下のピクセルが
-            # 残るため、確実にクリアするには Source モードが必要)
-            painter.save()
-            painter.setCompositionMode(
-                QPainter.CompositionMode.CompositionMode_Source
-            )
-            painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
-            painter.restore()
+            # 透過モード: 背景クリアは centralWidget の Qt ペイントパイプラインに委ねる。
+            # ここで CompositionMode_Source + fillRect(alpha=0) を行うと、
+            # 複数ルーレット重ね時に下層ルーレットの描画内容まで消してしまうため行わない。
+            pass
         else:
             painter.fillRect(self.rect(), QColor(d.bg))
 
@@ -579,27 +574,54 @@ class WheelWidget(QWidget):
         # --- セグメント描画 ---
         bbox = QRectF(cx - r, cy - r, r * 2, r * 2)
 
+        # i108: ドーナツ穴が有効な場合、先に穴パスを計算する。
+        # 穴領域に drawPie → CompositionMode_Clear で「透明に抜く」方式は廃止。
+        # 外側扇形から内円を差し引いたドーナツ扇形を最初から描画し、
+        # 穴部分には最初からピクセルを置かない方式とする。
+        # 透過モード・不透明モードともに同じ描画経路を使う。
+        hole_path: "QPainterPath | None" = None
+        hole_rect: "QRectF | None" = None
+        if self._donut_hole:
+            _hole_r = DONUT_DRAW_RADIUS
+            hole_rect = QRectF(cx - _hole_r, cy - _hole_r,
+                               _hole_r * 2, _hole_r * 2)
+            hole_path = QPainterPath()
+            hole_path.addEllipse(hole_rect)
+
         for i, seg in enumerate(segs):
             seg_start = 90.0 - self._angle + seg.start_angle
             color = QColor(d.segment.color_for(seg.item_index))
 
-            start_16 = int(seg_start * 16)
-            arc_16 = int(seg.arc * 16)
-
             painter.setPen(QPen(QColor(d.wheel.segment_outline_color),
                                 d.wheel.segment_outline_width))
             painter.setBrush(QBrush(color))
-            painter.drawPie(bbox, start_16, arc_16)
+
+            if hole_path is not None:
+                # ドーナツ穴モード: 外側パイパスから内円を除外したパスを描画
+                outer_path = QPainterPath()
+                outer_path.moveTo(cx, cy)
+                outer_path.arcTo(bbox, seg_start, seg.arc)
+                outer_path.closeSubpath()
+                donut_seg = outer_path.subtracted(hole_path)
+                painter.drawPath(donut_seg)
+            else:
+                start_16 = int(seg_start * 16)
+                arc_16 = int(seg.arc * 16)
+                painter.drawPie(bbox, start_16, arc_16)
 
             # --- テキスト描画（layout_search エンジン使用）---
             if not cache_valid:
                 continue
 
-            # i339: テキストをセクター形状にクリップして隣接セクターへのはみ出しを防ぐ
-            clip_path = QPainterPath()
-            clip_path.moveTo(cx, cy)
-            clip_path.arcTo(bbox, seg_start, seg.arc)
-            clip_path.closeSubpath()
+            if hole_path is not None:
+                # ドーナツ穴モード: ドーナツセクター形状にクリップ
+                clip_path = donut_seg
+            else:
+                # i339: テキストをセクター形状にクリップして隣接セクターへのはみ出しを防ぐ
+                clip_path = QPainterPath()
+                clip_path.moveTo(cx, cy)
+                clip_path.arcTo(bbox, seg_start, seg.arc)
+                clip_path.closeSubpath()
             painter.setClipPath(clip_path)
             self._draw_sector_text(painter, i, seg_start, seg.arc, cx, cy)
             painter.setClipping(False)
@@ -609,42 +631,18 @@ class WheelWidget(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(bbox)
 
-        # --- ドーナツ穴 ---
-        # i276: ルーレットパネル透過設定 (= self._transparent) と完全連動。
-        # 透過 ON: 中央穴を α=0 にクリア (CompositionMode_Clear)
-        # 透過 OFF: 中央穴を背景色 d.bg で塗りつぶす (v0.4.4 と同じ挙動)
-        if self._donut_hole:
-            hole_r = DONUT_DRAW_RADIUS
-            hole_rect = QRectF(cx - hole_r, cy - hole_r,
-                               hole_r * 2, hole_r * 2)
-            if self._transparent:
-                # 透過モード: 中央穴を実ピクセルとして消す
-                painter.save()
-                painter.setCompositionMode(
-                    QPainter.CompositionMode.CompositionMode_Clear
-                )
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(0, 0, 0, 0)))
-                painter.drawEllipse(hole_rect)
-                painter.restore()
-                # 縁取りは通常合成で別途
-                painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
-                                    d.wheel.hole_outline_width))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(hole_rect)
-            else:
-                # 不透明モード: 背景色で穴を塗りつぶす (CompositionMode_Source
-                # を明示し、上の段で transparent モードから戻ってきた直後でも
-                # 確実に bg ピクセルが書き込まれるようにする)
-                painter.save()
-                painter.setCompositionMode(
-                    QPainter.CompositionMode.CompositionMode_Source
-                )
-                painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
-                                    d.wheel.hole_outline_width))
-                painter.setBrush(QBrush(QColor(d.bg)))
-                painter.drawEllipse(hole_rect)
-                painter.restore()
+        # --- ドーナツ穴 内周縁取り ---
+        # i108: セグメントをドーナツ形状で最初から描画するため、
+        # CompositionMode_Clear による中心クリアは不要になった。
+        # 穴中心部はセグメント非描画領域として自然に残る（透過/不透明どちらも）。
+        # 透過 ON: 穴から背面ルーレットのピクセルがそのまま見える。
+        # 透過 OFF: paintEvent 冒頭の fillRect(bg) が穴領域を bg 色で埋める。
+        # ここでは内周縁取り線のみ描画する。
+        if hole_rect is not None:
+            painter.setPen(QPen(QColor(d.wheel.hole_outline_color),
+                                d.wheel.hole_outline_width))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(hole_rect)
 
         # --- i069: ポインター操作モード 可動範囲（ポインター背面に描く） ---
         if self._pm_base_angle is not None:

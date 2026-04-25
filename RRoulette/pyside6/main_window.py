@@ -43,6 +43,7 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QRect
 from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
 
 import os
+from collections import deque
 
 from app_constants import SIZE_PROFILES, MIN_W, MIN_H, VERSION
 from design_models import (
@@ -70,6 +71,8 @@ from settings_panel import SettingsPanel
 from item_panel import ItemPanel, _ItemPanelAPI
 from manage_panel import ManagePanel
 from ticket_panel import TicketPanel
+from link_panel import LinkPanel
+from external_listener import ExternalListener
 from panel_widgets import _PanelGrip
 from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
 from sound_manager import SoundManager
@@ -96,6 +99,11 @@ from save_load_mixin import SaveLoadMixin
 from accessor_helper_mixin import AccessorHelperMixin
 from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar, _IdleResetFilter
 
+import logging
+_log = logging.getLogger(__name__)
+
+_LINK_SPIN_QUEUE_MAX = 10  # i114: 連携スピンキューの最大件数
+
 
 
 class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, SequentialSpinMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
@@ -111,6 +119,8 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
     _EDGE_RIGHT = 1
     _EDGE_BOTTOM = 2
     _EDGE_CORNER = 3  # right + bottom
+    _EDGE_LEFT = 4   # i099: 左エッジ
+    _EDGE_TOP = 8    # i099: 上エッジ
 
     # 初回起動時の横長デフォルトサイズ（ルーレット正方形 + 項目パネル）
     # 高さ 700px → ルーレット正方形領域 = 696×696 (= 700 - 4px margin)
@@ -138,6 +148,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._init_item_panel(central)
         self._init_manage_panel(central)
         self._init_ticket_panel(central)
+        self._init_link_panel(central)
         self._connect_panel_geometry_signals()
         self._init_input_filters()
         self._init_runtime_state(central)
@@ -426,11 +437,19 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             roulette_only_show_settings_panel=self._settings.roulette_only_show_settings_panel,
             roulette_only_show_execution_panel=self._settings.roulette_only_show_execution_panel,
             roulette_only_show_ticket_panel=self._settings.roulette_only_show_ticket_panel,
+            link_visible=self._settings.link_panel_visible,
+            roulette_only_show_link_panel=self._settings.roulette_only_show_link_panel,
             manage_panel_float=self._settings.manage_panel_float,
             auto_hide_enabled=self._settings.auto_hide_enabled,
             auto_hide_seconds=self._settings.auto_hide_seconds,
             auto_hide_fade_enabled=self._settings.auto_hide_fade_enabled,
             auto_hide_fade_seconds=self._settings.auto_hide_fade_seconds,
+            auto_hide_only_in_roulette_only_mode=self._settings.auto_hide_only_in_roulette_only_mode,
+            auto_hide_after_spin_after_restore=self._settings.auto_hide_after_spin_after_restore,
+            link_integration_enabled=self._settings.link_integration_enabled,
+            link_integration_port=self._settings.link_integration_port,
+            link_integration_max_hold=self._settings.link_integration_max_hold,
+            link_panel_show_time=self._settings.link_panel_show_time,
             parent=central,
         )
 
@@ -485,6 +504,201 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
 
     def _on_ticket_panel_drag_bar_changed(self, vis: bool):
         self._settings.ticket_panel_drag_bar_visible = vis
+        self._save_config()
+
+    def _init_link_panel(self, central: QWidget):
+        """LinkPanel の生成・初期化・外部連携リスナー起動 (Phase 1/2)。"""
+        self._link_panel = LinkPanel(
+            self._design,
+            max_hold=self._settings.link_integration_max_hold,
+            show_time=self._settings.link_panel_show_time,
+            auto_analyze=self._settings.link_auto_analyze,
+            auto_execute=self._settings.link_auto_execute,
+            on_drag_bar_changed=lambda vis: self._on_link_panel_drag_bar_changed(vis),
+            parent=central,
+        )
+        self._link_panel.hide()
+        if not self._settings.link_panel_drag_bar_visible:
+            self._link_panel._drag_bar.setVisible(False)
+        self._panels.append(self._link_panel)
+
+        # i109: シグナル接続
+        self._link_panel.spin_requested.connect(self._on_link_spin_requested)
+        self._link_panel.ticket_add_requested.connect(self._on_link_ticket_add_requested)
+        self._link_panel.auto_analyze_changed.connect(self._on_link_auto_analyze_changed)
+        self._link_panel.auto_execute_changed.connect(self._on_link_auto_execute_changed)
+        # i114: 連携スピンキュー
+        self._link_spin_queue: deque[int] = deque()
+        self._link_panel.queue_clear_requested.connect(self._on_link_queue_clear)
+
+        # 外部連携リスナー
+        self._external_listener = ExternalListener(self)
+        self._external_listener.message_received.connect(self._on_link_message_received)
+        self._external_listener.status_changed.connect(self._on_link_listener_status_changed)
+        if self._settings.link_integration_enabled:
+            ok = self._external_listener.start(self._settings.link_integration_port)
+            if not ok:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "ExternalListener: failed to start on port %d",
+                    self._settings.link_integration_port,
+                )
+
+    def _apply_link_listener(self):
+        """設定変更時: リスナーを停止→必要なら再起動する。"""
+        import logging
+        _log = logging.getLogger(__name__)
+        if self._external_listener.is_running:
+            self._external_listener.stop()
+        if self._settings.link_integration_enabled:
+            ok = self._external_listener.start(self._settings.link_integration_port)
+            if not ok:
+                _log.warning(
+                    "ExternalListener: failed to restart on port %d",
+                    self._settings.link_integration_port,
+                )
+
+    def _on_link_listener_status_changed(self, status: str):
+        """リスナー状態変化を管理パネルの状態ラベルへ反映する (i099)。"""
+        _mp = getattr(self, "_manage_panel", None)
+        if _mp is not None:
+            _mp.set_link_listener_status(status)
+
+    def _on_manage_link_enabled_changed(self, enabled: bool):
+        """ManagePanel から: 連携受信 ON/OFF を切り替える (i099)。"""
+        self._settings.link_integration_enabled = enabled
+        self._apply_link_listener()
+        self._save_config()
+
+    def _on_manage_link_port_changed(self, port: int):
+        """ManagePanel から: 連携受信ポートを変更する (i099)。"""
+        self._settings.link_integration_port = port
+        self._apply_link_listener()
+        self._save_config()
+
+    def _on_manage_link_max_hold_changed(self, max_hold: int):
+        """ManagePanel から: 連携メッセージ保持件数を変更する (i099)。"""
+        self._settings.link_integration_max_hold = max_hold
+        _lp = getattr(self, "_link_panel", None)
+        if _lp is not None:
+            _lp.set_max_hold(max_hold)
+        self._save_config()
+
+    def _on_manage_link_show_time_changed(self, show: bool):
+        """ManagePanel から: 連携パネル時刻列表示を切り替える (i100)。"""
+        self._settings.link_panel_show_time = show
+        _lp = getattr(self, "_link_panel", None)
+        if _lp is not None:
+            _lp.set_show_time(show)
+        self._save_config()
+
+    def _on_link_panel_drag_bar_changed(self, vis: bool):
+        self._settings.link_panel_drag_bar_visible = vis
+        self._save_config()
+
+    def _on_link_message_received(self, data: dict):
+        """外部連携メッセージを受信したとき link_panel へ追加する。"""
+        self._link_panel.add_message(data)
+        # link_panel が非表示なら表示する（オプション: 非表示のまま蓄積）
+        # Phase 1: 表示状態に関わらず蓄積のみ行う（表示は手動）
+
+    # ── i109: 連携パネル Phase 2 シグナルハンドラ ───────────────────────
+
+    def _link_spin_is_busy(self) -> bool:
+        """アクティブルーレットがスピン中かどうかを返す (i114)。"""
+        mgr = getattr(self, '_manager', None)
+        ctx = mgr.active if mgr else None
+        sc  = getattr(getattr(ctx, 'panel', None), 'spin_ctrl', None)
+        return bool(sc and sc.is_spinning)
+
+    def _on_link_spin_requested(self, row: int) -> None:
+        """連携パネルから spin 要求を受け取る (i109/i114)。キューで管理する。"""
+        panel = self._link_panel
+        if not self._link_spin_is_busy():
+            # スピン中でなければ即実行
+            self._start_spin()
+            panel.set_row_status(row, "実行済")
+            return
+        # スピン中: キュー追加
+        if len(self._link_spin_queue) >= _LINK_SPIN_QUEUE_MAX:
+            panel.set_row_status(row, "未実行: キュー満杯")
+            _log.warning("[MainWindow] link spin queue full, dropping row=%d", row)
+            return
+        self._link_spin_queue.append(row)
+        panel.set_row_status(row, "キュー待ち")
+        panel.update_queue_display(len(self._link_spin_queue))
+        _log.info("[MainWindow] link spin queued row=%d, queue_len=%d",
+                  row, len(self._link_spin_queue))
+
+    def _process_link_spin_queue(self) -> None:
+        """スピン完了後に連携スピンキューの次の要求を処理する (i114)。"""
+        if not self._link_spin_queue:
+            return
+        if self._link_spin_is_busy():
+            return
+        row = self._link_spin_queue.popleft()
+        self._link_panel.update_queue_display(len(self._link_spin_queue))
+        self._start_spin()
+        self._link_panel.set_row_status(row, "実行済")
+        _log.info("[MainWindow] link spin queue processed row=%d, remaining=%d",
+                  row, len(self._link_spin_queue))
+
+    def _on_link_queue_clear(self) -> None:
+        """連携スピンキューをクリアする (i114)。"""
+        count = len(self._link_spin_queue)
+        self._link_spin_queue.clear()
+        self._link_panel.update_queue_display(0)
+        _log.info("[MainWindow] link spin queue cleared (%d items)", count)
+
+    def _on_link_ticket_add_requested(
+        self,
+        name: str,
+        issuer: str,
+        effect: str,
+        qty: int,
+        effect_type: str,
+        effect_params: dict,
+    ) -> None:
+        """連携パネルからチケット追加要求を受け取る (i109)。"""
+        _tp = getattr(self, "_ticket_panel", None)
+        if _tp is not None:
+            _tp.add_ticket_from_link(
+                name, issuer, effect, qty,
+                effect_type=effect_type,
+                effect_params=effect_params,
+            )
+
+    def _on_link_auto_analyze_changed(self, enabled: bool) -> None:
+        """連携パネルの自動解析 ON/OFF 変更を設定に保存する (i109)。"""
+        self._settings.link_auto_analyze = enabled
+        self._save_config()
+
+    def _on_link_auto_execute_changed(self, enabled: bool) -> None:
+        """連携パネルの自動実行 ON/OFF 変更を設定に保存する (i109)。"""
+        self._settings.link_auto_execute = enabled
+        self._save_config()
+
+    def _toggle_link_panel(self):
+        """F6: 連携パネルの表示 / 非表示。"""
+        new_visible = not self._link_panel.isVisible()
+        if new_visible:
+            self._link_panel.show()
+            self._link_panel.raise_()
+        else:
+            self._link_panel.hide()
+        self._settings.link_panel_visible = new_visible
+        self._sync_manage_panel_checks()
+        self._save_config()
+
+    def _on_manage_link_toggled(self, visible: bool):
+        """ManagePanel から: 連携パネルの表示状態を切り替える。"""
+        if visible:
+            self._link_panel.show()
+            self._link_panel.raise_()
+        else:
+            self._link_panel.hide()
+        self._settings.link_panel_visible = visible
+        self._sync_manage_panel_checks()
         self._save_config()
 
     def _on_ticket_data_changed(self):
@@ -1102,6 +1316,12 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.auto_hide_fade_seconds_changed.connect(  # i487
             self._on_auto_hide_fade_seconds_changed
         )
+        self._manage_panel.auto_hide_only_roulette_only_changed.connect(  # i098
+            self._on_auto_hide_only_roulette_only_changed
+        )
+        self._manage_panel.auto_hide_after_spin_restore_changed.connect(  # i098
+            self._on_auto_hide_after_spin_restore_changed
+        )
         self._manage_panel.roulette_rename_requested.connect(  # i047
             self._on_manage_roulette_rename
         )
@@ -1110,6 +1330,21 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         )
         self._manage_panel.seq_panel_toggled.connect(  # i051
             self._on_manage_seq_toggled
+        )
+        self._manage_panel.link_panel_toggled.connect(  # Phase1
+            self._on_manage_link_toggled
+        )
+        self._manage_panel.link_enabled_changed.connect(  # i099
+            self._on_manage_link_enabled_changed
+        )
+        self._manage_panel.link_port_changed.connect(  # i099
+            self._on_manage_link_port_changed
+        )
+        self._manage_panel.link_max_hold_changed.connect(  # i099
+            self._on_manage_link_max_hold_changed
+        )
+        self._manage_panel.link_show_time_changed.connect(  # i100
+            self._on_manage_link_show_time_changed
         )
 
     def _on_manage_ticket_toggled(self, visible: bool):
@@ -1154,6 +1389,11 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.geometry_changed.connect(self._panel_save_timer.start)
         # ticket panel
         self._ticket_panel.geometry_changed.connect(self._panel_save_timer.start)
+        # link panel (i099)
+        self._link_panel.geometry_changed.connect(
+            lambda: self._bring_panel_to_front(self._link_panel)
+        )
+        self._link_panel.geometry_changed.connect(self._panel_save_timer.start)
 
     def _init_input_filters(self):
         """PanelInputFilter / SpaceSpinFilter を QApplication にインストール。"""
@@ -1170,6 +1410,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
                 self._item_panel,
                 self._manage_panel,
                 self._ticket_panel,
+                self._link_panel,  # i099: 連携パネルを追加
             ],
             focus_only_panels=[],
         )

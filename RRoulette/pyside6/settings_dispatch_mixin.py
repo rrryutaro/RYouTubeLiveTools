@@ -144,6 +144,8 @@ class SettingsDispatchMixin:
             self._apply_window_transparent(value)
         elif key == "roulette_transparent":
             self._apply_roulette_transparent(value)
+        elif key == "panels_transparent":
+            self._apply_panels_transparent(value)
         elif key == "always_on_top":
             if value != self._settings.always_on_top:
                 self._toggle_always_on_top()
@@ -188,7 +190,6 @@ class SettingsDispatchMixin:
                     self._os_theme_timer.start()
             else:
                 self._os_theme_timer.stop()
-
         # i346: 全ルーレット一括適用（active パネルへの適用は上記で完了済み）
         if getattr(self, "_apply_to_all", False):
             self._apply_setting_to_all_panels(key, value)

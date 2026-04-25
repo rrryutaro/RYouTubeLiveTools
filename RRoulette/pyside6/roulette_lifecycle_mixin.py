@@ -459,6 +459,7 @@ class RouletteLifecycleMixin:
             "settings_panel":    "roulette_only_show_settings_panel",
             "execution_panel":   "roulette_only_show_execution_panel",
             "ticket_panel":      "roulette_only_show_ticket_panel",
+            "link_panel":        "roulette_only_show_link_panel",
         }
         attr = _key_map.get(key)
         if not attr:
@@ -493,6 +494,14 @@ class RouletteLifecycleMixin:
                     _tp.show()
                 else:
                     _tp.hide()
+        elif key == "link_panel":
+            # roulette_only 中に設定変更: 連携パネルの表示/非表示を即時反映
+            _lp = getattr(self, '_link_panel', None)
+            if _lp is not None:
+                if value:
+                    _lp.show()
+                else:
+                    _lp.hide()
 
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。
@@ -502,10 +511,11 @@ class RouletteLifecycleMixin:
         """
         # 通常パネルを先に、pinned パネルを後に raise する
         # （後に raise したものが上に来る）
-        normal = [p for p in self._panels if p.isVisible() and not p.pinned_front and p is not panel]
-        pinned = [p for p in self._panels if p.isVisible() and p.pinned_front and p is not panel]
+        # i100: getattr で pinned_front 未定義パネルへの AttributeError を防ぐ
+        normal = [p for p in self._panels if p.isVisible() and not getattr(p, "pinned_front", False) and p is not panel]
+        pinned = [p for p in self._panels if p.isVisible() and getattr(p, "pinned_front", False) and p is not panel]
 
-        if panel.pinned_front:
+        if getattr(panel, "pinned_front", False):
             for p in normal:
                 p.raise_()
             for p in pinned:

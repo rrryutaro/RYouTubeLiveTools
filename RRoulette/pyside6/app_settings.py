@@ -129,6 +129,8 @@ class AppSettings:
     auto_hide_seconds: int = 10      # 自動非表示までの秒数 (デフォルト: 10秒)
     auto_hide_fade_enabled: bool = True  # 自動非表示時フェードアウト ON/OFF (デフォルト: ON)
     auto_hide_fade_seconds: float = 0.6  # フェードアウト時間（秒, デフォルト: 0.6秒）
+    auto_hide_only_in_roulette_only_mode: bool = False  # ルーレット以外非表示時のみ有効 (i098)
+    auto_hide_after_spin_after_restore: bool = False    # 再表示後、次スピン後に有効 (i098)
 
     # ============================================================
     #  window_state — ウィンドウ / パネル配置状態
@@ -194,6 +196,25 @@ class AppSettings:
     ticket_panel_height: int | None = None
     ticket_panel_visible: bool = False
     ticket_panel_drag_bar_visible: bool = True
+
+    # 連携メッセージパネル (Phase 1)
+    link_panel_x: int | None = None
+    link_panel_y: int | None = None
+    link_panel_width: int | None = None
+    link_panel_height: int | None = None
+    link_panel_visible: bool = False
+    link_panel_drag_bar_visible: bool = True
+    roulette_only_show_link_panel: bool = False  # ルーレット以外非表示時に表示するか
+
+    # 外部連携設定 (Phase 1)
+    link_integration_enabled: bool = False  # 連携受信サーバ有効/無効
+    link_integration_port: int = 12345      # 受信ポート番号
+    link_integration_max_hold: int = 200    # 連携メッセージ最大保持件数
+    link_panel_show_time: bool = False      # 連携パネル時刻列表示
+
+    # 外部連携設定 (Phase 2 — i109)
+    link_auto_analyze: bool = True          # 受信メッセージを自動解析
+    link_auto_execute: bool = False         # 解析結果を自動実行（初期OFF）
 
     # 設定パネル折りたたみ状態 (セクション名 → True=折りたたみ)
     collapsed_sections: dict = field(default_factory=dict)
@@ -315,6 +336,8 @@ class AppSettings:
             auto_hide_seconds=config.get("auto_hide_seconds", 10),
             auto_hide_fade_enabled=config.get("auto_hide_fade_enabled", True),
             auto_hide_fade_seconds=float(config.get("auto_hide_fade_seconds", 0.6)),
+            auto_hide_only_in_roulette_only_mode=config.get("auto_hide_only_in_roulette_only_mode", False),
+            auto_hide_after_spin_after_restore=config.get("auto_hide_after_spin_after_restore", False),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
@@ -336,6 +359,19 @@ class AppSettings:
             ticket_panel_height=config.get("ticket_panel_height"),
             ticket_panel_visible=config.get("ticket_panel_visible", False),
             ticket_panel_drag_bar_visible=config.get("ticket_panel_drag_bar_visible", True),
+            link_panel_x=config.get("link_panel_x"),
+            link_panel_y=config.get("link_panel_y"),
+            link_panel_width=config.get("link_panel_width"),
+            link_panel_height=config.get("link_panel_height"),
+            link_panel_visible=config.get("link_panel_visible", False),
+            link_panel_drag_bar_visible=config.get("link_panel_drag_bar_visible", True),
+            roulette_only_show_link_panel=config.get("roulette_only_show_link_panel", False),
+            link_integration_enabled=config.get("link_integration_enabled", False),
+            link_integration_port=config.get("link_integration_port", 12345),
+            link_integration_max_hold=config.get("link_integration_max_hold", 200),
+            link_panel_show_time=config.get("link_panel_show_time", False),
+            link_auto_analyze=config.get("link_auto_analyze", True),
+            link_auto_execute=config.get("link_auto_execute", False),
         )
 
     @classmethod
@@ -436,6 +472,8 @@ class AppSettings:
             "auto_hide_seconds": self.auto_hide_seconds,
             "auto_hide_fade_enabled": self.auto_hide_fade_enabled,
             "auto_hide_fade_seconds": self.auto_hide_fade_seconds,
+            "auto_hide_only_in_roulette_only_mode": self.auto_hide_only_in_roulette_only_mode,
+            "auto_hide_after_spin_after_restore": self.auto_hide_after_spin_after_restore,
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
             "item_panel_display_mode": self.item_panel_display_mode,
@@ -457,4 +495,17 @@ class AppSettings:
             "ticket_panel_height": self.ticket_panel_height,
             "ticket_panel_visible": self.ticket_panel_visible,
             "ticket_panel_drag_bar_visible": self.ticket_panel_drag_bar_visible,
+            "link_panel_x": self.link_panel_x,
+            "link_panel_y": self.link_panel_y,
+            "link_panel_width": self.link_panel_width,
+            "link_panel_height": self.link_panel_height,
+            "link_panel_visible": self.link_panel_visible,
+            "link_panel_drag_bar_visible": self.link_panel_drag_bar_visible,
+            "roulette_only_show_link_panel": self.roulette_only_show_link_panel,
+            "link_integration_enabled": self.link_integration_enabled,
+            "link_integration_port": self.link_integration_port,
+            "link_integration_max_hold": self.link_integration_max_hold,
+            "link_panel_show_time": self.link_panel_show_time,
+            "link_auto_analyze": self.link_auto_analyze,
+            "link_auto_execute": self.link_auto_execute,
         }

@@ -13,7 +13,7 @@ from PySide6.QtGui import QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QWidget, QApplication,
     QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox,
-    QSlider, QScrollBar, QAbstractItemView,
+    QSlider, QScrollBar, QComboBox,
 )
 
 from panel_widgets import _PanelGrip
@@ -79,11 +79,12 @@ class PanelInputFilter(QObject):
     RESIZE_EDGE = 6     # px from right/bottom for resize hit zone
 
     # ドラッグ追跡から除外する widget 型
+    # i102: QAbstractItemView を除外 — リスト/テーブルの空白領域からもドラッグ可能にする。
+    #       QComboBox は _is_in_combobox() チェックで別途除外する。
     EXEMPT_TYPES = (
         QLineEdit, QPlainTextEdit, QTextEdit,
         QSpinBox, QDoubleSpinBox,
         QSlider, QScrollBar,
-        QAbstractItemView,
     )
 
     def __init__(self, main_window):
@@ -212,10 +213,11 @@ class PanelInputFilter(QObject):
         return False
 
     def _hit_resize_edge(self, panel, global_pos) -> str:
-        """global_pos が panel の右端 / 下端 / 角の resize 領域にいるか判定。
+        """global_pos が panel の8方向 resize 領域にいるか判定 (i098)。
 
         Returns:
-            'right' / 'bottom' / 'corner' / '' (none)
+            'right' / 'left' / 'bottom' / 'top' /
+            'bottom-right' / 'bottom-left' / 'top-right' / 'top-left' / '' (none)
         """
         try:
             local = panel.mapFromGlobal(global_pos)
@@ -229,12 +231,24 @@ class PanelInputFilter(QObject):
             return ""
         in_right = x >= w - self.RESIZE_EDGE
         in_bottom = y >= h - self.RESIZE_EDGE
+        in_left = x < self.RESIZE_EDGE
+        in_top = y < self.RESIZE_EDGE
         if in_right and in_bottom:
-            return "corner"
+            return "bottom-right"
+        if in_right and in_top:
+            return "top-right"
+        if in_left and in_bottom:
+            return "bottom-left"
+        if in_left and in_top:
+            return "top-left"
         if in_right:
             return "right"
+        if in_left:
+            return "left"
         if in_bottom:
             return "bottom"
+        if in_top:
+            return "top"
         return ""
 
     def _update_override_cursor(self, edge: str):
@@ -262,40 +276,80 @@ class PanelInputFilter(QObject):
         # 新しい override を push
         if edge:
             shape_map = {
-                "right": Qt.CursorShape.SizeHorCursor,
-                "bottom": Qt.CursorShape.SizeVerCursor,
-                "corner": Qt.CursorShape.SizeFDiagCursor,
+                "right":        Qt.CursorShape.SizeHorCursor,
+                "left":         Qt.CursorShape.SizeHorCursor,
+                "bottom":       Qt.CursorShape.SizeVerCursor,
+                "top":          Qt.CursorShape.SizeVerCursor,
+                "bottom-right": Qt.CursorShape.SizeFDiagCursor,
+                "top-left":     Qt.CursorShape.SizeFDiagCursor,
+                "top-right":    Qt.CursorShape.SizeBDiagCursor,
+                "bottom-left":  Qt.CursorShape.SizeBDiagCursor,
             }
             try:
-                QApplication.setOverrideCursor(QCursor(shape_map[edge]))
+                QApplication.setOverrideCursor(QCursor(shape_map.get(edge, Qt.CursorShape.SizeAllCursor)))
                 self._active_override_edge = edge
             except Exception:
                 pass
 
     def _apply_resize(self, global_pos):
-        """進行中の resize に対し、現在マウス位置から panel をリサイズする。"""
+        """進行中の resize に対し、現在マウス位置から panel をリサイズする (i098: 8方向対応)。"""
         panel = self._resize_panel
         edge = self._resize_edge
         geom = self._resize_start_geom
         if panel is None or geom is None:
             return
         delta = global_pos - self._resize_start_global
-        new_w = geom.width()
-        new_h = geom.height()
+        dx = delta.x()
+        dy = delta.y()
         min_w = panel.minimumWidth() or 200
         min_h = panel.minimumHeight() or 200
-        if edge in ("right", "corner"):
-            new_w = max(min_w, geom.width() + delta.x())
-        if edge in ("bottom", "corner"):
-            new_h = max(min_h, geom.height() + delta.y())
+
+        new_x = geom.x()
+        new_y = geom.y()
+        new_w = geom.width()
+        new_h = geom.height()
+
+        # 右方向: x 固定, width 増減
+        if edge in ("right", "bottom-right", "top-right"):
+            new_w = max(min_w, geom.width() + dx)
+        # 下方向: y 固定, height 増減
+        if edge in ("bottom", "bottom-right", "bottom-left"):
+            new_h = max(min_h, geom.height() + dy)
+        # 左方向: x 移動, width 逆増減
+        if edge in ("left", "top-left", "bottom-left"):
+            raw_w = geom.width() - dx
+            if raw_w < min_w:
+                raw_w = min_w
+            new_x = geom.x() + (geom.width() - raw_w)
+            new_w = raw_w
+        # 上方向: y 移動, height 逆増減
+        if edge in ("top", "top-left", "top-right"):
+            raw_h = geom.height() - dy
+            if raw_h < min_h:
+                raw_h = min_h
+            new_y = geom.y() + (geom.height() - raw_h)
+            new_h = raw_h
+
         # 親領域内にクランプ
         parent = panel.parentWidget()
         if parent is not None:
-            max_w = max(min_w, parent.width() - geom.x())
-            max_h = max(min_h, parent.height() - geom.y())
-            new_w = min(new_w, max_w)
-            new_h = min(new_h, max_h)
-        panel.resize(new_w, new_h)
+            bar_h = PANEL_BAR_HEIGHT
+            # 右端クランプ
+            if new_x + new_w > parent.width():
+                new_w = max(min_w, parent.width() - new_x)
+            # 下端クランプ
+            if new_y + new_h > parent.height():
+                new_h = max(min_h, parent.height() - new_y)
+            # 左端クランプ（位置がネガティブにならないよう）
+            if new_x < 0:
+                new_w = max(min_w, new_w + new_x)
+                new_x = 0
+            # 上端クランプ（ドラッグバー領域より上に侵入しない）
+            if new_y < bar_h:
+                new_h = max(min_h, new_h + (new_y - bar_h))
+                new_y = bar_h
+
+        panel.setGeometry(new_x, new_y, new_w, new_h)
 
     def _close_active_popup(self):
         """直前 press でコントロールが開いた popup (combobox 等) を閉じる。
@@ -329,17 +383,73 @@ class PanelInputFilter(QObject):
         except Exception:
             pass
 
+    def _reset_pointer_state(self, *, clear_cursor: bool = True) -> None:
+        """ドラッグ・リサイズ・override cursor をまとめてリセットする。
+
+        i102: Leave / WindowDeactivate / Release 等のタイミングで呼ぶ。
+        clear_cursor=True の場合 override cursor も解除する。
+        """
+        if clear_cursor:
+            self._update_override_cursor("")
+        self._press_panel = None
+        self._press_global = QPoint()
+        self._press_panel_pos = QPoint()
+        self._press_target = None
+        self._dragging = False
+        self._cancelling = False
+        self._resize_panel = None
+        self._resize_edge = ""
+        self._resize_start_global = QPoint()
+        self._resize_start_geom = None
+
+    @staticmethod
+    def _is_in_combobox(obj) -> bool:
+        """obj またはその祖先に QComboBox があるか判定する。
+
+        i102: QAbstractItemView を EXEMPT から除いた代わりに、
+        QComboBox のドロップダウン内ではドラッグ追跡を開始しないよう保護する。
+        """
+        w = obj
+        for _ in range(6):
+            if w is None:
+                break
+            if isinstance(w, QComboBox):
+                return True
+            w = w.parentWidget()
+        return False
+
     def eventFilter(self, obj, event):
         if self._cancelling:
             return False
 
         et = event.type()
-        # マウス系 3 種以外は早期 return
+        # マウス系 3 種 + Leave 以外は早期 return
         if et not in (
             QEvent.Type.MouseButtonPress,
             QEvent.Type.MouseMove,
             QEvent.Type.MouseButtonRelease,
+            QEvent.Type.Leave,
         ):
+            return False
+
+        # ============================================================
+        # Leave — i102: パネル外に出たら override cursor を解除する
+        # ============================================================
+        if et == QEvent.Type.Leave:
+            # press / resize 中は Leave では解除しない（移動中にカーソルがウィジェット境界を跨ぐため）
+            if self._press_panel is not None or self._resize_panel is not None:
+                return False
+            panel, _ = self._find_panel(obj)
+            if panel is not None:
+                # グローバル座標がまだいずれかのパネル内にあるか確認
+                try:
+                    cur_global = QCursor.pos()
+                    for p in self._drag_panels:
+                        if p.isVisible() and p.rect().contains(p.mapFromGlobal(cur_global)):
+                            return False  # 別パネル内にまだいる
+                except Exception:
+                    pass
+                self._update_override_cursor("")
             return False
 
         # ============================================================
@@ -424,6 +534,12 @@ class PanelInputFilter(QObject):
 
             # 入力系: focus を立てて素通し (press は本来動作)
             if self._is_exempt(obj):
+                if not is_focused:
+                    self._mw._set_panel_focused(panel)
+                return False
+
+            # i102: QComboBox 内（ドロップダウン含む）はドラッグ追跡しない
+            if self._is_in_combobox(obj):
                 if not is_focused:
                     self._mw._set_panel_focused(panel)
                 return False
@@ -514,6 +630,7 @@ class PanelInputFilter(QObject):
                 self._resize_panel = None
                 self._resize_edge = ""
                 self._resize_start_geom = None
+                self._update_override_cursor("")  # i102: override cursor を解除
                 return True
 
             if self._press_panel is None:
@@ -524,6 +641,7 @@ class PanelInputFilter(QObject):
             self._press_panel_pos = QPoint()
             self._press_target = None
             self._dragging = False
+            self._update_override_cursor("")  # i102: override cursor を解除
             if was_dragging:
                 # ドラッグ後の release はクリックを発火させない
                 return True

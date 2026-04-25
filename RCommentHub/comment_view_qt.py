@@ -176,6 +176,13 @@ class CommentView(QAbstractScrollArea):
         self._update_scrollbar()
         self.viewport().update()
 
+    def update_row_header(self, index: int, header: str) -> None:
+        """i112: 指定インデックスの行ヘッダーテキストを更新して再描画する。"""
+        if 0 <= index < len(self._rows):
+            self._rows[index].header  = header
+            self._rows[index].cached_h = -1
+            self.viewport().update()
+
     def scroll_to_bottom(self) -> None:
         """垂直スクロールバーを末尾に移動する。"""
         sb = self.verticalScrollBar()

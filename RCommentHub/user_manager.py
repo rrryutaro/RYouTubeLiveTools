@@ -57,9 +57,15 @@ class UserManager:
     def __init__(self):
         self._users: dict[str, UserRecord] = {}   # channel_id -> UserRecord
         self._on_updated = None   # (UserRecord) -> None
+        # i110: 保存済みフラグキャッシュ（起動時に設定から読み込み、新規ユーザー登録時に復元）
+        self._saved_flags: dict[str, dict] = {}   # channel_id -> {is_whitelist, is_blacklist, is_filter_target}
 
     def set_update_callback(self, cb):
         self._on_updated = cb
+
+    def load_saved_flags(self, flags: dict) -> None:
+        """i110: 設定から保存済みフラグを読み込む。"""
+        self._saved_flags = dict(flags) if flags else {}
 
     def on_comment(self, item) -> UserRecord:
         """コメント受信時にユーザー情報を集計更新する"""
@@ -68,6 +74,12 @@ class UserManager:
 
         if cid not in self._users:
             rec = UserRecord(cid, name)
+            # i110: 保存済みフラグがあれば復元
+            saved = self._saved_flags.get(cid)
+            if saved:
+                rec.is_whitelist     = bool(saved.get("is_whitelist", False))
+                rec.is_blacklist     = bool(saved.get("is_blacklist", False))
+                rec.is_filter_target = bool(saved.get("is_filter_target", True))
             self._users[cid] = rec
         else:
             rec = self._users[cid]
