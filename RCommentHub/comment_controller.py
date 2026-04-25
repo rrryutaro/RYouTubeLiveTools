@@ -538,19 +538,18 @@ class CommentController:
             self._set_roulette_status(item, "除外", reason="自動送信OFF")
             return
 
+        # 全モード共通: フィルタ一覧対象外は送信しない
+        if not item.filter_match:
+            self._set_roulette_status(item, "除外", reason="フィルタ一覧対象外")
+            _log.debug("_notify_roulette_link: skip filter_match=False")
+            return
+
         # dry_run チェック（手動送信と統一: roulette_integration.dry_run を参照）
         dry_run = bool(cfg.get("dry_run", False))
         if dry_run:
             self._set_roulette_status(item, "dry-run", reason="dry_run ON")
             _log.info("_notify_roulette_link: dry-run author=%s mode=%s", item.author_name[:20], auto_mode)
             return
-
-        # フィルタ一致チェックは "filter_match" モード専用
-        if auto_mode == "filter_match":
-            if not item.filter_match:
-                self._set_roulette_status(item, "除外", reason="フィルタ不一致")
-                _log.debug("_notify_roulette_link: skip filter_match=False in filter_match mode")
-                return
 
         # ブラックリスト最優先除外（全モード共通）
         cid = item.channel_id or item.author_name

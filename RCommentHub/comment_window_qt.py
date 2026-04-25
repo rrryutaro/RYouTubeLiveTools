@@ -426,7 +426,7 @@ class CommentWindowQt(QMainWindow):
             "QComboBox QAbstractItemView { background: #1A1A2A; color: #CCCCCC; }"
         )
         # i112: モード値: off / all / filter_match / whitelist / target (5モード)
-        for label in ["OFF", "無条件送信", "フィルタ一致のみ", "ホワイトのみ", "対象者のみ"]:
+        for label in ["OFF", "フィルタ一覧すべて", "フィルタ一致のみ", "ホワイトのみ", "対象者のみ"]:
             self._rr_auto_mode_combo.addItem(label)
         saved_mode = self._sm.get("rr_auto_send_mode", "off")
         _mode_idx = {"off": 0, "all": 1, "filter_match": 2, "whitelist": 3, "target": 4}.get(saved_mode, 0)
