@@ -545,7 +545,11 @@ class ItemPanel(QFrame):
             if event.type() == QEvent.Type.FocusIn:
                 self._api.set_pattern_switching(False)
             elif event.type() == QEvent.Type.FocusOut:
-                self._api.set_pattern_switching(True)
+                # i341: テキスト編集モード中は FocusOut で再有効化しない
+                # (_on_text_edit_toggled(True) が setFocus() を呼ぶため
+                #  name_edit の FocusOut がテキスト編集開始中に発生することがある)
+                if not self.is_text_edit_mode():
+                    self._api.set_pattern_switching(True)
         if event.type() == QEvent.Type.Enter:
             hint = self._hint_map.get(obj)
             if hint and isinstance(obj, QWidget):
@@ -1311,6 +1315,10 @@ class ItemPanel(QFrame):
             self._api.set_pattern_switching(False)
         else:
             self._stack.setCurrentIndex(self._display_mode)
+            # i341: テキスト編集終了（ボタン直操作） → パターンコンボ再有効化
+            # _exit_text_edit_mode 経由（保存/キャンセル）の場合は
+            # blockSignals で toggled が抑制されるため、ここには来ない
+            self._api.set_pattern_switching(True)
 
     def is_text_edit_mode(self) -> bool:
         """テキスト編集モード中かどうか。MainWindow の ESC 処理から参照。"""
