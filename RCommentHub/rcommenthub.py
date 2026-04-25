@@ -1,355 +1,368 @@
 """
-RCommentHub — YouTube Live コメントハブ  v0.2.0
-メインエントリポイントおよびアプリコーディネーター
-v0.2.0: 固定2接続（conn1/conn2）同時表示対応
+RCommentHub — PySide6 エントリポイント  v0.4.0
+
+起動構成（v0.3.2 相当）:
+  - CommentWindowQt が正規メインウィンドウ（起動時前面表示）
+  - DetailWindowQt   が補助画面（詳細ボタンから開く）
+  - OverlayWindowQt  が配信用OBS画面（コメント受信時に自動表示）
+  - SettingsWindowQt が設定補助画面（設定ボタンから開く）
+  - ConnectDialogQt  が接続ダイアログ（接続ボタンから開く）
+  - 隠れメインウィンドウ（RCommentHubMainWindow）は廃止
 """
 
-import tkinter as tk
+import ctypes
 import os
 import sys
+import logging
 
-from constants import (
-    VERSION, WINDOW_TITLE, DEFAULT_WIDTH, DEFAULT_HEIGHT,
-    CONFIG_FILENAME, apply_theme, UI_COLORS,
-    SOURCE_DEFAULT_NAMES,
-)
+from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QTimer, QObject, Signal, Qt
+
+from constants import VERSION, CONFIG_FILENAME
 from comment_controller import CommentController
-from comment_window import CommentWindow
-from detail_window import DetailWindow
 from settings_manager import SettingsManager
-from connect_dialog import ConnectDialog
-from settings_window import SettingsWindow
-from debug_sender import DebugSenderWindow
+from connect_dialog_qt import ConnectDialogQt
+from comment_window_qt import CommentWindowQt
+from settings_window_qt import SettingsWindowQt
+from detail_window_qt import DetailWindowQt
+from overlay_window_qt import OverlayWindowQt
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ════════════════════════════════════════════════════════════════════════════
+#  メインスレッドディスパッチャ（ワーカースレッド → Qt メインスレッド）
+# ════════════════════════════════════════════════════════════════════════════
+
+class _MainThreadDispatcher(QObject):
+    """
+    ワーカースレッドから Qt メインスレッドへ callable を安全にディスパッチする。
+
+    Signal/Slot の queued 接続を使うことで、emit したスレッドに関わらず
+    slot (_invoke) は常にメインスレッドで実行される。
+    QTimer.singleShot(0, ...) はワーカースレッドから呼ぶと Qt が保証しないため使わない。
+    """
+    _sig = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 明示的に QueuedConnection を指定（ワーカースレッドからの emit を確実にキュー化）
+        self._sig.connect(self._invoke, Qt.ConnectionType.QueuedConnection)
+
+    def dispatch(self, cb):
+        """任意のスレッドから呼び出し可能。cb はメインスレッドのイベントループで実行される。"""
+        self._sig.emit(cb)
+
+    def _invoke(self, cb):
+        cb()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  単一起動制御（Windows Named Mutex）
+# ════════════════════════════════════════════════════════════════════════════
+
+_SINGLE_INSTANCE_MUTEX: list = []  # GC 回避のためモジュール変数で保持
+
+# Local\ プレフィックスで同一セッション内に限定。v2 サフィックスで旧実装との衝突を回避
+_MUTEX_NAME = "Local\\RCommentHub_SingleInstance_v2"
+
+
+def _acquire_single_instance() -> bool:
+    """
+    True  : このインスタンスが唯一の起動 → 続行可。
+    False : すでに起動済みのインスタンスが存在 → 終了すべき。
+
+    Windows Named Mutex 方式。
+    ハンドルはプロセス終了時（正常・異常問わず）に OS が自動解放する。
+
+    失敗時の方針（安全側）:
+      CreateMutexW が 0/None を返した（API 失敗）場合は単一起動チェック不能として
+      起動を継続する。理由: 二重起動を誤検出して起動不能になるより、
+      起動できる方が切り分けしやすいため。
+    """
+    _log.info("Mutex 名: %s", _MUTEX_NAME)
+    _ERROR_ALREADY_EXISTS = 183
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateMutexW.restype  = ctypes.c_void_p
+    _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    _kernel32.CloseHandle.argtypes  = [ctypes.c_void_p]
+
+    handle = _kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    err    = ctypes.get_last_error()
+    _log.info("CreateMutexW → handle=%s  last_error=%d", handle, err)
+
+    if not handle:
+        # API 失敗: 単一起動チェック不能 → 安全側として起動継続
+        _log.warning("CreateMutexW が失敗 (handle=0) → 単一起動チェックをスキップして起動継続")
+        return True
+
+    if err == _ERROR_ALREADY_EXISTS:
+        # handle は取得できたが既存 Mutex が存在 → 二重起動
+        _log.info("handle 取得済み + last_error=183 (ERROR_ALREADY_EXISTS) → 既存起動ありと判定")
+        _kernel32.CloseHandle(handle)
+        return False
+
+    # 新規 Mutex 作成成功
+    _log.info("Mutex 新規作成成功 (last_error=%d) → 単一起動確認 OK", err)
+    _SINGLE_INSTANCE_MUTEX.append(handle)
+    return True
+
+
+def _resolve_runtime_base_dir() -> str:
+    """
+    ランタイム基準ディレクトリを返す。
+    exe 実行 / Python 実行どちらでも dist/ を基準とする。
+    """
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+    return os.path.normpath(base)
+
+
+BASE_DIR    = _resolve_runtime_base_dir()
 CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILENAME)
 
-DEFAULT_CONFIG = {
-    "x": 100, "y": 100,
-    "width": DEFAULT_WIDTH, "height": DEFAULT_HEIGHT,
-    "sash_filter_list": 200,
-    "sash_list_detail": 650,
-    "sash_main_log":    560,
-}
+os.makedirs(BASE_DIR, exist_ok=True)
 
-def _extract_video_id(text: str) -> str:
-    """YouTube URL または動画 ID 文字列から動画 ID を抽出する"""
-    import urllib.parse
-    text = text.strip()
-    if not text:
-        return text
-    if "youtube.com" not in text and "youtu.be" not in text:
-        return text
-    try:
-        parsed     = urllib.parse.urlparse(text)
-        path_parts = [p for p in parsed.path.split("/") if p]
-        if "live" in path_parts:
-            idx = path_parts.index("live")
-            if idx + 1 < len(path_parts):
-                return path_parts[idx + 1]
-        qs = urllib.parse.parse_qs(parsed.query)
-        if "v" in qs:
-            return qs["v"][0]
-        if parsed.netloc in ("youtu.be", "www.youtu.be") and path_parts:
-            return path_parts[0]
-    except Exception:
-        pass
-    return text
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 
-class RCommentHubApp:
+def _setup_file_logging(base_dir: str):
     """
-    アプリコーディネーター。
-    CommentController / CommentWindow / DetailWindow / ダイアログ類を生成して接続する。
+    Tk 版相当のファイルログ出力設定を復元する。
+    route_check / youtube_api_usage / youtube_error の各ロガーに FileHandler を追加する。
+    出力先: base_dir/logs/<logger_name>.log
+    """
+    logs_dir = os.path.join(base_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    _file_log_targets = [
+        ("route_check",       "route_check.log"),
+        ("youtube_api_usage", "youtube_api_usage.log"),
+        ("youtube_error",     "youtube_error.log"),
+    ]
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for logger_name, filename in _file_log_targets:
+        log_path = os.path.join(logs_dir, filename)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(fmt)
+        logger = logging.getLogger(logger_name)
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = True  # basicConfig の stdout ハンドラへも引き続き出力
+
+
+_setup_file_logging(BASE_DIR)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Qt アプリコーディネーター
+# ════════════════════════════════════════════════════════════════════════════
+
+class RCommentHubQtApp:
+    """
+    PySide6 版アプリコーディネーター。
+
+    画面役割（v0.3.2 相当）:
+      CommentWindowQt  … 正規メインウィンドウ（コメントビュー）
+      DetailWindowQt   … 補助画面（詳細・管理）
+      OverlayWindowQt  … 配信用OBS画面（最前面）
+      SettingsWindowQt … 設定補助画面
+      ConnectDialogQt  … 接続ダイアログ
+
+    ライフサイクル:
+      setQuitOnLastWindowClosed(False) で手動終了制御。
+      × ボタン → _quit_app() → _ctrl.shutdown() + app.quit()
     """
 
-    def __init__(self, root: tk.Tk):
-        self._root = root
+    def __init__(self, app: QApplication):
+        self._app = app
+        # 最後のウィンドウが閉じてもイベントループを継続（手動終了制御）
+        self._app.setQuitOnLastWindowClosed(False)
 
-        # 設定
         self._sm  = SettingsManager(CONFIG_FILE)
-        self.cfg  = {**DEFAULT_CONFIG, **self._sm.load()}
+        self._sm.load()
 
-        # テーマ適用
-        saved_theme = self._sm.get("color_theme", "ダーク (デフォルト)")
-        apply_theme(saved_theme)
-        self._current_theme = saved_theme
-
-        # Combobox ドロップダウンリストの色をテーマに合わせる
-        root.option_add("*TCombobox*Listbox.background", UI_COLORS["bg_list"])
-        root.option_add("*TCombobox*Listbox.foreground", UI_COLORS["fg_main"])
-        root.option_add("*TCombobox*Listbox.selectBackground", UI_COLORS["accent"])
-        root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
-
-        # コントローラ（処理の中核）
-        self._ctrl = CommentController(root, self._sm, BASE_DIR)
-
-        _topmost_getter = lambda: bool(self._sm.get("cw_topmost", False))
-
-        # コメントビュー（主画面）
-        self._comment_window = CommentWindow(
-            root, self.cfg,
-            on_close_cb=self._on_close,
-            speak_cb=self._ctrl.speak_item,
-            user_manager=self._ctrl.user_mgr,
-            filter_rule_mgr=self._ctrl.filter_mgr,
-            open_connect_cb=self._open_connect_dialog,
-            open_settings_cb=self._open_settings_window,
-            open_detail_cb=self._detail_window_open,
-            open_debug_cb=self._ctrl.toggle_debug_mode,
+        # dispatch_to_main: Signal/Slot queued 接続でワーカースレッドからメインスレッドへ安全に戻す
+        self._dispatcher = _MainThreadDispatcher(self._app)
+        self._ctrl = CommentController(
+            dispatch_to_main=self._dispatcher.dispatch,
+            settings_mgr=self._sm,
+            base_dir=BASE_DIR,
         )
 
-        # 表示設定を CommentWindow の cfg に反映
-        self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
-        self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
+        # ── 補助画面・ダイアログ（コメントビューより先に生成）──────────────────
 
-        # 接続ダイアログ（conn1 専用）
-        self._connect_dialog = ConnectDialog(
-            master=root,
-            extract_fn=_extract_video_id,
-            verify_fn=self._ctrl.verify,
-            connect_fn=self._on_connect_fn,
-            api_key_getter=lambda: self._sm.api_key,
-            topmost_getter=_topmost_getter,
-            pos_getter=lambda: self._sm.get("cd_pos", None),
-            pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
-            url_getter=lambda: self._sm.get("conn1_url", ""),
-            url_saver=lambda url: self._sm.update({"conn1_url": url}),
-        )
-
-        # 設定ウィンドウ
-        self._settings_win = SettingsWindow(
-            master=root,
+        # SettingsWindow
+        self._settings_win = SettingsWindowQt(
+            parent=None,
             settings_mgr=self._sm,
             on_settings_changed=self._on_settings_changed,
-            topmost_getter=_topmost_getter,
+            auth_service_getter=lambda: self._ctrl.auth_service,
+            twitch_auth_getter=lambda: self._ctrl.twitch_auth,
             pos_getter=lambda: self._sm.get("sw_pos", None),
             pos_setter=lambda pos: self._sm.update({"sw_pos": pos}),
         )
 
-        # デバッグ送信ウィンドウ
-        self._debug_win = DebugSenderWindow(
-            master=root,
-            add_comment_cb=lambda raw: root.after(0, lambda r=raw: self._ctrl.add_comment(r)),
-            presets_getter=self._ctrl.get_debug_presets,
-            presets_setter=self._ctrl.set_debug_presets,
-            mode_enabled_getter=lambda: self._ctrl.debug_mode,
-            topmost_getter=_topmost_getter,
-            pos_getter=lambda: self._sm.get("ds_pos", None),
-            pos_setter=lambda pos: self._sm.update({"ds_pos": pos}),
-            sources_getter=self._get_active_sources,
+        # ConnectDialog
+        self._connect_dialog = ConnectDialogQt(
+            parent=None,
+            verify_fn=self._ctrl.verify_target,
+            connect_fn=self._on_connect_fn,
+            profiles_getter=self._ctrl.get_profiles,
+            auth_checker=lambda: self._ctrl.auth_service.is_authenticated(),
+            twitch_auth_checker=lambda: self._ctrl.twitch_auth.is_authenticated(),
+            url_getter=self._get_first_profile_url,
+            url_saver=self._save_first_profile_url,
+            pos_getter=lambda: self._sm.get("cd_pos", None),
+            pos_setter=lambda pos: self._sm.update({"cd_pos": pos}),
+            log_fn=self._ctrl.log,
         )
 
-        # 詳細ウィンドウ（補助画面）
-        self._detail_win = DetailWindow(
-            root=root,
+        # DetailWindow（補助画面）
+        self._detail_win = DetailWindowQt(
             controller=self._ctrl,
             settings_mgr=self._sm,
-            cfg=self.cfg,
-            comment_window_getter=lambda: self._comment_window,
             open_connect_cb=self._open_connect_dialog,
+            open_comment_win_cb=self._open_comment_window,
             open_settings_cb=self._open_settings_window,
-            debug_win_opener=self._debug_win.open,
         )
 
-        # コントローラ → コーディネーター間のコールバック登録
-        self._ctrl.on_conn_status(self._on_ctrl_conn_status)
-        self._ctrl.on_stream_info(self._on_ctrl_stream_info)
-        self._ctrl.on_user_cleared(self._on_ctrl_user_cleared)
-        self._ctrl.on_debug_mode(self._on_ctrl_debug_mode)
-        self._ctrl.on_comment_added(self._on_ctrl_comment_added)
-        # per-source 状態変化 → マルチ接続モード切替
-        self._ctrl.on_source_status(self._on_ctrl_source_status)
+        # OverlayWindow（配信用OBS画面）
+        self._overlay_win = OverlayWindowQt(
+            controller=self._ctrl,
+            settings_mgr=self._sm,
+        )
 
-        # TTS 初期化
-        self._ctrl.apply_tts_from_settings()
+        # ── 正規メインウィンドウ（CommentWindowQt）────────────────────────────
+        self._comment_win = CommentWindowQt(
+            controller=self._ctrl,
+            settings_mgr=self._sm,
+            open_connect_cb=self._open_connect_dialog,
+            open_settings_cb=self._open_settings_window,
+            open_detail_cb=self._open_detail_window,
+            on_quit_cb=self._quit_app,
+        )
 
-        # 起動時にコメントビューを自動表示
-        root.after(100, self._comment_window.open)
+        # ── コントローラ → 各ウィンドウ コールバック登録 ──────────────────────
+        self._ctrl.on_comment_added(self._on_comment_added)
+        self._ctrl.on_conn_status(self._on_conn_status)
+
+        # ── 起動: コメントビュー（正規メイン）を前面表示 ──────────────────────
+        self._comment_win.open()
+
+        # ── ペンディングログ（起動時に生成されたログ）を UI へフラッシュ ──────
+        self._ctrl.flush_pending_logs()
         self._ctrl.log(f"RCommentHub v{VERSION} 起動完了")
 
-    def _detail_window_open(self):
-        """コメントビューからの詳細ウィンドウ表示要求"""
-        self._detail_win.open()
+    # ─── ConnectDialog 操作 ───────────────────────────────────────────────────
 
     def _open_connect_dialog(self):
         self._connect_dialog.open()
 
+    def _on_connect_fn(self, profile_id: str, verify_result: dict):
+        """ConnectDialogQt から呼ばれる接続開始コールバック。"""
+        self._ctrl.connect_all_enabled_after(verify_result, profile_id)
+        self._open_comment_window()
+
+    # ─── SettingsWindow 操作 ──────────────────────────────────────────────────
+
     def _open_settings_window(self):
         self._settings_win.open()
 
-    def _on_connect_fn(self, verify_result: dict):
-        """ConnectDialog から呼ばれる接続開始（conn1 + 自動 conn2 試行）"""
-        self._ctrl.connect_with_auto_conn2(verify_result, source_id="conn1")
-
-    def _get_active_sources(self) -> list:
-        """
-        デバッグ送信ウィンドウ用: 送信先として使える接続の一覧を返す。
-
-        - デバッグモード中: 設定で「有効」になっている接続を全て返す
-          （YouTube への実接続がなくてもデバッグ送信できるため）
-        - 通常接続中: 実際に receiving/connecting/reconnecting な接続のみ返す
-        """
-        result = []
-
-        if self._ctrl.debug_mode:
-            # デバッグ時は設定で enabled な接続を列挙
-            for conn_id in ("conn1", "conn2"):
-                default_en = (conn_id == "conn1")
-                if self._sm.get(f"{conn_id}_enabled", default_en):
-                    name = self._sm.get(
-                        f"{conn_id}_name",
-                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
-                    )
-                    result.append((conn_id, name))
-        else:
-            statuses = self._ctrl.get_conn_statuses()
-            for conn_id in ("conn1", "conn2"):
-                if statuses.get(conn_id, "disconnected") not in ("disconnected", "error"):
-                    name = self._sm.get(
-                        f"{conn_id}_name",
-                        SOURCE_DEFAULT_NAMES.get(conn_id, conn_id)
-                    )
-                    result.append((conn_id, name))
-
-        return result if result else [("conn1", self._sm.get("conn1_name", "接続1"))]
-
-    # --- コントローラ → コーディネーター コールバック ---
-
-    def _on_ctrl_conn_status(self, status: str):
-        """接続状態変化 → コメントビューへ同期"""
-        if self._comment_window:
-            title = self._ctrl.video_title if status == "receiving" else ""
-            self._comment_window.set_conn_status(status, title)
-
-    def _on_ctrl_stream_info(self, title, video_id, chat_id, stream_status):
-        """ストリーム情報変化 → コメントビューへ同期"""
-        if self._comment_window and stream_status != "unknown":
-            conn = "receiving" if stream_status == "live" else "disconnected"
-            self._comment_window.set_conn_status(conn, title)
-
-    def _on_ctrl_user_cleared(self):
-        """ユーザー情報クリア → コメントビューのユーザー一覧更新"""
-        if self._comment_window and self._comment_window.is_open:
-            self._comment_window.refresh_user_tree()
-
-    def _on_ctrl_debug_mode(self, debug_mode: bool, open_sender: bool):
-        """デバッグモード変化 → デバッグ送信ウィンドウを開く・接続元ラベル切替"""
-        if open_sender:
-            self._debug_win.open()
-        self._update_source_visible()
-
-    def _on_ctrl_comment_added(self, item):
-        """コントローラからのコメント追加通知 → CommentWindow に反映"""
-        if self._comment_window and self._comment_window.is_open:
-            self._comment_window.add_comment(item)
-
-    def _on_ctrl_source_status(self, source_id: str, status: str):
-        """per-source 接続状態変化 → マルチ接続モードの切替判定"""
-        if self._comment_window is None:
-            return
-        self._update_source_visible()
-
-    def _compute_show_source(self) -> bool:
-        """接続元ラベルを表示すべきかを返す。
-        YouTube 2接続 active、または デバッグモードで接続設定が2つ有効な場合に True。"""
-        if self._ctrl.is_multi_conn_active():
-            return True
-        if self._ctrl.debug_mode:
-            enabled = sum(
-                1 for conn_id in ("conn1", "conn2")
-                if self._sm.get(f"{conn_id}_enabled", conn_id == "conn1")
-            )
-            return enabled >= 2
-        return False
-
-    def _update_source_visible(self):
-        """接続元ラベルの表示/非表示を評価し、変化があれば CommentWindow を更新する"""
-        if self._comment_window is None:
-            return
-        show = self._compute_show_source()
-        was  = self._comment_window._show_source
-        if show != was:
-            self._comment_window.set_source_visible(show)
-            if self._comment_window.is_open:
-                self._comment_window.reload_cards(self._ctrl.comments)
-                title = self._ctrl.video_title if self._ctrl.conn_status == "receiving" else ""
-                self._comment_window.set_conn_status(self._ctrl.conn_status, title)
-
-    # --- 設定変更 ---
-
     def _on_settings_changed(self):
-        self._ctrl.apply_tts_from_settings()
+        """設定保存後に各ウィンドウへ反映する"""
+        self._ctrl.log("設定が更新されました")
+        self._comment_win.apply_display_settings()
+        self._overlay_win.on_settings_changed()
 
-        old_display_rows = self._comment_window._cfg.get("display_rows", 2) if self._comment_window else 2
-        old_icon_visible = self._comment_window._cfg.get("icon_visible", True) if self._comment_window else True
+    # ─── DetailWindow 操作（補助画面） ────────────────────────────────────────
 
-        new_theme    = self._sm.get("color_theme", "ダーク (デフォルト)")
-        theme_changed = (new_theme != self._current_theme)
-        apply_theme(new_theme)
-        self._current_theme = new_theme
+    def _open_detail_window(self):
+        """詳細画面（補助画面）を開く。"""
+        self._detail_win.open()
 
-        if self._comment_window:
-            # 表示設定を CommentWindow の cfg に同期
-            self._comment_window._cfg["display_rows"] = self._sm.get("display_rows", 2)
-            self._comment_window._cfg["icon_visible"] = self._sm.get("icon_visible", True)
-            self._comment_window.topmost_var.set(self._sm.get("cw_topmost", False))
-            self._comment_window._cfg["cw_comment_alpha"] = self._sm.get("cw_comment_alpha", 100)
-            display_changed = (
-                self._sm.get("display_rows", 2) != old_display_rows or
-                self._sm.get("icon_visible", True) != old_icon_visible
-            )
-            if (theme_changed or display_changed) and self._comment_window.is_open:
-                self._comment_window.reload_cards(self._ctrl.comments)
-                self._comment_window.refresh_user_tree()
-                self._comment_window.refresh_rule_tree()
-                title = self._ctrl.video_title if self._ctrl.conn_status == "receiving" else ""
-                self._comment_window.set_conn_status(self._ctrl.conn_status, title)
+    # ─── アプリ終了 ───────────────────────────────────────────────────────────
 
-        self._apply_topmost_all()
-        self._sm.update({"filter_rules": self._ctrl.filter_mgr.to_list()})
-        self._ctrl.log("[設定] 保存完了")
-
-    def _apply_topmost_all(self):
-        val = bool(self._sm.get("cw_topmost", False))
-        for obj in [self._settings_win, self._connect_dialog, self._debug_win]:
-            try:
-                if obj._win:
-                    obj._win.wm_attributes("-topmost", val)
-            except Exception:
-                pass
-        if self._comment_window:
-            try:
-                if self._comment_window._win:
-                    self._comment_window._win.wm_attributes("-topmost", val)
-            except Exception:
-                pass
+    def _quit_app(self):
+        """
+        コメントビューの × ボタンから呼ばれるアプリ終了処理。
+        コントローラをシャットダウンしてイベントループを終了する。
+        """
         try:
-            if self._detail_win._win:
-                self._detail_win._win.wm_attributes("-topmost", val)
+            self._ctrl.shutdown({})
         except Exception:
             pass
+        self._app.quit()
 
-    # --- 終了 ---
+    # ─── CommentWindow 操作 ───────────────────────────────────────────────────
 
-    def _on_close(self):
-        """コメントビューが閉じられたらアプリ終了"""
-        self._ctrl.shutdown(self.cfg)
-        if self._comment_window:
-            self._comment_window.close()
-        self._root.destroy()
+    def _open_comment_window(self):
+        self._comment_win.open()
+
+    # ─── コントローラ → 各ウィンドウ コールバック ────────────────────────────
+
+    def _on_comment_added(self, item):
+        """コントローラからのコメント追加通知 → CommentWindowQt / OverlayWindowQt に反映"""
+        if self._comment_win.is_open:
+            self._comment_win.add_comment(item)
+        self._overlay_win.show_comment(item)
+
+    def _on_conn_status(self, status: str):
+        """接続状態変化 → CommentWindowQt のステータスバーに反映"""
+        _log.info("接続状態更新コールバックが UI 側へ届いた: status=%s", status)
+        title = self._ctrl.video_title if status == "receiving" else ""
+        self._comment_win.set_conn_status(status, title)
+
+    # ─── 設定補助 ─────────────────────────────────────────────────────────────
+
+    def _get_first_profile_url(self) -> str:
+        profiles = self._ctrl.get_profiles()
+        if profiles:
+            return profiles[0].get("target_url", "")
+        return self._sm.get("conn1_url", "")
+
+    def _save_first_profile_url(self, url: str):
+        profiles = self._ctrl.get_profiles()
+        if profiles:
+            profiles[0]["target_url"] = url
+            self._sm.save_connection_profiles(profiles)
+        else:
+            self._sm.update({"conn1_url": url})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  エントリポイント
+# ════════════════════════════════════════════════════════════════════════════
+
+_log = logging.getLogger("rcommenthub")
 
 
 def main():
-    # 隠しルート（アプリライフサイクルアンカー、UI なし）
-    root = tk.Tk()
-    root.withdraw()
-    app = RCommentHubApp(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+
+    # ── 単一起動チェック（Windows Named Mutex） ─────────────────────────────
+    _log.info("単一起動チェック開始")
+    if not _acquire_single_instance():
+        _log.info("既に起動中と判定 → 二重起動として終了")
+        QMessageBox.information(
+            None,
+            "RCommentHub",
+            "RCommentHub はすでに起動しています。",
+        )
+        sys.exit(0)
+
+    # ── メインウィンドウ生成 ──────────────────────────────────────────────
+    _log.info("単一起動確認 OK → メインウィンドウ生成開始")
+    _qt_app = RCommentHubQtApp(app)  # noqa: F841  アプリライフサイクルアンカー
+    _log.info("メインウィンドウ生成完了 → イベントループ開始")
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

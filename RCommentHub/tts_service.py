@@ -1,7 +1,7 @@
 """
 RCommentHub — TTS サービス
-  - Windows PowerShell の System.Speech.Synthesis.SpeechSynthesizer を使用
-  - 追加ライブラリ不要
+  - win32com.client (SAPI5 直接利用) による in-process 読み上げ
+  - pywin32 が利用できない環境への fallback として PowerShell 方式を残すが非推奨
   - キュー + デーモンスレッドで UI をブロックしない
   - 将来的に別エンジンへ差し替えやすいよう TTSService クラスに抽象化
 """
@@ -17,7 +17,12 @@ class TTSService:
 
     def __init__(self):
         self._enabled = False
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        # キューのエントリは (text: str, item: Any) のタプル、または None（終了シグナル）
+        self._queue: queue.Queue = queue.Queue()
+        # TTS が読み上げ開始する直前に呼ばれるコールバック (item) -> None
+        self._on_speak = None
+        # TTS が読み上げ完了した直後に呼ばれるコールバック (item) -> None
+        self._on_spoken = None
 
         # 読み上げフィルタ設定
         self._read_normal    = True   # 通常コメント
@@ -26,11 +31,20 @@ class TTSService:
         self._read_moderator = True   # モデレーター
         self._read_member    = False  # メンバー（デフォルト OFF）
 
+        # 音量（0〜100）
+        self._volume         = 100
+
         # 投稿者名簡略化（ON のとき author_display_name_tts を使用）
         self._simplify_name  = True
 
         # 接続先名を先頭で読み上げる
         self._read_source_name = False
+
+        # コメント間インターバル（秒、0 = なし）
+        self._interval_sec: float = 0.0
+
+        # 読み上げ速度（1〜10、SAPI の Rate に対応: デフォルト 0）
+        self._speed: int = 0
 
         # ワーカースレッド起動
         self._worker = threading.Thread(target=self._run, daemon=True)
@@ -47,6 +61,14 @@ class TTSService:
         self._enabled = value
 
     @property
+    def volume(self) -> int:
+        return self._volume
+
+    @volume.setter
+    def volume(self, value: int):
+        self._volume = max(0, min(100, int(value)))
+
+    @property
     def simplify_name(self) -> bool:
         return self._simplify_name
 
@@ -61,6 +83,39 @@ class TTSService:
     @read_source_name.setter
     def read_source_name(self, value: bool):
         self._read_source_name = value
+
+    @property
+    def interval_sec(self) -> float:
+        return self._interval_sec
+
+    @interval_sec.setter
+    def interval_sec(self, value: float):
+        self._interval_sec = max(0.0, float(value))
+
+    @property
+    def speed(self) -> int:
+        return self._speed
+
+    @speed.setter
+    def speed(self, value: int):
+        # SAPI Rate: -10〜10、ここでは 0〜10 の正方向のみ
+        self._speed = max(-10, min(10, int(value)))
+
+    def set_on_speak(self, callback):
+        """
+        TTS が読み上げを開始する直前に呼ばれるコールバックを設定する。
+        callback: (item) -> None  ※ item が None のものは呼ばれない
+        Overlay と TTS の同期に使う。
+        """
+        self._on_speak = callback
+
+    def set_on_spoken(self, callback):
+        """
+        TTS が読み上げを完了した直後に呼ばれるコールバックを設定する。
+        callback: (item) -> None  ※ item が None のものは呼ばれない
+        Overlay の消去タイマーを読み上げ完了後に起動するために使う。
+        """
+        self._on_spoken = callback
 
     def set_filter(self, *,
                    normal: bool | None = None,
@@ -94,20 +149,20 @@ class TTSService:
 
         text = self._format(item)
         if text:
-            self._queue.put(text)
+            self._queue.put((text, item))
             return True
         return False
 
     def speak(self, text: str):
-        """任意テキストを直接キューへ投入"""
+        """任意テキストを直接キューへ投入（item なし）"""
         if self._enabled and text:
-            self._queue.put(text)
+            self._queue.put((text, None))
 
     def speak_item(self, item) -> None:
         """CommentItem を強制読み上げ（ON/OFF・フィルタを無視）"""
         text = self._format(item)
         if text:
-            self._queue.put(text)
+            self._queue.put((text, item))
 
     def stop(self):
         """ワーカー終了（アプリ終了時に呼ぶ）"""
@@ -157,8 +212,10 @@ class TTSService:
         source_prefix = ""
         if self._read_source_name:
             from constants import SOURCE_DEFAULT_NAMES
-            sid   = getattr(item, "source_id",   "conn1")
-            sname = getattr(item, "source_name", "") or SOURCE_DEFAULT_NAMES.get(sid, sid)
+            sid   = getattr(item, "source_id",       "conn1")
+            sname = (getattr(item, "tts_source_name", "")
+                     or getattr(item, "source_name",  "")
+                     or SOURCE_DEFAULT_NAMES.get(sid, sid))
             if sname:
                 source_prefix = f"{sname}、"
 
@@ -192,20 +249,73 @@ class TTSService:
 
     def _run(self):
         """ワーカースレッド: キューからテキストを取り出して読み上げ"""
-        while True:
-            text = self._queue.get()
-            if text is None:
-                break
-            self._speak_powershell(text)
+        import time
+        speaker = self._init_sapi5()
 
-    @staticmethod
-    def _speak_powershell(text: str):
-        """PowerShell 経由で SAPI 読み上げ（ブロッキング）"""
-        # シングルクォートをエスケープ
+        while True:
+            entry = self._queue.get()
+            if entry is None:
+                break
+            text, item = entry
+            # 読み上げ開始前にコールバック（Overlay 同期用）
+            if item is not None and self._on_speak is not None:
+                try:
+                    self._on_speak(item)
+                except Exception:
+                    pass
+            if speaker is not None:
+                self._speak_sapi5(text, speaker)
+            else:
+                self._speak_powershell_fallback(text)
+            # 読み上げ完了後にコールバック（Overlay 消去タイマー用）
+            if item is not None and self._on_spoken is not None:
+                try:
+                    self._on_spoken(item)
+                except Exception:
+                    pass
+            if self._interval_sec > 0:
+                time.sleep(self._interval_sec)
+
+        if speaker is not None:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    def _init_sapi5(self):
+        """
+        SAPI5 スピーカーを初期化して返す（ワーカースレッド内で呼ぶこと）。
+        win32com が利用できない場合は None を返す。
+        """
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            import win32com.client
+            return win32com.client.Dispatch("SAPI.SpVoice")
+        except Exception:
+            return None
+
+    def _speak_sapi5(self, text: str, speaker) -> None:
+        """win32com 経由で SAPI5 読み上げ（in-process・ブロッキング）"""
+        try:
+            speaker.Volume = self._volume
+            speaker.Rate   = self._speed
+            speaker.Speak(text)
+        except Exception:
+            pass
+
+    def _speak_powershell_fallback(self, text: str) -> None:
+        """
+        PowerShell 経由での読み上げ（非推奨・win32com が使えない場合の最終 fallback）。
+        配布向けには使用しないこと。
+        """
         safe = text.replace("'", "\\'")
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Volume = {self._volume}; "
+            f"$s.Rate = {self._speed}; "
             f"$s.Speak('{safe}')"
         )
         try:

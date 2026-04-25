@@ -1,0 +1,329 @@
+// Google 公式 YouTube Live Chat gRPC ストリーミング API
+// 出典: https://developers.google.com/youtube/v3/live/streaming-live-chat
+// proto2 構文・package: youtube.api.v3
+
+syntax = "proto2";
+
+package youtube.api.v3;
+
+import "google/protobuf/duration.proto";
+
+service V3DataLiveChatMessageService {
+  // サーバーストリーミング RPC でライブチャットを取得する。
+  // クライアントが 1 リクエストを送信し、サーバーが応答を連続して push する。
+  rpc StreamList(LiveChatMessageListRequest)
+      returns (stream LiveChatMessageListResponse) {}
+}
+
+message LiveChatMessageListRequest {
+  // チャットコメントを取得する対象ライブチャットの ID。
+  optional string live_chat_id = 1;
+
+  // システムメッセージを返すローカライズ言語。
+  optional string hl = 2;
+
+  // 各ユーザーのプロフィール画像サイズ（px）。
+  optional uint32 profile_image_size = 3;
+
+  // 返す最大アイテム数。ストリーミング RPC では使用されない。
+  optional uint32 max_results = 98;
+
+  // ページトークン。API レスポンスの nextPageToken プロパティで識別される
+  // 特定のページを返す際に使用する。
+  optional string page_token = 99;
+
+  // API レスポンスに含める liveChatComment リソースのパーツ。
+  // サポート値: id, snippet, authorDetails
+  repeated string part = 100;
+}
+
+message LiveChatMessageListResponse {
+  // リソースの種別。値: "youtube#liveChatMessageListResponse"
+  optional string kind = 200;
+
+  // このリソースの Etag。
+  optional string etag = 201;
+
+  // 基盤となるストリームがオフラインになった日時（ISO 8601 形式）。
+  optional string offline_at = 2;
+
+  // 一般的なページネーション情報。
+  optional PageInfo page_info = 1004;
+
+  optional string next_page_token = 100602;
+
+  repeated LiveChatMessage items = 1007;
+
+  // アクティブな投票がある場合に設定される。
+  optional LiveChatMessage active_poll_item = 1008;
+}
+
+message LiveChatMessage {
+  // リソースの種別。値: "youtube#liveChatMessage"
+  optional string kind = 200;
+
+  // このリソースの Etag。
+  optional string etag = 201;
+
+  // YouTube がメッセージを一意に識別するために割り当てた ID。
+  optional string id = 101;
+
+  // メッセージの基本情報を含む snippet オブジェクト。
+  optional LiveChatMessageSnippet snippet = 2;
+
+  // このメッセージを投稿したユーザーの基本情報を含む authorDetails オブジェクト。
+  optional LiveChatMessageAuthorDetails author_details = 3;
+}
+
+message LiveChatMessageAuthorDetails {
+  // YouTube チャンネル ID。
+  optional string channel_id = 10101;
+  // チャンネルの URL。
+  optional string channel_url = 102;
+  // チャンネルの表示名。
+  optional string display_name = 103;
+  // チャンネルのアバター URL。
+  optional string profile_image_url = 104;
+  // YouTube による本人確認済みかどうか。
+  optional bool is_verified = 4;
+  // ライブチャットのオーナーかどうか。
+  optional bool is_chat_owner = 5;
+  // ライブチャットのスポンサーかどうか。
+  optional bool is_chat_sponsor = 6;
+  // ライブチャットのモデレーターかどうか。
+  optional bool is_chat_moderator = 7;
+}
+
+message LiveChatMessageSnippet {
+  message TypeWrapper {
+    enum Type {
+      INVALID_TYPE = 0;
+      TEXT_MESSAGE_EVENT = 1;
+      TOMBSTONE = 2;
+      FAN_FUNDING_EVENT = 3;
+      CHAT_ENDED_EVENT = 4;
+      SPONSOR_ONLY_MODE_STARTED_EVENT = 5;
+      SPONSOR_ONLY_MODE_ENDED_EVENT = 6;
+      NEW_SPONSOR_EVENT = 7;
+      MEMBER_MILESTONE_CHAT_EVENT = 17;
+      MEMBERSHIP_GIFTING_EVENT = 18;
+      GIFT_MEMBERSHIP_RECEIVED_EVENT = 19;
+      MESSAGE_DELETED_EVENT = 8;
+      MESSAGE_RETRACTED_EVENT = 9;
+      USER_BANNED_EVENT = 10;
+      SUPER_CHAT_EVENT = 15;
+      SUPER_STICKER_EVENT = 16;
+      POLL_EVENT = 20;
+      GIFT_EVENT = 21;
+    }
+  }
+  // メッセージの種別。常に存在し、メッセージの内容と存在するフィールドを決定する。
+  optional TypeWrapper.Type type = 1;
+
+  optional string live_chat_id = 201;
+
+  // このメッセージを作成したユーザーの ID（常に埋まるわけではない）。
+  optional string author_channel_id = 301;
+
+  // メッセージが最初に公開された日時（ISO 8601 形式）。
+  optional string published_at = 4;
+
+  // ユーザーに表示すべき表示コンテンツがあるかどうか。
+  optional bool has_display_content = 17;
+
+  // ユーザーに表示可能な文字列。
+  // このフィールドが存在しない場合、メッセージはサイレント（TOMBSTONE / CHAT_ENDED_EVENT のみ）。
+  optional string display_message = 16;
+
+  oneof displayed_content {
+    // テキストメッセージの詳細（type が textMessageEvent の場合のみ設定）。
+    LiveChatTextMessageDetails text_message_details = 19;
+    LiveChatMessageDeletedDetails message_deleted_details = 20;
+    LiveChatMessageRetractedDetails message_retracted_details = 21;
+    LiveChatUserBannedMessageDetails user_banned_details = 22;
+    // Super Chat イベントの詳細（type が superChatEvent の場合のみ設定）。
+    LiveChatSuperChatDetails super_chat_details = 27;
+    // Super Sticker イベントの詳細（type が superStickerEvent の場合のみ設定）。
+    LiveChatSuperStickerDetails super_sticker_details = 28;
+    // New Member Announcement イベントの詳細（type が newSponsorEvent の場合のみ設定）。
+    LiveChatNewSponsorDetails new_sponsor_details = 29;
+    // Member Milestone Chat イベントの詳細（type が memberMilestoneChatEvent の場合のみ設定）。
+    LiveChatMemberMilestoneChatDetails member_milestone_chat_details = 30;
+    // Membership Gifting イベントの詳細（type が membershipGiftingEvent の場合のみ設定）。
+    LiveChatMembershipGiftingDetails membership_gifting_details = 31;
+    // Gift Membership Received イベントの詳細（type が giftMembershipReceivedEvent の場合のみ設定）。
+    LiveChatGiftMembershipReceivedDetails gift_membership_received_details = 32;
+    // Poll イベントの詳細（type が pollEvent の場合のみ設定）。
+    LiveChatPollDetails poll_details = 33;
+    // Gift イベントの詳細（type が giftEvent の場合のみ設定）。
+    LiveChatGiftDetails gift_details = 34;
+  }
+}
+
+message LiveChatTextMessageDetails {
+  // ユーザーのメッセージテキスト。
+  optional string message_text = 1;
+}
+
+message LiveChatMessageDeletedDetails {
+  optional string deleted_message_id = 101;
+}
+
+message LiveChatMessageRetractedDetails {
+  optional string retracted_message_id = 201;
+}
+
+message LiveChatUserBannedMessageDetails {
+  message BanTypeWrapper {
+    enum BanType {
+      PERMANENT = 1;
+      TEMPORARY = 2;
+    }
+  }
+  // BANされたユーザーの詳細。
+  optional ChannelProfileDetails banned_user_details = 1;
+
+  // BAN の種別。
+  optional BanTypeWrapper.BanType ban_type = 2;
+
+  // BAN の期間（banType が temporary の場合のみ存在）。
+  optional uint64 ban_duration_seconds = 4;
+}
+
+message LiveChatSuperChatDetails {
+  // ユーザーが購入した金額（マイクロ単位: 1,750,000 = 1.75）。
+  optional uint64 amount_micros = 1;
+  // 購入に使用された通貨。
+  optional string currency = 2;
+  // ユーザーに表示する金額と通貨の文字列。
+  optional string amount_display_string = 3;
+  // ユーザーが追加したコメント。
+  optional string user_comment = 4;
+  // 金額が属するティア（低い金額ほど低いティア、最低ティアは 1）。
+  optional uint32 tier = 5;
+}
+
+message LiveChatSuperStickerDetails {
+  // ユーザーが購入した金額（マイクロ単位）。
+  optional uint64 amount_micros = 1;
+  // 購入に使用された通貨。
+  optional string currency = 2;
+  // ユーザーに表示する金額と通貨の文字列。
+  optional string amount_display_string = 3;
+  // 金額が属するティア。
+  optional uint32 tier = 4;
+  // Super Sticker の情報。
+  optional SuperStickerMetadata super_sticker_metadata = 5;
+}
+
+message LiveChatFanFundingEventDetails {
+  optional uint64 amount_micros = 1;
+  optional string currency = 2;
+  optional string amount_display_string = 3;
+  optional string user_comment = 4;
+}
+
+message LiveChatNewSponsorDetails {
+  // ビューワーが加入したレベルの名前（チャンネルが定義したメンバーシップレベル名）。
+  optional string member_level_name = 1;
+  // より低いレベルからアップグレードした場合は true。
+  optional bool is_upgrade = 2;
+}
+
+message LiveChatMemberMilestoneChatDetails {
+  // ビューワーがメンバーであるレベルの名前。
+  optional string member_level_name = 1;
+  // メンバーシップ継続月数（切り上げ）。
+  optional uint32 member_month = 2;
+  // メンバーが追加したコメント（コメントなしの場合は空）。
+  optional string user_comment = 3;
+}
+
+message LiveChatMembershipGiftingDetails {
+  // ユーザーが購入したギフトメンバーシップの数。
+  optional int32 gift_memberships_count = 1;
+  // ギフトメンバーシップのレベル名。
+  optional string gift_memberships_level_name = 2;
+}
+
+message LiveChatGiftMembershipReceivedDetails {
+  // ビューワーがメンバーであるレベルの名前。
+  optional string member_level_name = 1;
+  // ギフトメンバーシップを購入したユーザーの ID。
+  optional string gifter_channel_id = 2;
+  // 関連するメンバーシップギフティングメッセージの ID。
+  optional string associated_membership_gifting_message_id = 3;
+}
+
+message LiveChatPollDetails {
+  message PollMetadata {
+    message PollOption {
+      optional string option_text = 1;
+      optional int64 tally = 2;
+    }
+    optional string question_text = 1;
+    repeated PollOption options = 2;
+  }
+
+  message PollStatusWrapper {
+    enum PollStatus {
+      UNKNOWN = 0;
+      ACTIVE = 1;
+      CLOSED = 2;
+    }
+  }
+
+  optional PollMetadata metadata = 1;
+  optional PollStatusWrapper.PollStatus status = 2;
+}
+
+message LiveChatGiftDetails {
+  // ギフトの名前。
+  optional string gift_name = 1;
+  // ギフトの期間。
+  optional google.protobuf.Duration gift_duration = 2;
+  // ジュエル単位でのギフトの価値。
+  optional int32 jewels_amount = 3;
+  // ギフト画像の URL。
+  optional string gift_url = 4;
+  // アクセシビリティ用代替テキスト。
+  optional string alt_text = 5;
+  // ギフトの BCP-47 言語コード。
+  optional string language = 6;
+  // ビジュアルエフェクトが伴うかどうか。
+  optional bool has_visual_effect = 7;
+  // 連続してギフトが送られた回数。
+  optional int32 combo_count = 8;
+}
+
+message SuperChatEventSnippet {
+  optional string channel_id = 101;
+  optional ChannelProfileDetails supporter_details = 2;
+  optional string comment_text = 3;
+  optional string created_at = 4;
+  optional uint64 amount_micros = 5;
+  optional string currency = 6;
+  optional string display_string = 7;
+  optional uint32 message_type = 8;
+  optional bool is_super_sticker_event = 11;
+  optional SuperStickerMetadata super_sticker_metadata = 12;
+}
+
+message SuperStickerMetadata {
+  optional string sticker_id = 1;
+  optional string alt_text = 2;
+  optional string alt_text_language = 3;
+}
+
+message ChannelProfileDetails {
+  optional string channel_id = 101;
+  optional string channel_url = 2;
+  optional string display_name = 3;
+  optional string profile_image_url = 4;
+}
+
+// リソースリストのページング情報（利用可能なアイテム総数と返されたリソース数）。
+message PageInfo {
+  optional int32 total_results = 1;
+  optional int32 results_per_page = 2;
+}

@@ -9,6 +9,7 @@ RCommentHub — セッション単位ログ保存
     users_snapshot.json — セッション終了時のユーザー一覧スナップショット（任意）
 """
 
+import atexit
 import json
 import os
 import datetime
@@ -27,6 +28,7 @@ class SessionLogger:
         self._live_chat_id = ""
         self._title        = ""
         self._start_time: datetime.datetime | None = None
+        self._atexit_registered = False
 
     # ─── セッション開閉 ──────────────────────────────────────────────────────
 
@@ -66,7 +68,25 @@ class SessionLogger:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
         self._file = open(self._jsonl_path, "a", encoding="utf-8")
+        # セッション開始直後にディスクへ反映し、ファイルが確実に存在する状態にする
+        self._file.flush()
+
+        # 異常終了時にも close/flush されるよう atexit に登録する（1回だけ）
+        if not self._atexit_registered:
+            atexit.register(self._atexit_close)
+            self._atexit_registered = True
+
         return self._session_dir
+
+    def _atexit_close(self):
+        """異常終了時にファイルを確実に flush / close する"""
+        if self._file:
+            try:
+                self._file.flush()
+                self._file.close()
+            except Exception:
+                pass
+            self._file = None
 
     def close(self, user_snapshot: list | None = None):
         """

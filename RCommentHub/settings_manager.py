@@ -139,6 +139,95 @@ class SettingsManager:
         except Exception:
             return ""
 
+    # ─── Twitch トークン（DPAPI 暗号化） ──────────────────────────────────────
+
+    _TWITCH_ACCESS_KEY  = "_twitch_access_token_dpapi"
+    _TWITCH_REFRESH_KEY = "_twitch_refresh_token_dpapi"
+
+    def get_twitch_access_token(self) -> str:
+        """Twitch アクセストークンを復号して返す"""
+        encrypted = self._data.get(self._TWITCH_ACCESS_KEY, "")
+        if not encrypted:
+            return ""
+        try:
+            return _dpapi_decrypt(encrypted)
+        except Exception:
+            return ""
+
+    def set_twitch_access_token(self, plaintext: str):
+        """Twitch アクセストークンを DPAPI 暗号化して保存する"""
+        if plaintext:
+            try:
+                self._data[self._TWITCH_ACCESS_KEY] = _dpapi_encrypt(plaintext)
+            except Exception:
+                pass
+        else:
+            self._data.pop(self._TWITCH_ACCESS_KEY, None)
+        self._flush()
+
+    def get_twitch_refresh_token(self) -> str:
+        """Twitch リフレッシュトークンを復号して返す"""
+        encrypted = self._data.get(self._TWITCH_REFRESH_KEY, "")
+        if not encrypted:
+            return ""
+        try:
+            return _dpapi_decrypt(encrypted)
+        except Exception:
+            return ""
+
+    def set_twitch_refresh_token(self, plaintext: str):
+        """Twitch リフレッシュトークンを DPAPI 暗号化して保存する"""
+        if plaintext:
+            try:
+                self._data[self._TWITCH_REFRESH_KEY] = _dpapi_encrypt(plaintext)
+            except Exception:
+                pass
+        else:
+            self._data.pop(self._TWITCH_REFRESH_KEY, None)
+        self._flush()
+
+    # ─── 接続プロファイル管理 ──────────────────────────────────────────────────
+
+    def get_connection_profiles(self) -> list:
+        """
+        接続プロファイルリストを返す。
+
+        新形式（connection_profiles キー）が存在すればそれを返す。
+        旧形式（conn1_* / conn2_* キー）のみの場合は自動マイグレーションする。
+        いずれの場合も、旧「display_name」のみの場合は 3 名称フィールドへ自動補完する。
+        """
+        profiles = self._data.get("connection_profiles", None)
+        if profiles is not None:
+            result = list(profiles)
+        else:
+            # ─── 旧形式からマイグレーション ──────────────────────────────────
+            result = []
+            for i, conn_id in enumerate(("conn1", "conn2")):
+                default_en   = (conn_id == "conn1")
+                default_name = "接続1" if conn_id == "conn1" else "接続2"
+                result.append({
+                    "profile_id":   f"profile_{i}",
+                    "platform":     "youtube",
+                    "display_name": self._data.get(f"{conn_id}_name", default_name),
+                    "enabled":      self._data.get(f"{conn_id}_enabled", default_en),
+                    "target_url":   self._data.get(f"{conn_id}_url", ""),
+                })
+
+        # ─── 名称フィールドの自動補完（旧 display_name のみの場合） ────────────
+        for p in result:
+            if "profile_name" not in p:
+                dn = p.get("display_name", p.get("profile_id", "接続"))
+                p["profile_name"] = dn
+                p.setdefault("overlay_name", dn)
+                p.setdefault("tts_name",     dn)
+
+        return result
+
+    def save_connection_profiles(self, profiles: list):
+        """接続プロファイルリストを保存する"""
+        self._data["connection_profiles"] = profiles
+        self._flush()
+
     # ─── 汎用アクセサ ────────────────────────────────────────────────────────
 
     def get(self, key, default=None):
