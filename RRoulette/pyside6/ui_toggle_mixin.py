@@ -18,7 +18,7 @@ i448: main_window.py から分離。
 
 from PySide6.QtCore import Qt, QPoint, QVariantAnimation
 from PySide6.QtGui import QPainter, QColor
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +680,13 @@ class UIToggleMixin:
         if getattr(self, '_is_all_hidden', False):
             return
         if getattr(self, '_auto_hide_fading', False):
+            return
+
+        # モーダルダイアログ（QFileDialog 等）表示中は発火させずタイマーを再セット
+        # QApplication.activeModalWidget() はモーダルウィンドウが開いている間 None 以外を返す
+        if QApplication.activeModalWidget() is not None:
+            if self._settings.auto_hide_enabled and self._settings.auto_hide_seconds > 0:
+                self._idle_timer.start(self._settings.auto_hide_seconds * 1000)
             return
 
         # 継続操作中（スピン中・結果表示中・連続抽選実行中）は非表示へ進まずタイマーを再セット
