@@ -93,6 +93,13 @@ class SpinFlowMixin:
         if self._macro_auto_advancing:
             print("[dev] auto advance stopped — manual spin requested")
             self._stop_auto_advance()
+        # v0.6.1: 新しいスピン開始時に前回の連携投稿者表示をクリア
+        try:
+            ctx = self._active_context
+            if ctx is not None and ctx.panel is not None:
+                ctx.panel.result_overlay.set_link_author("")
+        except Exception:
+            pass
         self.apply_action(SpinRoulette())
 
     def _start_all_visible_spin(self):

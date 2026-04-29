@@ -10,7 +10,7 @@ PySide6 — SettingsPanel 項目行ロジックモジュール
     項目行 UI 構築・イベントハンドラ・確率表示・フィルタ
 """
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, Signal as _Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
@@ -19,13 +19,68 @@ from PySide6.QtWidgets import (
 )
 
 from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits
-from panel_widgets import _SectionHeader, CollapsibleSection, _PlaceholderSection
+from panel_widgets import (
+    _SectionHeader, CollapsibleSection, _PlaceholderSection,
+    NoWheelSlider, NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
+)
 
 from app_constants import ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES
 from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
 from dark_theme import dark_checkbox_style, dark_spinbox_style, get_header_colors
+
+
+class _ProbModeRadioGroup(QObject):
+    """v0.6.1: 確率モード切替用のラジオボタン群を QComboBox 互換 API
+    (currentIndex / setCurrentIndex / blockSignals / currentIndexChanged) で
+    扱うラッパー。OBS でドロップダウンが映らない問題を回避する目的。"""
+
+    currentIndexChanged = _Signal(int)
+
+    def __init__(self, labels, btn_style, parent_layout, btns_list):
+        super().__init__()
+        self._btns: list[QPushButton] = []
+        self._block = False
+        self._cur_idx = 0
+        for i, lbl in enumerate(labels):
+            btn = QPushButton(lbl)
+            btn.setCheckable(True)
+            btn.setStyleSheet(btn_style)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _chk=False, idx=i: self._on_clicked(idx))
+            parent_layout.addWidget(btn)
+            self._btns.append(btn)
+            btns_list.append(btn)
+        self._btns[0].setChecked(True)
+
+    def _on_clicked(self, idx: int):
+        for i, b in enumerate(self._btns):
+            b.setChecked(i == idx)
+        self._cur_idx = idx
+        if not self._block:
+            self.currentIndexChanged.emit(idx)
+
+    def currentIndex(self) -> int:
+        return self._cur_idx
+
+    def setCurrentIndex(self, idx: int):
+        if 0 <= idx < len(self._btns):
+            for i, b in enumerate(self._btns):
+                b.setChecked(i == idx)
+            self._cur_idx = idx
+
+    def blockSignals(self, b: bool):
+        self._block = bool(b)
+        return False
+
+    def setEnabled(self, enabled: bool):
+        for b in self._btns:
+            b.setEnabled(enabled)
+
+    def setVisible(self, visible: bool):
+        for b in self._btns:
+            b.setVisible(visible)
 
 
 def _build_weight_candidates(n: int) -> list[float]:
@@ -150,7 +205,7 @@ class _ItemsMixin:
         self._search_edit.textChanged.connect(self._apply_item_filter)
         filter_bar.addWidget(self._search_edit, stretch=1)
 
-        self._filter_combo = QComboBox()
+        self._filter_combo = NoWheelComboBox()
         self._filter_combo.setFont(QFont("Meiryo", 8))
         self._filter_combo.addItems(["全件", "ONのみ", "OFFのみ"])
         self._apply_combo_style(self._filter_combo, design)
@@ -240,6 +295,15 @@ class _ItemsMixin:
         )
         top_row.addWidget(edit, stretch=1)
 
+        # v0.6.1: バッジ（確率モード / 分割 / 役割）— PWA item-config / role-badge 相当
+        # 3 ラベルを 1 ラベルに統合して行幅超過・クリップを防ぐ
+        badge_lbl = QLabel("", row)
+        badge_lbl.setFont(QFont("Meiryo", 7))
+        badge_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        badge_lbl.setFixedWidth(80)
+        badge_lbl.setToolTip("バッジ: 確率モード（固/×）/ 分割（÷）/ 役割（⭐/❌）")
+        top_row.addWidget(badge_lbl)
+
         # i284: 計算済み当選確率ラベル（全項目向けトグルで表示／非表示）
         prob_pct_lbl = QLabel("", row)  # i289 t10
         prob_pct_lbl.setFont(QFont("Meiryo", 7))
@@ -261,6 +325,41 @@ class _ItemsMixin:
         )
         win_lbl.setToolTip("当選回数")
         top_row.addWidget(win_lbl)
+
+        # v0.6.1: 役割（当てたい / 当てたくない）3 択ラジオボタン群（メイン行に常時表示）
+        role_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 2px; font-family: Meiryo; font-size: 7pt;"
+            f"  min-width: 22px; max-width: 22px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+        role_btns: dict = {}  # role_value(None/"target"/"avoid") → QPushButton
+        for role_label, role_val, tooltip in (
+            ("通", None,     "通常項目"),
+            ("当", "target", "当てたい項目（特殊演出のターゲット）"),
+            ("避", "avoid",  "当てたくない項目（特殊演出のアボイド）"),
+        ):
+            rb = QPushButton(role_label)
+            rb.setCheckable(True)
+            rb.setStyleSheet(role_btn_style)
+            rb.setCursor(Qt.CursorShape.PointingHandCursor)
+            rb.setToolTip(tooltip)
+            rb.clicked.connect(
+                lambda _chk=False, r=row, v=role_val:
+                self._on_role_btn_clicked(r, v)
+            )
+            top_row.addWidget(rb)
+            role_btns[role_val] = rb
+        # 既定: entry.special_role に対応するボタンをチェック
+        cur_role = getattr(entry, "special_role", None)
+        (role_btns.get(cur_role) or role_btns[None]).setChecked(True)
+        row._role_btns = role_btns
 
         # ボタン共通スタイル
         btn_font = QFont("Meiryo", 8)
@@ -326,13 +425,26 @@ class _ItemsMixin:
             f"}}"
         )
 
-        # 確率モード選択
-        mode_combo = QComboBox()
-        mode_combo.setFont(QFont("Meiryo", 7))
-        mode_combo.setStyleSheet(combo_style)
-        for label in self._PROB_MODE_LABELS:
-            mode_combo.addItem(label)
-        prob_row.addWidget(mode_combo)
+        # v0.6.1: 確率モード選択をコンボボックス → ラジオボタン群に変更
+        # （OBS でドロップダウンが映らない問題を回避するため）
+        mode_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-family: Meiryo; font-size: 7pt;"
+            f"  min-width: 40px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+        # 互換のため mode_combo は QObject ベースのプロキシとして残し、
+        # 既存コード (currentIndexChanged / setCurrentIndex / blockSignals) を
+        # 動かすミニマムなラッパーを使う。
+        mode_btns: list[QPushButton] = []
+        mode_proxy = _ProbModeRadioGroup(self._PROB_MODE_LABELS, mode_btn_style, prob_row, mode_btns)
+        mode_combo = mode_proxy  # 以降のコードでは mode_combo を介して制御
 
         # 値ウィジェット（QStackedWidget で切替）
         value_stack = QStackedWidget(row)  # i068: 親なし HWND フラッシュ防止
@@ -343,7 +455,7 @@ class _ItemsMixin:
 
         # page 1: 重み係数 — QComboBox
         n = self._get_enabled_count() if self._item_rows else max(1, len(self._item_entries))
-        weight_combo = QComboBox()
+        weight_combo = NoWheelComboBox()
         weight_combo.setFont(QFont("Meiryo", 7))
         weight_combo.setStyleSheet(combo_style)
         _populate_weight_combo(weight_combo, n)
@@ -353,7 +465,7 @@ class _ItemsMixin:
         value_stack.addWidget(weight_combo)
 
         # page 2: 固定確率 — QDoubleSpinBox
-        fixed_spin = QDoubleSpinBox()
+        fixed_spin = NoWheelDoubleSpinBox()
         fixed_spin.setFont(QFont("Meiryo", 7))
         fixed_spin.setRange(0.1, 99.9)
         fixed_spin.setSingleStep(0.5)
@@ -378,7 +490,7 @@ class _ItemsMixin:
         split_lbl.setStyleSheet(f"color: {design.text_sub};")
         prob_row.addWidget(split_lbl)
 
-        split_spin = QSpinBox()
+        split_spin = NoWheelSpinBox()
         split_spin.setFont(QFont("Meiryo", 7))
         split_spin.setRange(1, 10)
         split_spin.setValue(max(1, min(10, entry.split_count)))
@@ -393,6 +505,8 @@ class _ItemsMixin:
         split_spin.valueChanged.connect(lambda _: self._emit_entries_changed())
         prob_row.addWidget(split_spin)
 
+        # v0.6.1: 役割選択は項目メイン行 (top_row) に移動済み（[通][当][避]）
+
         outer_layout.addLayout(prob_row)
 
         # モード切替で表示切替
@@ -405,12 +519,14 @@ class _ItemsMixin:
         row._edit = edit
         row._win_lbl = win_lbl
         row._prob_pct_lbl = prob_pct_lbl  # i284
+        row._badge_lbl = badge_lbl   # v0.6.1: 統合バッジラベル
         row._mode_combo = mode_combo
         row._value_stack = value_stack
         row._weight_combo = weight_combo
         row._fixed_spin = fixed_spin
         row._split_lbl = split_lbl
         row._split_spin = split_spin
+        # v0.6.1: row._role_btns はメイン行ラジオボタン側で設定済み
         # i283: 改行入りテキストの保持と、ユーザー編集判定
         row._original_text = entry.text
         row._user_edited = False
@@ -465,10 +581,30 @@ class _ItemsMixin:
         finally:
             row._mode_combo.blockSignals(False)
             row._weight_combo.blockSignals(False)
+        # v0.6.1: special_role はメイン行のラジオボタンに反映
+        if hasattr(row, "_role_btns"):
+            cur = getattr(entry, "special_role", None)
+            for v, btn in row._role_btns.items():
+                btn.blockSignals(True)
+                btn.setChecked(v == cur)
+                btn.blockSignals(False)
+        # v0.6.1: バッジを entry の初期値で反映
+        self._update_row_badges(row, entry)
 
     def _on_prob_mode_changed(self, row: QWidget, idx: int):
         """確率モード切替時: 表示切替 + 通知。"""
         row._value_stack.setCurrentIndex(idx)
+        self._emit_entries_changed()
+
+    def _on_role_btn_clicked(self, row: QWidget, value):
+        """v0.6.1: 役割ラジオボタン群（[通][当][避]）から排他選択 + 通知。"""
+        role_btns = getattr(row, "_role_btns", None)
+        if role_btns is None:
+            return
+        for v, btn in role_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(v == value)
+            btn.blockSignals(False)
         self._emit_entries_changed()
 
     def _refresh_all_weight_combos(self):
@@ -517,12 +653,21 @@ class _ItemsMixin:
                     prob_value = row._weight_combo.itemData(idx)
             elif prob_mode == "fixed":
                 prob_value = row._fixed_spin.value()
+            # v0.6.1: special_role はメイン行ラジオボタン群から収集
+            special_role = None
+            role_btns = getattr(row, "_role_btns", None)
+            if role_btns:
+                for v, btn in role_btns.items():
+                    if btn.isChecked():
+                        special_role = v
+                        break
             entries.append(ItemEntry(
                 text=text,
                 enabled=row._cb.isChecked(),
                 split_count=row._split_spin.value(),
                 prob_mode=prob_mode,
                 prob_value=prob_value,
+                special_role=special_role,
             ))
         return entries
 
@@ -531,6 +676,7 @@ class _ItemsMixin:
         self._item_entries = self._collect_entries()
         # i284: 計算済み確率ラベルを更新（表示中なら反映、非表示なら次回 ON 時に効く）
         self._refresh_prob_labels()
+        self._refresh_item_badges()
         self.item_entries_changed.emit(list(self._item_entries))
 
     def notify_entries_changed_from_simple(self):
@@ -692,15 +838,48 @@ class _ItemsMixin:
         """
         show_prob = bool(getattr(self._settings, "show_item_prob", True))
         show_win = bool(getattr(self._settings, "show_item_win_count", True))
+        show_badges = bool(getattr(self._settings, "show_item_extra_badges", True))
         if hasattr(row, "_prob_pct_lbl"):
             row._prob_pct_lbl.setVisible(show_prob)
         if hasattr(row, "_win_lbl"):
             row._win_lbl.setVisible(show_win)
+        if hasattr(row, "_badge_lbl"):
+            row._badge_lbl.setVisible(show_badges)
 
     def _refresh_item_rows_visibility(self):
         """全行に表示 ON/OFF を反映する。"""
         for row in self._item_rows:
             self._apply_item_row_visibility(row)
+
+    def _refresh_item_badges(self):
+        """全行のバッジラベルを再計算して反映する。"""
+        if not self._item_rows:
+            return
+        entries = self._collect_entries()
+        for i, row in enumerate(self._item_rows):
+            if i >= len(entries):
+                break
+            self._update_row_badges(row, entries[i])
+
+    @staticmethod
+    def _update_row_badges(row, entry):
+        """1行分の統合バッジラベルを entry の現在値で更新する。"""
+        if not hasattr(row, "_badge_lbl"):
+            return
+        parts = []
+        if entry.prob_mode == "fixed" and entry.prob_value is not None:
+            parts.append(f"固{entry.prob_value:.0f}%")
+        elif entry.prob_mode == "weight" and entry.prob_value is not None:
+            parts.append(f"×{entry.prob_value:g}")
+        sc = getattr(entry, "split_count", 1) or 1
+        if sc > 1:
+            parts.append(f"÷{sc}")
+        role = getattr(entry, "special_role", None)
+        if role == "target":
+            parts.append("⭐")
+        elif role == "avoid":
+            parts.append("❌")
+        row._badge_lbl.setText(" ".join(parts))
 
     def _refresh_prob_labels(self):
         """i284: 全行の当選確率ラベルを再計算して反映する。

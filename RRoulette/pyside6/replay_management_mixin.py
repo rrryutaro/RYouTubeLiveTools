@@ -104,7 +104,11 @@ class ReplayManagementMixin:
         for rid, mgr, rec_idx, panel in targets:
             if self._settings.replay_show_indicator:
                 panel.wheel.set_replay_indicator(True)
-            ok = mgr.start_playback(rec_idx, panel.wheel, self._sound)
+            ok = mgr.start_playback(
+                rec_idx, panel.wheel, self._sound,
+                roulette_panel=panel,
+                replay_effects=getattr(self._settings, "replay_record_effects", True),
+            )
             if ok:
                 started_panels.append(panel)
             else:
@@ -307,7 +311,11 @@ class ReplayManagementMixin:
         self._settings_panel.set_replay_playing(True)
         if self._settings.replay_show_indicator:
             ctx.panel.wheel.set_replay_indicator(True)
-        ok = replay_mgr.start_playback(idx, ctx.panel.wheel, self._sound)
+        ok = replay_mgr.start_playback(
+            idx, ctx.panel.wheel, self._sound,
+            roulette_panel=ctx.panel,
+            replay_effects=getattr(self._settings, "replay_record_effects", True),
+        )
         if not ok:
             self._replay_sessions = []
             self._replay_group_remaining = 0

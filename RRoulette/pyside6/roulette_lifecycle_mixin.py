@@ -26,7 +26,10 @@ from item_entry import ItemEntry
 from pattern_store import get_current_pattern_name, get_pattern_id
 from roulette_panel import RoulettePanel
 from roulette_context import RouletteContext
-from per_roulette_settings import PerRouletteSettings
+from per_roulette_settings import PerRouletteSettings, PER_ROULETTE_KEYS
+from spin_effect_settings import SpinEffectSettings
+from roulette_actions import UpdateSettings
+from panel_widgets import ConfirmOverlay
 from replay_manager_pyside6 import ReplayManager
 from roulette_actions import SetActiveRoulette
 
@@ -69,8 +72,6 @@ class RouletteLifecycleMixin:
         panel.spin_ctrl.set_sound_result_enabled(self._settings.sound_result_enabled)
         panel.spin_ctrl.set_tick_pattern(self._settings.tick_pattern)
         panel.spin_ctrl.set_win_pattern(self._settings.win_pattern)
-        if self._settings.spin_preset_name:
-            panel.spin_ctrl.set_spin_preset(self._settings.spin_preset_name)
         panel.result_overlay.set_close_mode(self._settings.result_close_mode)
         panel.result_overlay.set_hold_sec(self._settings.result_hold_sec)
         # i342: ログ表示 (log_overlay_show) と前面表示 (log_on_top) を分離。
@@ -97,6 +98,10 @@ class RouletteLifecycleMixin:
         panel.spin_ctrl.set_spin_mode(self._settings.spin_mode)
         panel.spin_ctrl.set_double_duration(self._settings.double_duration)
         panel.spin_ctrl.set_triple_duration(self._settings.triple_duration)
+        # v0.6.1: リプレイに特殊演出を記録するか
+        panel.spin_ctrl.set_replay_record_effects(
+            getattr(self._settings, "replay_record_effects", True)
+        )
         panel.set_transparent(self._settings.roulette_transparent)
 
         # manager 登録
@@ -233,6 +238,8 @@ class RouletteLifecycleMixin:
 
         panel.show()
         self._roulette_visible_ids.add(roulette_id)
+        # i120: 新規パネルのグリップ表示状態を現在設定に合わせる
+        self._sync_roulette_grips_visible()
 
         if activate:
             self._set_active_roulette(roulette_id)
@@ -446,6 +453,335 @@ class RouletteLifecycleMixin:
         """ManagePanel の一括適用チェックボックスから: _apply_to_all フラグを更新する（i347）。"""
         self._apply_to_all = value
 
+    # =====================================================================
+    #  v0.6.1: 主要セクション初期化 / 全体初期化
+    # =====================================================================
+
+    # 各主要セクションが初期化対象とする per-roulette キー一覧
+    _SECTION_RESET_KEYS = {
+        "spin": [
+            "spin_duration", "spin_preset_profile", "spin_preset_random",
+            "spin_duration_random", "spin_duration_random_ratio",
+            "spin_phase_randomize", "spin_phase_overrides",
+            "spin_mode", "double_duration", "triple_duration",
+            "profile_idx",
+        ],
+        "display": [
+            "text_size_mode", "text_direction", "donut_hole",
+            "pointer_angle", "spin_direction",
+        ],
+        "result": [
+            "result_close_mode", "result_hold_sec",
+        ],
+        "sound": [
+            "sound_tick_enabled", "sound_result_enabled",
+            "tick_pattern", "win_pattern",
+            "tick_custom_file", "win_custom_file",
+        ],
+        "log": [
+            "log_overlay_show", "log_on_top", "log_timestamp",
+            "log_box_border", "log_all_patterns",
+        ],
+        # v0.6.1: リプレイ初期化ボタンは廃止（履歴クリアは管理画面で行う）
+        "effects": [
+            "spin_effects",
+        ],
+    }
+
+    _SECTION_LABELS = {
+        "spin": "スピン", "display": "表示", "result": "結果表示",
+        "sound": "サウンド", "log": "ログ",
+        "effects": "特殊演出（テスト版）",
+    }
+
+    def _show_reset_confirm_overlay(self, title: str, body: str, on_ok) -> None:
+        """ConfirmOverlay で OBS 可視の確認ダイアログを表示する。
+
+        confirm_reset = False ならスキップして即時 on_ok を実行する。
+        """
+        if not getattr(self._settings, "confirm_reset", True):
+            on_ok()
+            return
+        parent = self.centralWidget() if hasattr(self, "centralWidget") else self
+        if parent is None:
+            parent = self
+        overlay = ConfirmOverlay(
+            title=title,
+            body=body,
+            buttons=[
+                ("初期化する", "ok",     "danger"),
+                ("キャンセル", "cancel", "cancel"),
+            ],
+            design=self._design,
+            parent=parent,
+        )
+
+        def _on_chosen(v: str):
+            if v == "ok":
+                try:
+                    on_ok()
+                except Exception:
+                    pass
+            overlay.deleteLater()
+
+        overlay.chosen.connect(_on_chosen)
+        overlay.show()
+
+    def _on_section_reset_requested(self, section_name: str) -> None:
+        """設定パネルの主要セクションヘッダー右の初期化ボタンから。"""
+        if section_name == "all":
+            # v0.6.1: 設定パネル先頭の「全体初期化」ボタンから（実質 _on_global_reset_requested）
+            self._on_global_reset_requested()
+            return
+        label = self._SECTION_LABELS.get(section_name, section_name)
+        scope = "全ルーレット" if getattr(self, "_apply_to_all", False) else "アクティブなルーレット"
+        body = f"「{label}」を新規ルーレット作成時の状態に戻します。\n対象: {scope}"
+        self._show_reset_confirm_overlay(
+            title=f"{label} を初期化",
+            body=body,
+            on_ok=lambda: self._perform_section_reset(section_name),
+        )
+
+    def _perform_section_reset(self, section_name: str) -> None:
+        """指定セクションのキー一覧を PerRouletteSettings デフォルトで上書きする。"""
+        keys = self._SECTION_RESET_KEYS.get(section_name, [])
+        if not keys:
+            return
+        defaults = PerRouletteSettings()
+
+        # 対象 ctx を決定
+        if getattr(self, "_apply_to_all", False):
+            target_ids = list(self._manager.ids())
+        else:
+            target_ids = [self._manager.active_id]
+
+        active_id = self._manager.active_id
+        for rid in target_ids:
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            for k in keys:
+                if not hasattr(defaults, k):
+                    continue
+                default_val = getattr(defaults, k)
+                if rid == active_id:
+                    # active は dispatch 経由で UI も runtime もまとめて更新
+                    self.apply_action(UpdateSettings(key=k, value=default_val))
+                else:
+                    # 非 active は ctx.settings に書き込みのみ
+                    setattr(ctx.settings, k, default_val)
+        self._save_config()
+
+    def _on_global_reset_requested(self) -> None:
+        """v0.6.1: 管理パネルからの全体初期化要求ハンドラ。"""
+        scope = "全ルーレット" if getattr(self, "_apply_to_all", False) else "アクティブなルーレット"
+        body = (
+            "全設定（スピン・表示・結果表示・サウンド・ログ・特殊演出）を\n"
+            f"新規ルーレット作成時の状態に戻します。\n対象: {scope}"
+        )
+        self._show_reset_confirm_overlay(
+            title="全体初期化",
+            body=body,
+            on_ok=self._perform_global_reset,
+        )
+
+    # ── v0.6.1: 管理パネル各グループの初期化 ──
+
+    def _on_ro_only_reset_requested(self) -> None:
+        """管理パネル「ルーレット以外非表示時」グループの初期化。"""
+        body = "「ルーレット以外非表示時」の表示設定を既定値に戻します。"
+        self._show_reset_confirm_overlay(
+            title="ルーレット以外非表示時 を初期化",
+            body=body,
+            on_ok=self._perform_ro_only_reset,
+        )
+
+    def _perform_ro_only_reset(self) -> None:
+        """v0.6.1: AppSettings 既定値で各キーを上書きし、ManagePanel CB
+        と各パネル runtime に即時反映する。
+        """
+        from app_settings import AppSettings
+        d = AppSettings()
+        # 内部 short_key → AppSettings 属性
+        key_map = {
+            "selection_handle":  "roulette_only_show_selection_handle",
+            "title_plate":       "roulette_only_show_title_plate",
+            "graph_btn":         "roulette_only_show_graph_btn",
+            "grip":              "roulette_only_show_grip",
+            "log":               "roulette_only_show_log",
+            "manage_panel":      "roulette_only_show_manage_panel",
+            "items_panel":       "roulette_only_show_items_panel",
+            "settings_panel":    "roulette_only_show_settings_panel",
+            "execution_panel":   "roulette_only_show_execution_panel",
+            "ticket_panel":      "roulette_only_show_ticket_panel",
+            "link_panel":        "roulette_only_show_link_panel",
+        }
+        for short_key, attr in key_map.items():
+            if not hasattr(d, attr):
+                continue
+            default_val = getattr(d, attr)
+            # AppSettings 書き込み + roulette_only_mode 中の runtime 反映
+            self._on_roulette_only_hide_changed(short_key, default_val)
+            # ManagePanel チェックボックス UI を同期
+            if hasattr(self._manage_panel, "update_roulette_only_hide"):
+                self._manage_panel.update_roulette_only_hide(short_key, default_val)
+
+    def _on_app_settings_reset_requested(self) -> None:
+        """管理パネル「アプリ設定」グループの初期化。"""
+        body = (
+            "アプリ全体に影響する設定（透過/テーマ/動作/音量/リプレイ/\n"
+            "自動全面非表示）を既定値に戻します。"
+        )
+        self._show_reset_confirm_overlay(
+            title="アプリ設定 を初期化",
+            body=body,
+            on_ok=self._perform_app_settings_reset,
+        )
+
+    def _perform_app_settings_reset(self) -> None:
+        from app_settings import AppSettings
+        d = AppSettings()
+        keys = [
+            # 透過 / 最前面
+            "window_transparent", "roulette_transparent",
+            "panels_transparent", "always_on_top",
+            # テーマ / 動作
+            "theme_mode", "confirm_item_delete",
+            "float_win_show_instance", "confirm_reset",
+            # 音量
+            "tick_volume", "win_volume", "effect_volume",
+            # リプレイ
+            "replay_max_count", "replay_show_indicator",
+            "replay_record_effects",
+            # 自動全面非表示
+            "auto_hide_enabled", "auto_hide_seconds",
+            "auto_hide_fade_enabled", "auto_hide_fade_seconds",
+            "auto_hide_only_in_roulette_only_mode",
+            "auto_hide_after_spin_after_restore",
+        ]
+        for k in keys:
+            if hasattr(d, k):
+                self.apply_action(UpdateSettings(key=k, value=getattr(d, k)))
+        self._save_config()
+
+    # サブグループ単位の初期化対象キー
+    _APP_SUBGROUP_KEYS = {
+        "window_display": [
+            "window_transparent", "roulette_transparent",
+            "panels_transparent", "always_on_top",
+        ],
+        "theme_action": [
+            "theme_mode", "confirm_item_delete",
+            "float_win_show_instance", "confirm_reset",
+        ],
+        "volume": ["tick_volume", "win_volume", "effect_volume"],
+        "replay": [
+            "replay_max_count", "replay_show_indicator",
+            "replay_record_effects",
+        ],
+        "auto_hide": [
+            "auto_hide_enabled", "auto_hide_seconds",
+            "auto_hide_fade_enabled", "auto_hide_fade_seconds",
+            "auto_hide_only_in_roulette_only_mode",
+            "auto_hide_after_spin_after_restore",
+        ],
+        "link": [
+            "link_integration_enabled", "link_integration_port",
+            "link_integration_max_hold", "link_panel_show_time",
+        ],
+    }
+
+    _APP_SUBGROUP_LABELS = {
+        "window_display": "ウィンドウ表示",
+        "theme_action":   "テーマ・動作",
+        "volume":         "音量",
+        "replay":         "リプレイ",
+        "auto_hide":      "自動全面非表示",
+        "link":           "外部連携",
+    }
+
+    def _on_app_subgroup_reset_requested(self, sub_key: str) -> None:
+        """管理パネル「アプリ設定」内のサブグループ単位の初期化要求。"""
+        label = self._APP_SUBGROUP_LABELS.get(sub_key, sub_key)
+        body = f"「{label}」の設定を既定値に戻します。"
+        self._show_reset_confirm_overlay(
+            title=f"{label} を初期化",
+            body=body,
+            on_ok=lambda: self._perform_app_subgroup_reset(sub_key),
+        )
+
+    def _perform_app_subgroup_reset(self, sub_key: str) -> None:
+        from app_settings import AppSettings
+        d = AppSettings()
+        keys = self._APP_SUBGROUP_KEYS.get(sub_key, [])
+        if sub_key in ("auto_hide", "link"):
+            # auto_hide / link 系は dispatch ルートを経由しないため、
+            # ManagePanel ウィジェットを直接更新してシグナル発火経由で適用
+            for k in keys:
+                if hasattr(d, k):
+                    self._set_app_widget(k, getattr(d, k))
+        else:
+            for k in keys:
+                if hasattr(d, k):
+                    self.apply_action(UpdateSettings(key=k, value=getattr(d, k)))
+        self._save_config()
+
+    def _set_app_widget(self, key: str, value) -> None:
+        """auto_hide / link 系 ManagePanel ウィジェットを value に設定し
+        既存の toggled / valueChanged シグナルを発火させる。"""
+        mp = self._manage_panel
+        widget_map = {
+            "auto_hide_enabled":         ("_auto_hide_cb", "setChecked", bool),
+            "auto_hide_seconds":         ("_auto_hide_spin", "setValue", int),
+            "auto_hide_fade_enabled":    ("_auto_hide_fade_cb", "setChecked", bool),
+            "auto_hide_fade_seconds":    ("_auto_hide_fade_spin", "setValue", float),
+            "auto_hide_only_in_roulette_only_mode":
+                ("_auto_hide_roulette_only_cb", "setChecked", bool),
+            "auto_hide_after_spin_after_restore":
+                ("_auto_hide_after_spin_restore_cb", "setChecked", bool),
+            "link_integration_enabled":
+                ("_link_int_enabled_cb", "setChecked", bool),
+            "link_integration_port":
+                ("_link_int_port_spin", "setValue", int),
+            "link_integration_max_hold":
+                ("_link_int_max_hold_spin", "setValue", int),
+            "link_panel_show_time":
+                ("_link_int_show_time_cb", "setChecked", bool),
+        }
+        if key not in widget_map:
+            return
+        attr, method, cast = widget_map[key]
+        w = getattr(mp, attr, None)
+        if w is None:
+            return
+        getattr(w, method)(cast(value))
+
+    def _perform_global_reset(self) -> None:
+        """全 per-roulette 設定を PerRouletteSettings デフォルトに戻す。
+
+        AppSettings 側の app-wide 設定（テーマ・透過・最前面・音量等）は
+        対象外（管理パネル側で個別管理）。
+        """
+        defaults = PerRouletteSettings()
+        if getattr(self, "_apply_to_all", False):
+            target_ids = list(self._manager.ids())
+        else:
+            target_ids = [self._manager.active_id]
+        active_id = self._manager.active_id
+        for rid in target_ids:
+            ctx = self._manager.get(rid)
+            if ctx is None:
+                continue
+            for k in PER_ROULETTE_KEYS:
+                if not hasattr(defaults, k):
+                    continue
+                default_val = getattr(defaults, k)
+                if rid == active_id:
+                    self.apply_action(UpdateSettings(key=k, value=default_val))
+                else:
+                    setattr(ctx.settings, k, default_val)
+        self._save_config()
+
     def _on_roulette_only_hide_changed(self, key: str, value: bool) -> None:
         """管理パネルのルーレット以外非表示時個別設定変更ハンドラ（i463/i464/i466）。"""
         _key_map = {
@@ -654,8 +990,6 @@ class RouletteLifecycleMixin:
         sc = panel.spin_ctrl
         w  = panel.wheel
         ro = panel.result_overlay
-        if entry.get("spin_preset_name") is not None:
-            sc.set_spin_preset(entry["spin_preset_name"])
         if entry.get("spin_duration") is not None:
             sc.set_spin_duration(entry["spin_duration"])
         if entry.get("spin_mode") is not None:
@@ -695,6 +1029,8 @@ class RouletteLifecycleMixin:
             ro.set_close_mode(entry["result_close_mode"])
         if "result_hold_sec" in entry:
             ro.set_hold_sec(entry["result_hold_sec"])
+        if "spin_effects" in entry:
+            panel.set_effect_settings(SpinEffectSettings.from_dict(entry["spin_effects"]))
         # i368: ctx.settings を config エントリと整合させる（キー欠落は既存値を維持）
         if ctx is not None:
             ctx.settings = PerRouletteSettings.from_config_entry(

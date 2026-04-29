@@ -1,37 +1,48 @@
 """
-PySide6 プロトタイプ — スピン制御
+RRoulette — スピン制御 (4段階モデル対応版)
 
-WheelWidget のスピン物理（開始・フレーム更新・停止）を分離したコントローラー。
-WheelWidget は描画に専念し、SpinController が角度を駆動する。
+spin_preset.py の 4段階モデル (push/cruise/decel/landing) を使い、
+時刻ベースの解析積分で角度を駆動する。
+
+旧実装との主な変更点:
+  - フレームごとの速度減衰 → 経過時間から回転数を解析計算
+  - プリセット選択: 9秒/15秒 → プロファイル (x/y/z) + スピン時間
+  - ランダム化 4 層 (プロファイル/秒数/秒数微振動/フェーズ内振動)
+  - マルチスピン (ダブル/トリプル) と既存機能は維持
 
 責務:
   - spin 開始 / 停止の状態管理
-  - 多段階減速の物理演算（プリセットベース）
+  - 4段階モデルによる角度計算 (time.perf_counter ベース)
   - 結果セグメントの事前決定
   - spin_finished シグナルの発行
-
-今後の拡張ポイント:
-  - ダブルタップ / トリプルタップ停止
-  - リプレイ記録フック
-  - 常時ランダム配置との連携
 """
 
 import random
+import time
+
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from spin_preset import (
-    SpinPreset, SPIN_PRESETS, DEFAULT_PRESET_NAME, V_STOP,
+    PhaseTimes,
+    build_phase_times,
+    rotations_at,
+    PRESET_DURATIONS_MS,
+    PRESET_PROFILES_LIST,
 )
+from effect_scheduler import EffectScheduler
+from spin_effect_settings import SpinEffectSettings, default_spin_effect_settings
 
 
 class SpinController(QObject):
-    """スピンの物理演算と状態を管理する。
+    """スピンの状態と角度計算を管理する。
 
     WheelWidget への依存は最小限:
-      - wheel.angle (現在角度の取得)
-      - wheel.set_angle() (角度の更新)
+      - wheel.angle        (現在角度の取得)
+      - wheel.set_angle()  (角度の更新)
       - wheel.seg_at_pointer() (結果判定)
-      - wheel.segments (セグメント情報)
+      - wheel._segments    (セグメント情報)
+      - wheel._pointer_angle
+      - wheel._spin_direction
 
     Signals:
         spin_started: spin が開始された
@@ -46,41 +57,57 @@ class SpinController(QObject):
         self._wheel = wheel
         self._sound = sound_manager
 
-        # --- spin 状態 ---
+        # ── spin 状態 ──────────────────────────────────────────────
         self._spinning: bool = False
-        self._velocity: float = 0.0
         self._spin_sign: int = 1
-        self._cruise_decel: float = 1.0
-        self._prev_seg_idx: int = -1   # tick 音用: 前フレームのセグメント番号
-        # 短時間モード (固定フェーズを使わず v0.4.4 互換の単段減衰で動く)
-        self._single_phase_mode: bool = False
 
-        # --- 音設定 ---
+        # ── 4段階モデル用スピン状態 ─────────────────────────────────
+        self._spin_start_time: float = 0.0   # perf_counter (秒)
+        self._spin_start_angle: float = 0.0  # 開始角度 (度)
+        self._spin_end_angle: float = 0.0    # 終了角度 (度)
+        self._spin_times: PhaseTimes | None = None
+        self._spin_angle_scale: float = 1.0
+
+        # ── tick 音用 ────────────────────────────────────────────────
+        self._prev_seg_idx: int = -1
+
+        # ── 音設定 ───────────────────────────────────────────────────
         self._sound_tick_enabled: bool = True
         self._sound_result_enabled: bool = True
-        self._tick_pattern: int = 0   # i370: per-roulette スピン音の種類
-        self._win_pattern: int = 0    # i370: per-roulette 決定音の種類
+        self._tick_pattern: int = 0
+        self._win_pattern: int = 0
 
-        # --- プリセット ---
-        self._spin_preset: SpinPreset = SPIN_PRESETS[DEFAULT_PRESET_NAME]
-        self._spin_duration: float = self._spin_preset.duration
+        # ── スピン設定 ───────────────────────────────────────────────
+        self._spin_duration: float = 5.0          # 秒
+        self._spin_profile: str = 'z'              # 'x'/'y'/'z'
+        self._spin_preset_random: bool = False
+        self._spin_duration_random: bool = False
+        self._spin_duration_random_ratio: float = 0.0  # 0-0.5
+        self._spin_phase_randomize: float = 0.0         # 0-1
+        self._spin_phase_overrides: dict | None = None
 
-        # --- リプレイ記録 ---
-        self._replay_mgr = None  # ReplayManager (optional)
-        self._replay_group_id: str = ""  # i352: 同時実行グループID
+        # ── リプレイ記録 ─────────────────────────────────────────────
+        self._replay_mgr = None
+        self._replay_group_id: str = ""
 
-        # --- マルチスピン ---
-        self._spin_mode: int = 0               # 0=single, 1=double, 2=triple
-        self._double_duration: float = 9.0
-        self._triple_duration: float = 9.0
-        self._multi_phase: int = 0             # 現在のスピン回数 (0-indexed)
-        self._multi_total: int = 1             # このシーケンスの合計回数
+        # ── マルチスピン ─────────────────────────────────────────────
+        self._spin_mode: int = 0
+        self._double_duration: float = 5.0
+        self._triple_duration: float = 5.0
+        self._multi_phase: int = 0
+        self._multi_total: int = 1
         self._multi_delay_timer: QTimer = QTimer(self)
         self._multi_delay_timer.setSingleShot(True)
-        self._multi_delay_timer.setInterval(800)  # 次スピンまでの待機 ms
+        self._multi_delay_timer.setInterval(800)
         self._multi_delay_timer.timeout.connect(self._start_next_phase)
 
-        # --- タイマー ---
+        # ── 特殊演出 ─────────────────────────────────────────────────
+        self._effect_scheduler = EffectScheduler()
+        self._effect_settings: SpinEffectSettings = default_spin_effect_settings()
+        self._effect_callbacks: dict = {}  # EffectKey → Callable[[int], None]
+        self._replay_record_effects: bool = True   # v0.6.1: リプレイに演出記録するか
+
+        # ── フレームタイマー ─────────────────────────────────────────
         self._spin_timer: QTimer = QTimer(self)
         self._spin_timer.setInterval(16)  # ~60fps
         self._spin_timer.timeout.connect(self._spin_frame)
@@ -93,41 +120,54 @@ class SpinController(QObject):
     def is_spinning(self) -> bool:
         return self._spinning or self._multi_delay_timer.isActive()
 
-    @property
-    def preset_name(self) -> str:
-        return self._spin_preset.name
-
-    def set_spin_preset(self, preset_name: str):
-        """spin プリセットを切り替える。"""
-        if preset_name in SPIN_PRESETS:
-            self._spin_preset = SPIN_PRESETS[preset_name]
+    # ── スピン設定 setter ────────────────────────────────────────────
 
     def set_spin_duration(self, duration: float):
         """通常スピン時間を設定する（秒）。"""
-        self._spin_duration = max(1.0, duration)
+        self._spin_duration = max(1.0, float(duration))
+
+    def set_spin_profile(self, profile: str):
+        """スピンプロファイルを設定する ('x'/'y'/'z')。"""
+        if profile in PRESET_PROFILES_LIST:
+            self._spin_profile = profile
+
+    def set_spin_preset_random(self, enabled: bool):
+        """毎スピンでプロファイルをランダム抽選するか。"""
+        self._spin_preset_random = bool(enabled)
+
+    def set_spin_duration_random(self, enabled: bool):
+        """毎スピンで秒数をランダム抽選するか。"""
+        self._spin_duration_random = bool(enabled)
+
+    def set_spin_duration_random_ratio(self, ratio: float):
+        """終了時間ランダム化割合 (0-0.5)。"""
+        self._spin_duration_random_ratio = max(0.0, min(0.5, float(ratio)))
+
+    def set_spin_phase_randomize(self, intensity: float):
+        """スピン詳細ランダム化強度 (0-1)。"""
+        self._spin_phase_randomize = max(0.0, min(1.0, float(intensity)))
+
+    def set_spin_phase_overrides(self, overrides: dict | None):
+        """フェーズ詳細上書き値を設定する。"""
+        self._spin_phase_overrides = overrides
+
+    # 後方互換: 旧コードが呼んでいた set_spin_preset を無害化
+    def set_spin_preset(self, name: str):
+        pass
 
     def set_spin_mode(self, mode: int):
-        """スピンモードを設定する（0=single, 1=double, 2=triple）。"""
         self._spin_mode = max(0, min(2, mode))
 
     def set_double_duration(self, duration: float):
-        """ダブルスピン時の1回あたり時間を設定する（秒）。"""
-        self._double_duration = max(1.0, duration)
+        self._double_duration = max(1.0, float(duration))
 
     def set_triple_duration(self, duration: float):
-        """トリプルスピン時の1回あたり時間を設定する（秒）。"""
-        self._triple_duration = max(1.0, duration)
+        self._triple_duration = max(1.0, float(duration))
 
     def set_replay_manager(self, mgr):
-        """リプレイ記録用マネージャーを設定する。"""
         self._replay_mgr = mgr
 
     def set_replay_group_id(self, group_id: str):
-        """次回記録時に付与する同時実行グループIDを設定する。
-
-        i352: _start_all_visible_spin からスピン開始前に呼ばれる。
-        start_recording() 呼び出し後に自動クリアされる。
-        """
         self._replay_group_id = group_id
 
     def set_sound_tick_enabled(self, enabled: bool):
@@ -137,23 +177,62 @@ class SpinController(QObject):
         self._sound_result_enabled = enabled
 
     def set_tick_pattern(self, idx: int):
-        """スピン中 tick 音の種類を設定する（i370: per-roulette）。"""
         self._tick_pattern = idx
 
     def set_win_pattern(self, idx: int):
-        """決定音の種類を設定する（i370: per-roulette）。"""
         self._win_pattern = idx
 
+    def set_effect_settings(self, settings: "SpinEffectSettings") -> None:
+        """特殊演出設定を更新する。"""
+        self._effect_settings = settings
+
+    def set_effect_callbacks(self, callbacks: dict) -> None:
+        """演出発火コールバックを設定する (EffectKey → Callable[[int], None])。"""
+        self._effect_callbacks = callbacks
+
+    def _wrap_callbacks_for_replay(self, callbacks: dict) -> dict:
+        """v0.6.1: 演出 callback を replay_record_effects 対応にラップする。
+
+        replay_mgr が記録中かつ replay_record_effects が ON のときに限り、
+        発火時に record_effect(key, variant) を挟んでから本体 callback を呼ぶ。
+        """
+        if self._replay_mgr is None or not getattr(self._replay_mgr, "is_recording", False):
+            return callbacks
+        # AppSettings.replay_record_effects のフラグは _replay_record_effects 経由で参照
+        if not getattr(self, "_replay_record_effects", True):
+            return callbacks
+        wrapped: dict = {}
+        for key, cb in callbacks.items():
+            def make_wrapper(k=key, c=cb):
+                def wrapper(variant):
+                    try:
+                        if self._replay_mgr is not None:
+                            self._replay_mgr.record_effect(k, variant)
+                    except Exception:
+                        pass
+                    c(variant)
+                return wrapper
+            wrapped[key] = make_wrapper()
+        return wrapped
+
+    def set_replay_record_effects(self, enabled: bool) -> None:
+        """v0.6.1: 特殊演出をリプレイに記録するかを設定する。"""
+        self._replay_record_effects = bool(enabled)
+
     def play_result_sound(self):
-        """結果SE（win音）を鳴らす (i072)。pointer_move 確定時など外部から呼ぶ。"""
+        """結果SE（win音）を鳴らす（外部から呼ぶ用）。"""
         if self._sound_result_enabled and self._sound:
             self._sound.play_win(self._win_pattern)
 
-    def start_spin(self, duration: float | None = None):
-        """spin を開始する（プリセットベース多段階減速）。
+    # ================================================================
+    #  スピン開始
+    # ================================================================
 
-        マルチスピンモード時は自動的に複数回スピンを連続実行する。
-        着地位置は事前計算で確定済み。
+    def start_spin(self, duration: float | None = None):
+        """spin を開始する（4段階モデル）。
+
+        マルチスピンモード時は複数回連続実行する。
+        着地位置は開始時に事前決定。
         """
         if self._spinning:
             return
@@ -161,7 +240,7 @@ class SpinController(QObject):
         if len(segs) < 2:
             return
 
-        # マルチスピンの初期化（外部からの start_spin 呼び出し時のみ）
+        # マルチスピン初期化 (外部 start_spin 呼び出し時のみ)
         if self._multi_phase == 0:
             if self._spin_mode == 0:
                 self._multi_total = 1
@@ -169,146 +248,129 @@ class SpinController(QObject):
                 self._multi_total = 2
             else:
                 self._multi_total = 3
-            # リプレイ記録開始（シーケンス最初のフェーズのみ）
             if self._replay_mgr is not None:
-                _grp = self._replay_group_id
-                self._replay_group_id = ""  # i352: 使用したら即クリア（単独スピン混入防止）
+                grp = self._replay_group_id
+                self._replay_group_id = ""
                 self._replay_mgr.start_recording(
                     self._wheel._segments,
                     self._wheel._pointer_angle,
                     self._wheel._spin_direction,
-                    group_id=_grp,
+                    group_id=grp,
                 )
 
         self._spinning = True
         self.spin_started.emit()
 
-        preset = self._spin_preset
-        if duration is None:
-            duration = self._duration_for_current_phase()
-
-        target_frames = max(1, duration * 1000 / 16)
-
-        # 結果を先行決定（確率比例ランダム）
-        r_val = random.uniform(0, 360)
+        # ── 当選セグメントを確率比例で事前決定 ──────────────────────
+        total_arc = sum(seg.arc for seg in segs)
+        r_val = random.uniform(0, total_arc)
         cumulative = 0.0
-        target_seg = len(segs) - 1
+        target_seg_idx = len(segs) - 1
         for i, seg in enumerate(segs):
             cumulative += seg.arc
             if r_val < cumulative:
-                target_seg = i
+                target_seg_idx = i
                 break
-        seg_start = cumulative - segs[target_seg].arc
-        seg_arc = segs[target_seg].arc
-        target_offset = seg_start + seg_arc * random.uniform(0.15, 0.85)
-        target_angle = (self._wheel._pointer_angle + target_offset) % 360
 
-        # --- 固定フェーズの合計フレーム・距離を事前計算 ---
-        fixed_frames, fixed_dist = preset.fixed_phases_stats()
+        target_seg = segs[target_seg_idx]
+        seg_arc    = target_seg.arc
+        # セグメント内のランダム位置 (端を避けて 15%〜85%)
+        seg_offset = target_seg.start_angle + seg_arc * random.uniform(0.15, 0.85)
+        # ポインター角度に合わせた目標角度 (度)
+        target_angle = (self._wheel._pointer_angle + seg_offset) % 360.0
 
-        # 短時間モード判定: 指定 duration が固定フェーズの合計時間よりも
-        # 短い (= 余裕を持って CRUISE が回せない) ときは v0.4.4 互換の
-        # 単段減衰モードに切り替える。これによりユーザーが「1秒スピン」
-        # と指定した時に LINGER フェーズが支配して 3 秒近く回ってしまう
-        # 問題を回避する。
-        # しきい値は「target_frames < fixed_frames + 30」(約 0.5 秒の
-        # 余白を持って CRUISE が回せるか) で判定する。
-        self._single_phase_mode = target_frames < fixed_frames + 30
-
-        # 時計回り(1) → angle 増加 → 視覚的 CW、反時計回り(0) → angle 減少
+        # ── スピン方向 ───────────────────────────────────────────────
         spin_sign = 1 if self._wheel._spin_direction == 1 else -1
         current_angle = self._wheel._angle
+
         if spin_sign == 1:
-            needed_residual = (target_angle - current_angle) % 360
+            needed_residual = (target_angle - current_angle) % 360.0
         else:
-            needed_residual = (current_angle - target_angle) % 360
+            needed_residual = (current_angle - target_angle) % 360.0
+        if needed_residual < 18.0:  # 最低 5% の着地余白
+            needed_residual += 360.0
 
-        if self._single_phase_mode:
-            # === v0.4.4 互換: 単段指数減衰（高速立ち上がり → 1段減速 → 停止）===
-            # base_rots は target_frames から逆算（v0.4.4 と同じロジック）
-            v_ref = 25.0
-            d_ref = (V_STOP / v_ref) ** (1.0 / target_frames)
-            if d_ref < 1.0:
-                ref_total = (v_ref - V_STOP) / (1.0 - d_ref)
-            else:
-                ref_total = v_ref * target_frames
-            base_rots = max(3, int(ref_total / 360))
-            adjusted_total = base_rots * 360 + needed_residual
+        # ── PhaseTimes 生成 (ランダム化含む) ─────────────────────────
+        if duration is None:
+            duration = self._duration_for_current_phase()
 
-            def total_for_v(v):
-                d = (V_STOP / v) ** (1.0 / target_frames)
-                if d >= 1.0:
-                    return v * target_frames
-                return (v - V_STOP) / (1.0 - d)
+        times = build_phase_times(
+            duration_ms=duration * 1000.0,
+            profile=self._spin_profile,
+            overrides=self._spin_phase_overrides,
+            duration_random_ratio=self._spin_duration_random_ratio,
+            phase_randomize=self._spin_phase_randomize,
+            preset_random=self._spin_preset_random,
+            duration_random=self._spin_duration_random,
+        )
 
-            lo, hi = 1.0, 300.0
-            for _ in range(60):
-                mid = (lo + hi) / 2
-                if total_for_v(mid) < adjusted_total:
-                    lo = mid
-                else:
-                    hi = mid
-            self._velocity = (lo + hi) / 2
-            # 単段減衰: target_frames 全体で V_STOP に到達するように
-            self._cruise_decel = (V_STOP / self._velocity) ** (1.0 / target_frames)
-        else:
-            # === 通常モード: プリセットの多段階フェーズを使う ===
-            # CRUISE フェーズのフレーム予算
-            cruise_frames = max(1, target_frames - fixed_frames)
+        # ── 総角度計算 ────────────────────────────────────────────────
+        natural_total_deg = rotations_at(times.total_ms, times) * 360.0
+        N = max(1, round((natural_total_deg - needed_residual) / 360.0))
+        total_deg = N * 360.0 + needed_residual
+        angle_scale = (total_deg / natural_total_deg) if natural_total_deg > 0 else 1.0
 
-            # CRUISE -> 最初の固定フェーズの入口速度
-            if preset.fixed_phases:
-                v_cruise_exit = preset.fixed_phases[0].v_threshold
-            else:
-                v_cruise_exit = V_STOP
+        # ── スピン状態を保存して開始 ──────────────────────────────────
+        self._spin_times       = times
+        self._spin_angle_scale = angle_scale
+        self._spin_sign        = spin_sign
+        self._spin_start_angle = current_angle
+        self._spin_end_angle   = current_angle + spin_sign * total_deg
 
-            # 回転数の基準を計算
-            v_ref = preset.v_ref
-            d_ref = (v_cruise_exit / v_ref) ** (1.0 / cruise_frames)
-            if d_ref < 1.0:
-                ref_cruise_dist = v_ref * (1.0 - d_ref ** cruise_frames) / (1.0 - d_ref)
-            else:
-                ref_cruise_dist = v_ref * cruise_frames
-            ref_total = ref_cruise_dist + fixed_dist
-            base_rots = max(3, int(ref_total / 360))
+        self._prev_seg_idx   = self._wheel.seg_at_pointer()
+        self._spin_start_time = time.perf_counter()
 
-            adjusted_total = base_rots * 360 + needed_residual
+        # ── 特殊演出スケジュール (最終フェーズのみ) ───────────────────
+        if self._multi_phase == self._multi_total - 1:
+            winner_role = getattr(target_seg, "special_role", None)
+            # 通常項目が当選したが、隣接セグメントに target がある場合は期待度演出候補
+            if winner_role is None and len(segs) >= 2:
+                n = len(segs)
+                prev_role = getattr(segs[(target_seg_idx - 1) % n], "special_role", None)
+                next_role = getattr(segs[(target_seg_idx + 1) % n], "special_role", None)
+                if prev_role == "target" or next_role == "target":
+                    winner_role = "expect_candidate"
+            if self._effect_callbacks:
+                # v0.6.1: リプレイ記録 ON ならコールバックをラップして発火時に record
+                cb_dict = self._wrap_callbacks_for_replay(self._effect_callbacks)
+                self._effect_scheduler.schedule(
+                    winner_role,
+                    self._effect_settings,
+                    times.total_ms,
+                    cb_dict,
+                )
 
-            # CRUISE フェーズで必要な距離
-            cruise_dist_needed = adjusted_total - fixed_dist
-
-            # v0 を二分探索（CRUISE 距離を合わせる）
-            def cruise_total_for_v(v0):
-                d = (v_cruise_exit / v0) ** (1.0 / cruise_frames)
-                if d >= 1.0:
-                    return v0 * cruise_frames
-                return v0 * (1.0 - d ** cruise_frames) / (1.0 - d)
-
-            lo, hi = v_cruise_exit + 0.01, 300.0
-            for _ in range(60):
-                mid = (lo + hi) / 2
-                if cruise_total_for_v(mid) < cruise_dist_needed:
-                    lo = mid
-                else:
-                    hi = mid
-            self._velocity = (lo + hi) / 2
-            self._cruise_decel = (v_cruise_exit / self._velocity) ** (1.0 / cruise_frames)
-
-        self._spin_sign = spin_sign
-
-        self._prev_seg_idx = self._wheel.seg_at_pointer()
         self._spin_timer.start()
 
     # ================================================================
-    #  内部フレーム更新
+    #  フレーム更新
     # ================================================================
 
     def _spin_frame(self):
-        """毎フレームの回転更新（プリセットベース多段階減速）。"""
-        new_angle = (self._wheel._angle + self._spin_sign * self._velocity) % 360
+        """毎フレームの角度更新。経過時間から解析的に角度を計算する。"""
+        if self._spin_times is None:
+            return
+
+        elapsed_ms = (time.perf_counter() - self._spin_start_time) * 1000.0
+        times      = self._spin_times
+
+        if elapsed_ms >= times.total_ms:
+            # スピン完了: 終了角度に正確にスナップ
+            new_angle = self._spin_end_angle % 360.0
+            self._wheel.set_angle(new_angle)
+            if self._replay_mgr is not None:
+                self._replay_mgr.record_frame(new_angle)
+            self._spin_finish()
+            return
+
+        # 解析積分で現在角度を算出
+        revolutions = rotations_at(elapsed_ms, times)
+        new_angle = (
+            self._spin_start_angle
+            + self._spin_sign * revolutions * 360.0 * self._spin_angle_scale
+        ) % 360.0
         self._wheel.set_angle(new_angle)
 
-        # リプレイ: フレーム記録
         if self._replay_mgr is not None:
             self._replay_mgr.record_frame(new_angle)
 
@@ -318,24 +380,15 @@ class SpinController(QObject):
             if cur_seg != self._prev_seg_idx:
                 self._sound.play_tick(self._tick_pattern)
                 self._prev_seg_idx = cur_seg
-                # リプレイ: tick 音記録
                 if self._replay_mgr is not None:
                     self._replay_mgr.record_sound("tick")
 
-        if self._single_phase_mode:
-            # 短時間モード: 固定フェーズを介さず常に同じ減衰率で減速する
-            decel = self._cruise_decel
-        else:
-            decel = self._spin_preset.decel_for_velocity(
-                self._velocity, self._cruise_decel
-            )
-        self._velocity *= decel
-
-        if self._velocity < V_STOP:
-            self._spin_finish()
+    # ================================================================
+    #  内部ヘルパー
+    # ================================================================
 
     def _duration_for_current_phase(self) -> float:
-        """現在のフェーズに応じたスピン時間を返す。"""
+        """現在のマルチスピンフェーズに応じたスピン時間（秒）を返す。"""
         if self._multi_total == 1:
             return self._spin_duration
         elif self._multi_total == 2:
@@ -348,13 +401,14 @@ class SpinController(QObject):
         self.start_spin()
 
     def _spin_finish(self):
-        """spin 停止・結果確定。"""
+        """スピン停止・結果確定。"""
         self._spin_timer.stop()
         self._spinning = False
+        self._spin_times = None
 
         self._multi_phase += 1
 
-        # マルチスピンの途中フェーズ: 決定音を鳴らして次フェーズへ
+        # マルチスピン途中フェーズ: 決定音を鳴らして次フェーズへ
         if self._multi_phase < self._multi_total:
             if self._sound_result_enabled and self._sound:
                 self._sound.play_win(self._win_pattern)
@@ -378,7 +432,6 @@ class SpinController(QObject):
         else:
             winner = ""
 
-        # リプレイ: 記録完了
         if self._replay_mgr is not None:
             self._replay_mgr.finish_recording(
                 winner, seg_idx, self._wheel._angle

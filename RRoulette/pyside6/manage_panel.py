@@ -17,12 +17,16 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QCheckBox, QScrollArea, QWidget,
     QSizePolicy, QSpinBox, QDoubleSpinBox,
-    QLineEdit, QStackedWidget,
+    QLineEdit, QStackedWidget, QComboBox, QSlider,
 )
 
 from app_constants import VERSION
 from design_models import DesignSettings
-from panel_widgets import _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree
+from panel_widgets import (
+    _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree,
+    NoWheelSlider, NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
+    CollapsibleSection,
+)
 
 
 class _RouletteNameBtn(QPushButton):
@@ -85,6 +89,15 @@ class ManagePanel(QFrame):
     ticket_panel_toggled = Signal(bool)   # i051: チケットパネル表示切替
     seq_panel_toggled = Signal(bool)      # i051: 実行パネル表示切替
     link_panel_toggled = Signal(bool)     # Phase1: 連携メッセージパネル表示切替
+    # v0.6.1: 設定パネルから移動したアプリ全体設定の変更通知 (key, value)
+    app_setting_changed = Signal(str, object)
+    # v0.6.1: 全体初期化要求
+    global_reset_requested = Signal()
+    # v0.6.1: グループ単位の初期化要求
+    ro_only_reset_requested = Signal()       # ルーレット以外非表示時
+    app_settings_reset_requested = Signal()  # アプリ設定（全サブグループ）
+    # v0.6.1: アプリ設定内サブグループ単位の初期化要求 (subgroup_key)
+    app_subgroup_reset_requested = Signal(str)
 
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
@@ -115,9 +128,11 @@ class ManagePanel(QFrame):
                  link_integration_port: int = 12345,
                  link_integration_max_hold: int = 200,
                  link_panel_show_time: bool = False,
+                 settings: "AppSettings | None" = None,
                  parent=None):
         super().__init__(parent)
         self._design = design
+        self._settings = settings
         self.pinned_front = True
 
         outer = QVBoxLayout(self)
@@ -320,33 +335,8 @@ class ManagePanel(QFrame):
         self._roulette_grp_content.setVisible(True)
         body_layout.addWidget(self._roulette_grp_content)
 
-        # ── Group 3: 設定適用（初期: 閉じる） ──────────────────────
-        self._apply_grp_btn = QPushButton("▶ 設定適用")
-        self._apply_grp_btn.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
-        self._apply_grp_btn.setCheckable(True)
-        self._apply_grp_btn.setChecked(False)
-        self._apply_grp_btn.setStyleSheet(_grp_toggle_style)
-        self._apply_grp_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._apply_grp_btn.toggled.connect(self._on_apply_grp_toggle)
-        body_layout.addWidget(self._apply_grp_btn)
-
-        self._apply_grp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
-        _agc = QVBoxLayout(self._apply_grp_content)
-        _agc.setContentsMargins(0, 4, 0, 4)
-        _agc.setSpacing(4)
-
-        self._apply_all_cb = QCheckBox("全ルーレットに適用")
-        self._apply_all_cb.setFont(QFont("Meiryo", 9))
-        self._apply_all_cb.setStyleSheet(f"color: {design.text};")
-        self._apply_all_cb.setChecked(False)
-        self._apply_all_cb.setToolTip(
-            "ON: 設定パネルの変更を全ルーレットに一括適用\nOFF: 選択中ルーレットのみに適用"
-        )
-        self._apply_all_cb.toggled.connect(self.apply_to_all_changed.emit)
-        _agc.addWidget(self._apply_all_cb)
-
-        self._apply_grp_content.setVisible(False)
-        body_layout.addWidget(self._apply_grp_content)
+        # v0.6.1: 「設定適用」グループは削除し、「全ルーレットに適用」CB は
+        # 設定パネルのクイック設定バーへ移動した。
 
         body_layout.addSpacing(8)
 
@@ -365,7 +355,11 @@ class ManagePanel(QFrame):
         )
         self._ro_only_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._ro_only_toggle_btn.toggled.connect(self._on_ro_only_toggle)
-        body_layout.addWidget(self._ro_only_toggle_btn)
+        # v0.6.1: トグルボタンの右に「初期化」ボタンを配置するため HBox でラップ
+        self._add_grp_header_with_reset(
+            body_layout, self._ro_only_toggle_btn,
+            self.ro_only_reset_requested.emit, design,
+        )
 
         # 折りたたみコンテンツ — パネル群 / ルーレットパネル群の2グループ
         self._ro_only_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
@@ -512,19 +506,31 @@ class ManagePanel(QFrame):
         )
         self._app_settings_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._app_settings_toggle_btn.toggled.connect(self._on_app_settings_toggle)
-        body_layout.addWidget(self._app_settings_toggle_btn)
+        # v0.6.1: トグルボタンの右に「初期化」ボタンを配置
+        self._add_grp_header_with_reset(
+            body_layout, self._app_settings_toggle_btn,
+            self.app_settings_reset_requested.emit, design,
+        )
 
         self._app_settings_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
         _app_content_layout = QVBoxLayout(self._app_settings_content)
         _app_content_layout.setContentsMargins(12, 2, 0, 2)
         _app_content_layout.setSpacing(6)
 
+        # v0.6.1: 設定パネルから移動した項目（透過/テーマ/動作/音量/リプレイ）
+        # を「アプリ設定」グループの先頭に統合配置
+        self._build_app_settings_group_content(_app_content_layout, design)
+
+        # ── サブグループ 5: 自動全面非表示 ─────────────────────────
+        _auto_hide_layout = self._app_make_subgroup(
+            "自動全面非表示", "auto_hide", expanded=False
+        )
         # Esc キー案内ラベル
         _esc_hint = QLabel("Esc キー: 全面非表示")
         _esc_hint.setFont(QFont("Meiryo", 8))
         _esc_hint.setStyleSheet(f"color: {design.text_sub};")
         _esc_hint.setToolTip("Esc キーを押すと RRoulette 全体を非表示にします\nタスクバーや Alt+Tab で再表示されます")
-        _app_content_layout.addWidget(_esc_hint)
+        _auto_hide_layout.addWidget(_esc_hint)
 
         # 自動全面非表示チェックボックス
         self._auto_hide_cb = QCheckBox("自動全面非表示")
@@ -533,7 +539,7 @@ class ManagePanel(QFrame):
         self._auto_hide_cb.setChecked(auto_hide_enabled)
         self._auto_hide_cb.setToolTip("ON: 無操作が続くと自動で全面非表示にします")
         self._auto_hide_cb.toggled.connect(self.auto_hide_enabled_changed.emit)
-        _app_content_layout.addWidget(self._auto_hide_cb)
+        _auto_hide_layout.addWidget(self._auto_hide_cb)
 
         # 秒数設定行
         _sec_row = QHBoxLayout()
@@ -544,7 +550,7 @@ class ManagePanel(QFrame):
         _sec_lbl.setStyleSheet(f"color: {design.text};")
         _sec_row.addWidget(_sec_lbl)
 
-        self._auto_hide_spin = QSpinBox()
+        self._auto_hide_spin = NoWheelSpinBox()
         self._auto_hide_spin.setFont(QFont("Meiryo", 9))
         self._auto_hide_spin.setRange(1, 300)
         self._auto_hide_spin.setValue(max(1, auto_hide_seconds))
@@ -560,7 +566,7 @@ class ManagePanel(QFrame):
         self._auto_hide_spin.valueChanged.connect(self.auto_hide_seconds_changed.emit)
         _sec_row.addWidget(self._auto_hide_spin)
         _sec_row.addStretch()
-        _app_content_layout.addLayout(_sec_row)
+        _auto_hide_layout.addLayout(_sec_row)
 
         # フェードアウト ON/OFF チェックボックス (i486)
         self._auto_hide_fade_cb = QCheckBox("自動非表示時にフェードアウト")
@@ -569,7 +575,7 @@ class ManagePanel(QFrame):
         self._auto_hide_fade_cb.setChecked(auto_hide_fade_enabled)
         self._auto_hide_fade_cb.setToolTip("ON: 自動全面非表示時にゆっくりフェードアウトします")
         self._auto_hide_fade_cb.toggled.connect(self._on_fade_cb_toggled)
-        _app_content_layout.addWidget(self._auto_hide_fade_cb)
+        _auto_hide_layout.addWidget(self._auto_hide_fade_cb)
 
         # フェード時間スピンボックス (i487)
         _fade_sec_row = QHBoxLayout()
@@ -580,7 +586,7 @@ class ManagePanel(QFrame):
         _fade_sec_lbl.setStyleSheet(f"color: {design.text};")
         _fade_sec_row.addWidget(_fade_sec_lbl)
 
-        self._auto_hide_fade_spin = QDoubleSpinBox()
+        self._auto_hide_fade_spin = NoWheelDoubleSpinBox()
         self._auto_hide_fade_spin.setFont(QFont("Meiryo", 9))
         self._auto_hide_fade_spin.setRange(0.1, 10.0)
         self._auto_hide_fade_spin.setSingleStep(0.1)
@@ -600,7 +606,7 @@ class ManagePanel(QFrame):
         self._auto_hide_fade_spin.valueChanged.connect(self.auto_hide_fade_seconds_changed.emit)
         _fade_sec_row.addWidget(self._auto_hide_fade_spin)
         _fade_sec_row.addStretch()
-        _app_content_layout.addLayout(_fade_sec_row)
+        _auto_hide_layout.addLayout(_fade_sec_row)
 
         # ルーレット以外非表示時のみ有効 (i098)
         self._auto_hide_roulette_only_cb = QCheckBox("ルーレット以外非表示時のみ有効")
@@ -614,7 +620,7 @@ class ManagePanel(QFrame):
         self._auto_hide_roulette_only_cb.toggled.connect(
             self.auto_hide_only_roulette_only_changed.emit
         )
-        _app_content_layout.addWidget(self._auto_hide_roulette_only_cb)
+        _auto_hide_layout.addWidget(self._auto_hide_roulette_only_cb)
 
         # 再表示後、次にルーレットを回した後に有効 (i098)
         self._auto_hide_after_spin_restore_cb = QCheckBox("再表示後、次のスピン後に有効")
@@ -629,27 +635,11 @@ class ManagePanel(QFrame):
         self._auto_hide_after_spin_restore_cb.toggled.connect(
             self.auto_hide_after_spin_restore_changed.emit
         )
-        _app_content_layout.addWidget(self._auto_hide_after_spin_restore_cb)
+        _auto_hide_layout.addWidget(self._auto_hide_after_spin_restore_cb)
 
-        self._app_settings_content.setVisible(False)
-        body_layout.addWidget(self._app_settings_content)
-
-        body_layout.addSpacing(4)
-
-        # ── 外部連携設定 (i099: 設定パネルから移動, i101: デザイン統一) ─────────
-        self._link_int_toggle_btn = QPushButton("▶ 外部連携設定")
-        self._link_int_toggle_btn.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
-        self._link_int_toggle_btn.setCheckable(True)
-        self._link_int_toggle_btn.setChecked(False)
-        self._link_int_toggle_btn.setStyleSheet(_grp_toggle_style)
-        self._link_int_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._link_int_toggle_btn.toggled.connect(self._on_link_int_toggle)
-        body_layout.addWidget(self._link_int_toggle_btn)
-
-        self._link_int_content = QWidget(body)
-        _lic_layout = QVBoxLayout(self._link_int_content)
-        _lic_layout.setContentsMargins(8, 4, 8, 4)
-        _lic_layout.setSpacing(4)
+        # ── サブグループ 6: 外部連携 (アプリ設定の最後に配置) ─────────
+        # 既存の独立「外部連携設定」グループを CollapsibleSection サブグループに移動
+        _lic_layout = self._app_make_subgroup("外部連携", "link", expanded=False)
 
         # 有効/無効
         self._link_int_enabled_cb = QCheckBox("連携受信を有効にする (RCommentHub)")
@@ -669,7 +659,7 @@ class ManagePanel(QFrame):
         _port_lbl.setFont(QFont("Meiryo", 9))
         _port_lbl.setStyleSheet(f"color: {design.text_sub};")
         _port_row.addWidget(_port_lbl)
-        self._link_int_port_spin = QSpinBox()
+        self._link_int_port_spin = NoWheelSpinBox()
         self._link_int_port_spin.setFont(QFont("Meiryo", 9))
         self._link_int_port_spin.setRange(1024, 65535)
         self._link_int_port_spin.setValue(link_integration_port)
@@ -692,7 +682,7 @@ class ManagePanel(QFrame):
         _hold_lbl.setFont(QFont("Meiryo", 9))
         _hold_lbl.setStyleSheet(f"color: {design.text_sub};")
         _hold_row.addWidget(_hold_lbl)
-        self._link_int_max_hold_spin = QSpinBox()
+        self._link_int_max_hold_spin = NoWheelSpinBox()
         self._link_int_max_hold_spin.setFont(QFont("Meiryo", 9))
         self._link_int_max_hold_spin.setRange(1, 1000)
         self._link_int_max_hold_spin.setValue(link_integration_max_hold)
@@ -722,8 +712,9 @@ class ManagePanel(QFrame):
         self._link_int_status_lbl.setStyleSheet(f"color: {design.text_sub};")
         _lic_layout.addWidget(self._link_int_status_lbl)
 
-        self._link_int_content.setVisible(False)
-        body_layout.addWidget(self._link_int_content)
+        # v0.6.1: 「アプリ設定」全体の表示制御
+        self._app_settings_content.setVisible(False)
+        body_layout.addWidget(self._app_settings_content)
 
         body_layout.addSpacing(4)
 
@@ -773,10 +764,338 @@ class ManagePanel(QFrame):
         self._roulette_grp_content.setVisible(expanded)
         self._roulette_grp_btn.setText("▼ ルーレット管理" if expanded else "▶ ルーレット管理")
 
-    def _on_apply_grp_toggle(self, expanded: bool):
-        """設定適用グループの展開/折りたたみ。"""
-        self._apply_grp_content.setVisible(expanded)
-        self._apply_grp_btn.setText("▼ 設定適用" if expanded else "▶ 設定適用")
+    # v0.6.1: _on_apply_grp_toggle / set_apply_to_all は廃止
+    # 「全ルーレットに適用」CB は設定パネル側へ移動
+
+    # =====================================================================
+    #  v0.6.1: 設定パネルから移動したアプリ全体設定グループ
+    # =====================================================================
+
+    def _add_grp_header_with_reset(self, parent_layout, toggle_btn,
+                                     on_reset_callable, design):
+        """v0.6.1: グループのトグルボタン (QPushButton) を HBox でラップして
+        右側に「初期化」ボタンを配置する共通ヘルパー。
+
+        background が透明な QFrame でラップして親パネルの背景色を維持する。
+        """
+        wrapper = QFrame()
+        wrapper.setStyleSheet("QFrame { background: transparent; }")
+        row = QHBoxLayout(wrapper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(toggle_btn, stretch=1)
+
+        reset_btn = QPushButton("初期化")
+        reset_btn.setFont(QFont("Meiryo", 7))
+        reset_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text_sub};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 6px; font-family: Meiryo; font-size: 7pt;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: #c0392b; color: white; border-color: #c0392b;"
+            f"}}"
+        )
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.setToolTip("このグループの設定を新規ルーレット作成時の状態に戻す")
+        reset_btn.clicked.connect(lambda _chk=False: on_reset_callable())
+        row.addWidget(reset_btn)
+
+        parent_layout.addWidget(wrapper)
+
+    def _build_app_settings_group_content(self, parent_layout, design):
+        """v0.6.1: 既存の「アプリ設定」グループ（i485）の content_layout に
+        透過/最前面/テーマ/動作/音量/リプレイ系のウィジェットを追加する。
+
+        独自グループは作らず、既存グループへ統合する形。
+        """
+        s = self._settings  # AppSettings (None の可能性あり)
+
+        def _g(key, default):
+            return getattr(s, key, default) if s is not None else default
+
+        cb_style = f"color: {design.text};"
+        lbl_style = f"color: {design.text_sub};"
+        combo_style = (
+            f"QComboBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+            f"QComboBox::drop-down {{ border: none; width: 16px; }}"
+            f"QComboBox QAbstractItemView {{"
+            f"  background-color: {design.panel}; color: {design.text};"
+            f"  selection-background-color: {design.separator};"
+            f"  selection-color: {design.text};"
+            f"  border: 1px solid {design.separator};"
+            f"}}"
+        )
+        spin_style = (
+            f"QSpinBox {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        slider_style = (
+            f"QSlider::groove:horizontal {{"
+            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
+            f"}}"
+            f"QSlider::handle:horizontal {{"
+            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+
+        emit = lambda k, v: self.app_setting_changed.emit(k, v)
+        theme_mode_init = _g("theme_mode", "dark")
+
+        def _make_subgroup(title: str, sub_key: str, expanded: bool = False):
+            """サブグループの CollapsibleSection を作成し、ヘッダー右に
+            「初期化」ボタンを配置して content_layout を返す。"""
+            sec = CollapsibleSection(title, design, expanded=expanded,
+                                      theme_mode=theme_mode_init, nested=True)
+            rb = QPushButton("初期化")
+            rb.setFont(QFont("Meiryo", 7))
+            rb.setStyleSheet(
+                f"QPushButton {{"
+                f"  background-color: transparent; color: {design.text_sub};"
+                f"  border: 1px solid {design.separator}; border-radius: 3px;"
+                f"  padding: 1px 6px; font-family: Meiryo; font-size: 7pt;"
+                f"}}"
+                f"QPushButton:hover {{"
+                f"  background-color: #c0392b; color: white; border-color: #c0392b;"
+                f"}}"
+            )
+            rb.setCursor(Qt.CursorShape.PointingHandCursor)
+            rb.setToolTip(f"「{title}」を新規ルーレット作成時の状態に戻す")
+            rb.clicked.connect(
+                lambda _chk=False, k=sub_key: self.app_subgroup_reset_requested.emit(k)
+            )
+            sec.add_header_widget(rb)
+            parent_layout.addWidget(sec)
+            return sec.content_layout
+
+        # === サブグループ 1: ウィンドウ表示 ===
+        win_layout = _make_subgroup("ウィンドウ表示", "window_display", expanded=False)
+
+        self._mp_window_transparent_cb = QCheckBox("メインウィンドウ透過")
+        self._mp_window_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._mp_window_transparent_cb.setStyleSheet(cb_style)
+        self._mp_window_transparent_cb.setChecked(_g("window_transparent", False))
+        self._mp_window_transparent_cb.toggled.connect(
+            lambda v: emit("window_transparent", v)
+        )
+        win_layout.addWidget(self._mp_window_transparent_cb)
+
+        self._mp_roulette_transparent_cb = QCheckBox("ルーレット透過")
+        self._mp_roulette_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._mp_roulette_transparent_cb.setStyleSheet(cb_style)
+        self._mp_roulette_transparent_cb.setChecked(_g("roulette_transparent", False))
+        self._mp_roulette_transparent_cb.toggled.connect(
+            lambda v: emit("roulette_transparent", v)
+        )
+        win_layout.addWidget(self._mp_roulette_transparent_cb)
+
+        self._mp_panels_transparent_cb = QCheckBox("パネル透過(試験)")
+        self._mp_panels_transparent_cb.setFont(QFont("Meiryo", 8))
+        self._mp_panels_transparent_cb.setStyleSheet(cb_style)
+        self._mp_panels_transparent_cb.setChecked(_g("panels_transparent", False))
+        self._mp_panels_transparent_cb.toggled.connect(
+            lambda v: emit("panels_transparent", v)
+        )
+        win_layout.addWidget(self._mp_panels_transparent_cb)
+
+        self._mp_aot_cb = QCheckBox("常に最前面")
+        self._mp_aot_cb.setFont(QFont("Meiryo", 8))
+        self._mp_aot_cb.setStyleSheet(cb_style)
+        self._mp_aot_cb.setChecked(_g("always_on_top", False))
+        self._mp_aot_cb.toggled.connect(lambda v: emit("always_on_top", v))
+        win_layout.addWidget(self._mp_aot_cb)
+
+        # === サブグループ 2: テーマ・動作 ===
+        theme_layout = _make_subgroup("テーマ・動作", "theme_action", expanded=False)
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(4)
+        theme_lbl = QLabel("テーマ:")
+        theme_lbl.setFont(QFont("Meiryo", 8))
+        theme_lbl.setStyleSheet(lbl_style)
+        theme_row.addWidget(theme_lbl)
+        self._mp_theme_combo = NoWheelComboBox()
+        self._mp_theme_combo.setFont(QFont("Meiryo", 8))
+        self._mp_theme_combo.setStyleSheet(combo_style)
+        self._mp_theme_combo.addItems(["ダーク", "ライト", "システム"])
+        _theme_idx = {"dark": 0, "light": 1, "system": 2, "auto": 2}
+        self._mp_theme_combo.setCurrentIndex(_theme_idx.get(_g("theme_mode", "dark"), 0))
+        _theme_val = ["dark", "light", "system"]
+        self._mp_theme_combo.currentIndexChanged.connect(
+            lambda i: emit("theme_mode", _theme_val[i] if i < len(_theme_val) else "dark")
+        )
+        theme_row.addWidget(self._mp_theme_combo, stretch=1)
+        theme_layout.addLayout(theme_row)
+
+        self._mp_confirm_item_delete_cb = QCheckBox("項目削除時に確認する")
+        self._mp_confirm_item_delete_cb.setFont(QFont("Meiryo", 8))
+        self._mp_confirm_item_delete_cb.setStyleSheet(cb_style)
+        self._mp_confirm_item_delete_cb.setChecked(_g("confirm_item_delete", True))
+        self._mp_confirm_item_delete_cb.toggled.connect(
+            lambda v: emit("confirm_item_delete", v)
+        )
+        theme_layout.addWidget(self._mp_confirm_item_delete_cb)
+
+        self._mp_instance_label_cb = QCheckBox("インスタンス番号表示")
+        self._mp_instance_label_cb.setFont(QFont("Meiryo", 8))
+        self._mp_instance_label_cb.setStyleSheet(cb_style)
+        self._mp_instance_label_cb.setChecked(_g("float_win_show_instance", False))
+        self._mp_instance_label_cb.toggled.connect(
+            lambda v: emit("float_win_show_instance", v)
+        )
+        theme_layout.addWidget(self._mp_instance_label_cb)
+
+        self._mp_confirm_reset_cb = QCheckBox("リセット確認")
+        self._mp_confirm_reset_cb.setFont(QFont("Meiryo", 8))
+        self._mp_confirm_reset_cb.setStyleSheet(cb_style)
+        self._mp_confirm_reset_cb.setChecked(_g("confirm_reset", True))
+        self._mp_confirm_reset_cb.toggled.connect(
+            lambda v: emit("confirm_reset", v)
+        )
+        theme_layout.addWidget(self._mp_confirm_reset_cb)
+
+        # === サブグループ 3: 音量 ===
+        vol_layout = _make_subgroup("音量", "volume", expanded=False)
+
+        def _make_vol_row(label_text, key, init_val, parent):
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            lbl = QLabel(label_text)
+            lbl.setFont(QFont("Meiryo", 8))
+            lbl.setStyleSheet(lbl_style)
+            lbl.setFixedWidth(72)
+            row.addWidget(lbl)
+            sl = NoWheelSlider(Qt.Orientation.Horizontal)
+            sl.setRange(0, 100)
+            sl.setValue(int(init_val))
+            sl.setStyleSheet(slider_style)
+            sl.valueChanged.connect(lambda v, k=key: emit(k, v))
+            row.addWidget(sl, stretch=1)
+            val_lbl = QLabel(f"{int(init_val)}%")
+            val_lbl.setFont(QFont("Meiryo", 7))
+            val_lbl.setStyleSheet(lbl_style)
+            val_lbl.setFixedWidth(32)
+            sl.valueChanged.connect(lambda v: val_lbl.setText(f"{v}%"))
+            row.addWidget(val_lbl)
+            parent.addLayout(row)
+            return sl, val_lbl
+
+        self._mp_tick_vol_slider, self._mp_tick_vol_val = _make_vol_row(
+            "スピン音量:", "tick_volume", _g("tick_volume", 50), vol_layout,
+        )
+        self._mp_win_vol_slider, self._mp_win_vol_val = _make_vol_row(
+            "決定音量:", "win_volume", _g("win_volume", 50), vol_layout,
+        )
+        self._mp_effect_vol_slider, self._mp_effect_vol_val = _make_vol_row(
+            "演出音量:", "effect_volume", _g("effect_volume", 50), vol_layout,
+        )
+
+        # === サブグループ 4: リプレイ ===
+        replay_layout = _make_subgroup("リプレイ", "replay", expanded=False)
+
+        max_row = QHBoxLayout()
+        max_row.setSpacing(4)
+        max_lbl = QLabel("保存上限:")
+        max_lbl.setFont(QFont("Meiryo", 8))
+        max_lbl.setStyleSheet(lbl_style)
+        max_row.addWidget(max_lbl)
+        self._mp_replay_max_spin = NoWheelSpinBox()
+        self._mp_replay_max_spin.setFont(QFont("Meiryo", 8))
+        self._mp_replay_max_spin.setRange(1, 20)
+        self._mp_replay_max_spin.setValue(int(_g("replay_max_count", 10)))
+        self._mp_replay_max_spin.setStyleSheet(spin_style)
+        self._mp_replay_max_spin.valueChanged.connect(
+            lambda v: emit("replay_max_count", v)
+        )
+        max_row.addWidget(self._mp_replay_max_spin)
+        max_row.addStretch(1)
+        replay_layout.addLayout(max_row)
+
+        self._mp_replay_indicator_cb = QCheckBox("再生中表示")
+        self._mp_replay_indicator_cb.setFont(QFont("Meiryo", 8))
+        self._mp_replay_indicator_cb.setStyleSheet(cb_style)
+        self._mp_replay_indicator_cb.setChecked(_g("replay_show_indicator", True))
+        self._mp_replay_indicator_cb.toggled.connect(
+            lambda v: emit("replay_show_indicator", v)
+        )
+        replay_layout.addWidget(self._mp_replay_indicator_cb)
+
+        self._mp_replay_record_effects_cb = QCheckBox("特殊演出も再現する")
+        self._mp_replay_record_effects_cb.setFont(QFont("Meiryo", 8))
+        self._mp_replay_record_effects_cb.setStyleSheet(cb_style)
+        self._mp_replay_record_effects_cb.setChecked(_g("replay_record_effects", True))
+        self._mp_replay_record_effects_cb.setToolTip(
+            "ON: スピン中の特殊演出もリプレイに記録し再生時に再現\n"
+            "OFF: 角度フレームのみ再現（演出は発火しない）"
+        )
+        self._mp_replay_record_effects_cb.toggled.connect(
+            lambda v: emit("replay_record_effects", v)
+        )
+        replay_layout.addWidget(self._mp_replay_record_effects_cb)
+
+        # v0.6.1: 「自動全面非表示」「外部連携」サブグループは __init__ 末尾で
+        # 既存ウィジェットを CollapsibleSection に再ペアレントする形で組み込む。
+        # ここではサブグループ用 layout を確保するための placeholder 関数を保存。
+        self._app_make_subgroup = _make_subgroup
+        self._app_settings_parent_layout = parent_layout
+
+    def update_app_setting(self, key: str, value):
+        """外部からの設定変更を ManagePanel UI に反映する（シグナルなし）。"""
+        widget_map = {
+            "window_transparent":   ("_mp_window_transparent_cb", "setChecked"),
+            "roulette_transparent": ("_mp_roulette_transparent_cb", "setChecked"),
+            "panels_transparent":   ("_mp_panels_transparent_cb", "setChecked"),
+            "always_on_top":        ("_mp_aot_cb", "setChecked"),
+            "confirm_item_delete":  ("_mp_confirm_item_delete_cb", "setChecked"),
+            "float_win_show_instance": ("_mp_instance_label_cb", "setChecked"),
+            "confirm_reset":        ("_mp_confirm_reset_cb", "setChecked"),
+            "replay_show_indicator": ("_mp_replay_indicator_cb", "setChecked"),
+            "replay_record_effects": ("_mp_replay_record_effects_cb", "setChecked"),
+        }
+        if key in widget_map:
+            attr, _ = widget_map[key]
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.blockSignals(True)
+                w.setChecked(bool(value))
+                w.blockSignals(False)
+            return
+        if key == "theme_mode":
+            _theme_idx = {"dark": 0, "light": 1, "system": 2, "auto": 2}
+            self._mp_theme_combo.blockSignals(True)
+            self._mp_theme_combo.setCurrentIndex(_theme_idx.get(value, 0))
+            self._mp_theme_combo.blockSignals(False)
+        elif key in ("tick_volume", "win_volume", "effect_volume"):
+            sl_attr = {
+                "tick_volume":   "_mp_tick_vol_slider",
+                "win_volume":    "_mp_win_vol_slider",
+                "effect_volume": "_mp_effect_vol_slider",
+            }[key]
+            v_attr = {
+                "tick_volume":   "_mp_tick_vol_val",
+                "win_volume":    "_mp_win_vol_val",
+                "effect_volume": "_mp_effect_vol_val",
+            }[key]
+            sl = getattr(self, sl_attr, None)
+            vl = getattr(self, v_attr, None)
+            if sl is not None:
+                sl.blockSignals(True)
+                sl.setValue(int(value))
+                sl.blockSignals(False)
+            if vl is not None:
+                vl.setText(f"{int(value)}%")
+        elif key == "replay_max_count":
+            self._mp_replay_max_spin.blockSignals(True)
+            self._mp_replay_max_spin.setValue(int(value))
+            self._mp_replay_max_spin.blockSignals(False)
 
     def _on_ro_only_toggle(self, expanded: bool):
         """ルーレット以外非表示時セクションの展開/折りたたみ。"""
@@ -807,11 +1126,9 @@ class ManagePanel(QFrame):
         )
 
     def _on_link_int_toggle(self, expanded: bool):
-        """外部連携設定セクションの展開/折りたたみ (i101: デザイン統一)。"""
-        self._link_int_content.setVisible(expanded)
-        self._link_int_toggle_btn.setText(
-            ("▼ 外部連携設定" if expanded else "▶ 外部連携設定")
-        )
+        """v0.6.1: 「外部連携」はアプリ設定内サブグループへ移動済み。
+        後方互換のための no-op。"""
+        pass
 
     def _on_fade_cb_toggled(self, enabled: bool):
         """フェードアウト ON/OFF — シグナル発火 + スピンボックス有効/無効切替。"""
@@ -1022,10 +1339,10 @@ class ManagePanel(QFrame):
         pass
 
     def set_apply_to_all(self, value: bool) -> None:
-        """一括適用チェック状態を外部から同期する（シグナルなし）。"""
-        self._apply_all_cb.blockSignals(True)
-        self._apply_all_cb.setChecked(value)
-        self._apply_all_cb.blockSignals(False)
+        """v0.6.1: 「全ルーレットに適用」CB は設定パネル側へ移動済み。
+        後方互換のために no-op を残す。
+        """
+        pass
 
     def update_roulette_only_hide(self, key: str, value: bool) -> None:
         """ルーレット以外非表示時の個別設定チェックボックスを外部から同期する（シグナルなし）。"""
@@ -1077,7 +1394,7 @@ class ManagePanel(QFrame):
         self.setStyleSheet(f"background-color: {design.panel};")
         self._drag_bar.update_design(design)
         self._scroll.setStyleSheet(f"background-color: {design.panel};")
-        self._apply_all_cb.setStyleSheet(f"color: {design.text};")
+        # v0.6.1: _apply_all_cb は設定パネル側へ移動済み
         _pkg_icon_style = (
             f"QPushButton {{"
             f"  background-color: transparent; color: {design.text};"

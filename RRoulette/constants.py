@@ -2,7 +2,7 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20
@@ -72,10 +72,11 @@ DONUT_HIT_RADIUS  = 26   # クリック無効化半径（px）= DONUT_DRAW_RADIU
 
 class Segment:
     """ルーレットの1セグメントを表すデータクラス。"""
-    __slots__ = ("item_text", "item_index", "arc", "start_angle")
+    __slots__ = ("item_text", "item_index", "arc", "start_angle", "special_role")
 
-    def __init__(self, item_text, item_index, arc, start_angle=0.0):
+    def __init__(self, item_text, item_index, arc, start_angle=0.0, special_role=None):
         self.item_text   = item_text
         self.item_index  = item_index
         self.arc         = arc
         self.start_angle = start_angle
+        self.special_role = special_role  # "target" / "avoid" / None

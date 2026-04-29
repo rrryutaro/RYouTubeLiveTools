@@ -86,9 +86,14 @@ class SaveLoadMixin:
             # （active ルーレットは _sync_settings_to_active / _update_setting_by_action
             #   で随時更新されているが、非 active ルーレットは runtime が正）
             s = ctx.settings
-            s.spin_preset_name     = p.spin_ctrl.preset_name
-            s.spin_duration        = p.spin_ctrl._spin_duration
-            s.spin_mode            = p.spin_ctrl._spin_mode
+            s.spin_duration              = p.spin_ctrl._spin_duration
+            s.spin_preset_profile        = p.spin_ctrl._spin_profile
+            s.spin_preset_random         = p.spin_ctrl._spin_preset_random
+            s.spin_duration_random       = p.spin_ctrl._spin_duration_random
+            s.spin_duration_random_ratio = p.spin_ctrl._spin_duration_random_ratio
+            s.spin_phase_randomize       = p.spin_ctrl._spin_phase_randomize
+            s.spin_phase_overrides       = p.spin_ctrl._spin_phase_overrides
+            s.spin_mode                  = p.spin_ctrl._spin_mode
             s.double_duration      = p.spin_ctrl._double_duration
             s.triple_duration      = p.spin_ctrl._triple_duration
             s.sound_tick_enabled   = p.spin_ctrl._sound_tick_enabled
@@ -106,6 +111,7 @@ class SaveLoadMixin:
             s.log_box_border       = p.wheel._log_box_border
             s.result_close_mode    = p.result_overlay._close_mode
             s.result_hold_sec      = p.result_overlay._hold_sec
+            s.spin_effects         = p.spin_ctrl._effect_settings
             # ctx.settings を config エントリへ書き出す（geometry・item_patterns は維持）
             entry.update(s.to_config_entry())
             # i047: カスタム名を保存
@@ -174,10 +180,16 @@ class SaveLoadMixin:
         if hasattr(self, "_settings_panel"):
             s = ctx.settings  # per-roulette 設定の source-of-truth
             _per_settings = {
-                "spin_duration":        s.spin_duration,
-                "spin_mode":            s.spin_mode,
-                "double_duration":      s.double_duration,
-                "triple_duration":      s.triple_duration,
+                "spin_duration":              s.spin_duration,
+                "spin_preset_profile":        s.spin_preset_profile,
+                "spin_preset_random":         s.spin_preset_random,
+                "spin_duration_random":       s.spin_duration_random,
+                "spin_duration_random_ratio": s.spin_duration_random_ratio,
+                "spin_phase_randomize":       s.spin_phase_randomize,
+                "spin_phase_overrides":       s.spin_phase_overrides,
+                "spin_mode":                  s.spin_mode,
+                "double_duration":            s.double_duration,
+                "triple_duration":            s.triple_duration,
                 "sound_tick_enabled":   s.sound_tick_enabled,
                 "sound_result_enabled": s.sound_result_enabled,
                 "tick_pattern":         s.tick_pattern,
@@ -194,17 +206,37 @@ class SaveLoadMixin:
                 "log_history_all_patterns": s.log_all_patterns,  # i395: active 切替時に UI 反映
                 "result_close_mode":      s.result_close_mode,
                 "result_hold_sec":        s.result_hold_sec,
+                # v0.6.1: per-roulette 化した項目
+                "profile_idx":          s.profile_idx,
+                "tick_custom_file":     s.tick_custom_file,
+                "win_custom_file":      s.win_custom_file,
+                "spin_effects":         s.spin_effects,
             }
             for _k, _v in _per_settings.items():
                 # i369: self._settings には書かない（global 側に個別設定を逆流させない）
                 self._settings_panel.update_setting(_k, _v)
-            # spin_preset_name は update_setting 未対応のため個別更新
+        # 特殊演出設定を active パネルに反映
+        ctx.panel.set_effect_settings(ctx.settings.spin_effects)
+        # v0.6.1: active のカスタム音ファイルを sound_manager にロード
+        if hasattr(self, "_sound"):
             try:
-                self._settings_panel._preset_combo.blockSignals(True)
-                self._settings_panel._preset_combo.setCurrentText(s.spin_preset_name)
-                self._settings_panel._preset_combo.blockSignals(False)
-            except AttributeError:
+                if s.tick_custom_file:
+                    self._sound.load_tick_custom(s.tick_custom_file)
+                if s.win_custom_file:
+                    self._sound.load_win_custom(s.win_custom_file)
+            except Exception:
                 pass
+        # v0.6.1: active のサイズプロファイルを反映（roulette_only_mode 中は除く）
+        try:
+            from app_constants import SIZE_PROFILES
+            _idx = max(0, min(s.profile_idx, len(SIZE_PROFILES) - 1))
+            _, _w, _h = SIZE_PROFILES[_idx]
+            self._wheel_base_w = _w
+            self._wheel_base_h = _h
+            if not getattr(self._settings, "roulette_only_mode", False):
+                ctx.panel.resize(_w, _h)
+        except Exception:
+            pass
         # i407: active ルーレットのホイールにログフィルタ用パターン（UUID）を反映する
         _pat_for_wheel = ctx.current_pattern or get_current_pattern_name(self._config)
         _pid_for_wheel = self._get_current_pattern_id(ctx)

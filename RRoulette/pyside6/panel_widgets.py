@@ -20,8 +20,41 @@ from PySide6.QtGui import QFont, QFontMetrics, QCursor, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QMenu, QWidget,
     QApplication, QPushButton, QScrollArea, QListWidget, QListWidgetItem,
-    QAbstractScrollArea, QAbstractItemView, QGroupBox, QTabWidget,
+    QAbstractScrollArea, QAbstractItemView, QGroupBox, QTabWidget, QSlider,
+    QSpinBox, QDoubleSpinBox, QComboBox,
 )
+
+
+class NoWheelSlider(QSlider):
+    """マウスホイール操作を無視する QSlider。
+
+    設定パネル内のスクロール時にカーソル下のスライダーが意図せず動く
+    問題を防ぐため、wheelEvent をスクロール領域へバブルアップする。
+    """
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelSpinBox(QSpinBox):
+    """マウスホイール操作を無視する QSpinBox。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """マウスホイール操作を無視する QDoubleSpinBox。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    """マウスホイール操作を無視する QComboBox（選択値が誤変更されるのを防ぐ）。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 from design_models import DesignSettings
 from dark_theme import get_header_colors
@@ -65,11 +98,14 @@ class CollapsibleSection(QWidget):
 
     def __init__(self, title: str, design: DesignSettings,
                  expanded: bool = True, theme_mode: str = "dark",
+                 nested: bool = False,
                  parent=None):
         super().__init__(parent)
         self._expanded = expanded
         self._title = title
         self._design = design
+        # v0.6.1: ネスト用のヘッダー色差別化フラグ
+        self._nested = nested
         self._theme_mode = theme_mode
         self._animating = False
 
@@ -85,7 +121,7 @@ class CollapsibleSection(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # クリック / ドラッグ両対応のヘッダー
+        # クリック / ドラッグ両対応のヘッダー（右側に追加ウィジェットを置けるよう HBox でラップ）
         self._header = QLabel(self._format_title(expanded), self)  # i289 t10
         self._header.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
         self._header.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -94,7 +130,15 @@ class CollapsibleSection(QWidget):
         self._header.mouseMoveEvent = self._header_mouse_move
         self._header.mouseReleaseEvent = self._header_mouse_release
         self._apply_header_style(design)
-        layout.addWidget(self._header)
+        # v0.6.1: ヘッダーラベル + 補助ウィジェットをラップする QWidget
+        # QFrame + setStyleSheet では子要素に変な背景が描かれるため、
+        # 自動で背景を塗らない素の QWidget でラップして親パネルの背景を継承させる。
+        self._header_frame = QWidget(self)
+        self._header_row = QHBoxLayout(self._header_frame)
+        self._header_row.setContentsMargins(0, 0, 0, 0)
+        self._header_row.setSpacing(4)
+        self._header_row.addWidget(self._header, stretch=1)
+        layout.addWidget(self._header_frame)
 
         # コンテンツ領域
         self._container = QWidget(self)  # i289 t09: 親なし HWND フラッシュ防止
@@ -229,6 +273,14 @@ class CollapsibleSection(QWidget):
     def is_collapsed(self) -> bool:
         return not self._expanded
 
+    def add_header_widget(self, widget: QWidget):
+        """ヘッダー右側に補助ウィジェット（例: 初期化ボタン）を追加する。
+
+        ヘッダー本体（タイトルラベル）はクリックで展開/折りたたみ動作を保つ。
+        追加ウィジェットは独立したクリックイベントを持つ。
+        """
+        self._header_row.addWidget(widget)
+
     def set_expanded(self, expanded: bool):
         """外部から展開/折りたたみ状態を設定する（シグナルなし、即座）。"""
         self._anim.stop()
@@ -242,13 +294,22 @@ class CollapsibleSection(QWidget):
         self._apply_header_style(self._design)
 
     def toggle(self):
-        if self._animating:
-            return
+        # v0.6.1: アニメーション廃止のみのシンプル実装。
+        # チラつきの根本解決は将来課題（保留）。これ以上いじると別の不具合
+        # を招くため、最小限の安定動作に留める。
+        self._anim.stop()
+        self._animating = False
         self._expanded = not self._expanded
+
+        if self._expanded:
+            self._container.setMaximumHeight(16777215)
+            self._container.setVisible(True)
+        else:
+            self._container.setMaximumHeight(0)
+
         self._header.setText(self._format_title(self._expanded))
         self._apply_header_style(self._design)
         self.toggled.emit(not self._expanded)  # collapsed を通知
-        self._start_animation(self._expanded)
 
     def _start_animation(self, expanding: bool):
         self._anim.stop()
@@ -277,16 +338,45 @@ class CollapsibleSection(QWidget):
     def _apply_header_style(self, design: DesignSettings):
         c = get_header_colors(self._theme_mode, design)
         bg = c["bg_expanded"] if self._expanded else c["bg_collapsed"]
+        hover = c["hover"]
+        text = c["text"]
+
+        # v0.6.1: ネストされたサブグループは親のメインヘッダーと差別化する
+        # ためにダーク=明、ライト=暗 へ少しシフトする
+        if self._nested:
+            from PySide6.QtGui import QColor as _QC
+            tm = (self._theme_mode or "dark").lower()
+            if tm in ("light",):
+                # ライトテーマ: もう一段濃く
+                bg = _QC(bg).darker(112).name()
+                hover = _QC(hover).darker(112).name()
+            else:
+                # ダーク / システム / auto: 一段明るく（バーボン色寄り）
+                bg = _QC(bg).lighter(140).name()
+                hover = _QC(hover).lighter(140).name()
+            self._header.setStyleSheet(
+                f"QLabel {{"
+                f"  color: {text};"
+                f"  background-color: {bg};"
+                f"  padding: 4px 10px;"
+                f"  border-radius: 3px;"
+                f"  margin-top: 1px;"
+                f"  font-size: 8pt;"
+                f"}}"
+                f"QLabel:hover {{ background-color: {hover}; }}"
+            )
+            return
+
         self._header.setStyleSheet(
             f"QLabel {{"
-            f"  color: {c['text']};"
+            f"  color: {text};"
             f"  background-color: {bg};"
             f"  padding: 5px 8px;"
             f"  border-radius: 3px;"
             f"  margin-top: 2px;"
             f"}}"
             f"QLabel:hover {{"
-            f"  background-color: {c['hover']};"
+            f"  background-color: {hover};"
             f"}}"
         )
 
@@ -740,6 +830,9 @@ class ConfirmOverlay(QWidget):
         self.setGeometry(parent.rect())
         self.raise_()
         self.setStyleSheet("background-color: rgba(0, 0, 0, 160);")
+        # v0.6.1: ESC キーをキャンセル扱いに（全画面非表示が発火しないようキャプチャ）
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()
 
         outer = QVBoxLayout(self)
         outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -806,7 +899,23 @@ class ConfirmOverlay(QWidget):
             card_v.addWidget(cb, 0, Qt.AlignmentFlag.AlignHCenter)
 
         outer.addWidget(card)
+
+        # v0.6.1: cancel ボタンの value を ESC キー処理用に保持
+        self._cancel_value = cancel_btns[0][1] if cancel_btns else "cancel"
+
         self.show()
+
+    def keyPressEvent(self, event):
+        """v0.6.1: ESC キーをキャンセル扱いにする。
+
+        ESC のグローバルハンドラー（全画面非表示）に届かないよう
+        ここでキャプチャして chosen("cancel") を発火する。
+        """
+        if event.key() == Qt.Key.Key_Escape:
+            event.accept()
+            self.chosen.emit(self._cancel_value)
+            return
+        super().keyPressEvent(event)
 
 
 class ItemSelectOverlay(QWidget):

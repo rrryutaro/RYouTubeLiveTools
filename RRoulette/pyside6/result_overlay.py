@@ -98,6 +98,9 @@ class ResultOverlay(QLabel):
         self._pointer_move_mode: bool = False
         self._current_winner: str = ""
 
+        # v0.6.1: 連携実行時の投稿者名（結果表示にのみ併記、空なら非表示）
+        self._link_author: str = ""
+
     # ================================================================
     #  公開 API
     # ================================================================
@@ -116,9 +119,10 @@ class ResultOverlay(QLabel):
         self._stop_flash()
         self._current_winner = winner
         self._update_text()
+        # v0.6.1: 内容に合わせて widget サイズを設定（中央再配置含む）
+        self._fit_to_content()
         self.show()
         self.raise_()
-        self.update_position()
         self._start_auto_timer_if_needed()
 
     def update_provisional(self, winner: str):
@@ -127,18 +131,86 @@ class ResultOverlay(QLabel):
             return
         self._current_winner = winner
         self._update_text()
-        self.update_position()
+        self._fit_to_content()
 
     def set_pointer_move_mode(self, active: bool):
         """ポインター操作モードの状態を保持する（i069/i070: 表示には影響しない）。"""
         self._pointer_move_mode = active
 
+    def set_link_author(self, author: str):
+        """v0.6.1: 連携実行時の投稿者名を結果表示に併記する。
+        空文字なら表示なし。"""
+        self._link_author = (author or "").strip()
+        if self.isVisible():
+            self._update_text()
+            self._fit_to_content()
+
+    def _fit_to_content(self):
+        """v0.6.1: 内容に合わせた widget サイズを設定し、親の中央へ配置する。
+
+        手順:
+        1. 文字列を計測し、最長 1 行が収まる必要幅を計算
+        2. 親 (RoulettePanel) 幅 - 余白 を上限としてキャップ
+        3. その幅で word-wrap した行数分の高さを確保
+        4. resize() で widget サイズを上書き
+        5. move() で親の中央へ直接配置（update_position は使わない）
+        """
+        text = self.text()
+        if not text:
+            return
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        fm = QFontMetrics(self.font())
+        m = self.contentsMargins()
+
+        pw, ph = parent.width(), parent.height()
+        max_panel_w = max(160, pw - 24)
+        inner_max_w = max_panel_w - m.left() - m.right() - 16
+
+        # 行ごとに wrap
+        wrapped: list[str] = []
+        for raw in text.split("\n"):
+            if fm.horizontalAdvance(raw) <= inner_max_w:
+                wrapped.append(raw)
+            else:
+                wrapped.extend(self._wrap_text_to_width(raw, fm, inner_max_w))
+
+        # 必要幅 = 最長 wrap 行 + 余白、ただし上限は max_panel_w
+        longest = max((fm.horizontalAdvance(l) for l in wrapped), default=0)
+        new_w = min(max_panel_w, longest + m.left() + m.right() + 16)
+        new_h = fm.height() * len(wrapped) + m.top() + m.bottom() + 8
+
+        # サイズを直接設定し、中央配置
+        self.resize(new_w, new_h)
+        lx = max(0, (pw - new_w) // 2)
+        ly = max(10, (ph - new_h) // 2)
+        self.move(lx, ly)
+
     def _update_text(self):
         """現在の winner に基づいてテキストを更新する（i070: 操作中表示は不要）。"""
         display = (self._result_prefix + self._current_winner
                    if self._result_prefix else self._current_winner)
-        self.setWordWrap(False)
-        self.setText(f"  \U0001f3af {display}  ")
+        if self._link_author:
+            # v0.6.1: 連携投稿者がいる場合は 2 段表示
+            # 1 段目: 投稿者名 / 2 段目: 通常結果
+            # 表示幅は親 (RoulettePanel) のほぼ全幅まで広げ、
+            # 見切れる場合のみ改行する
+            self.setWordWrap(True)
+            self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            parent = self.parentWidget()
+            if parent is not None:
+                margin = 24  # 左右の余白
+                self.setMaximumWidth(max(160, parent.width() - margin))
+            self.setText(
+                f"  {self._link_author}  \n"
+                f"  \U0001f3af {display}  "
+            )
+        else:
+            self.setWordWrap(False)
+            # 既定はサイズ自動調整（最大幅制限を解除）
+            self.setMaximumWidth(16777215)
+            self.setText(f"  \U0001f3af {display}  ")
 
     def show_summary(self, results: list):
         """連続抽選の全結果サマリーをオーバーレイに表示する（最終回完了時に使用）。
@@ -221,13 +293,13 @@ class ResultOverlay(QLabel):
             lh = self.heightForWidth(lw) + 24
             if lh <= 24:
                 lh = 120  # fallback
+            lx = (cw - lw) // 2
+            ly = max(10, (ch - lh) // 2)
+            self.setGeometry(lx, ly, lw, lh)
         else:
-            self.adjustSize()
-            lw = min(self.sizeHint().width() + 32, int(cw * 0.8))
-            lh = self.sizeHint().height() + 16
-        lx = (cw - lw) // 2
-        ly = max(10, (ch - lh) // 2)
-        self.setGeometry(lx, ly, lw, lh)
+            # v0.6.1: 通常結果は _fit_to_content() でサイズ確定済みのため、
+            # サイズは触らず中央配置のみ更新する（adjustSize で上書きしない）
+            self._fit_to_content()
 
     def apply_style(self, design: DesignSettings):
         """デザイン連動の配色を適用する。"""
@@ -315,6 +387,37 @@ class ResultOverlay(QLabel):
     #  描画（テキストアウトライン）
     # ================================================================
 
+    @staticmethod
+    def _wrap_text_to_width(line: str, fm: QFontMetrics, max_w: float) -> list[str]:
+        """v0.6.1: 1 行を最大幅で文字単位 wrap する（日本語混在対応）。"""
+        if max_w <= 0 or fm.horizontalAdvance(line) <= max_w:
+            return [line]
+        out: list[str] = []
+        cur = ""
+        for ch in line:
+            test = cur + ch
+            if fm.horizontalAdvance(test) > max_w and cur:
+                out.append(cur)
+                cur = ch
+            else:
+                cur = test
+        if cur:
+            out.append(cur)
+        return out
+
+    def _compute_wrapped_lines(self) -> list[str]:
+        """現在の text と width から改行 + word-wrap した行リストを返す。"""
+        text = self.text()
+        if not text:
+            return []
+        fm = QFontMetrics(self.font())
+        margins = self.contentsMargins()
+        max_w = max(0.0, self.width() - margins.left() - margins.right() - 16)
+        wrapped: list[str] = []
+        for raw in text.split("\n"):
+            wrapped.extend(self._wrap_text_to_width(raw, fm, max_w))
+        return wrapped
+
     def paintEvent(self, event):
         """QLabel の描画後にアウトライン付きテキストを重ねて描画する。"""
         # QLabel のデフォルト描画（背景・ボーダー。テキストは transparent で見えない）
@@ -339,30 +442,42 @@ class ResultOverlay(QLabel):
             self.height() - margins.top() - margins.bottom(),
         )
 
-        # QPainterPath でテキストのアウトラインを構築
+        # v0.6.1: 改行対応 + 自動 word-wrap
+        # _fit_to_content() で widget サイズが内容に合わせ済みのため、
+        # 描画は上端からシンプルに開始する（中央配置にしない）
         font = self.font()
         fm = QFontMetrics(font)
-        text_width = fm.horizontalAdvance(text)
-        text_height = fm.height()
+        lines = self._compute_wrapped_lines()
+        line_h = fm.height()
 
-        # 中央配置の座標計算
-        x = rect.x() + (rect.width() - text_width) / 2.0
-        y = rect.y() + (rect.height() + fm.ascent() - fm.descent()) / 2.0
+        # 1 行目のベースライン y = padding 上端 + ascent
+        y_top = rect.y() + fm.ascent() + 2
 
-        path = QPainterPath()
-        path.addText(x, y, font, text)
+        outline_pen = QPen(
+            self._outline_color, self._outline_width,
+            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
 
-        # アウトライン（黒縁）
-        p.setPen(QPen(self._outline_color, self._outline_width,
-                       Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                       Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
+        for i, line in enumerate(lines):
+            if not line:
+                continue
+            text_width = fm.horizontalAdvance(line)
+            x = rect.x() + (rect.width() - text_width) / 2.0
+            y = y_top + i * line_h
 
-        # 塗り（テキスト色）
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self._text_color)
-        p.drawPath(path)
+            path = QPainterPath()
+            path.addText(x, y, font, line)
+
+            # アウトライン（黒縁）
+            p.setPen(outline_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+            # 塗り（テキスト色）
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._text_color)
+            p.drawPath(path)
 
         p.end()
 

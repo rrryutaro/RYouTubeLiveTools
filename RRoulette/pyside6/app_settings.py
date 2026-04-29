@@ -76,8 +76,9 @@ class AppSettings:
     # サウンド:
     sound_tick_enabled: bool = True   # スピン中 tick 音
     sound_result_enabled: bool = True # 結果確定音
-    tick_volume: int = 100            # tick音量 (0-100)
-    win_volume: int = 100             # result音量 (0-100)
+    tick_volume: int = 50             # tick音量 (0-100) — 既定 50%
+    win_volume: int = 50              # result音量 (0-100) — 既定 50%
+    effect_volume: int = 50           # 特殊演出音量 (0-100) — 既定 50%
     tick_pattern: int = 0             # tick音パターン (0-5, 6=カスタム)
     win_pattern: int = 0              # result音パターン (0-5, 6=カスタム)
     tick_custom_file: str = ""        # カスタムtick音ファイルパス
@@ -101,6 +102,7 @@ class AppSettings:
     # 項目パネル表示 (i283):
     show_item_prob: bool = True       # 各項目行の確率/分割 UI を表示
     show_item_win_count: bool = True  # 各項目行の当選回数ラベルを表示
+    show_item_extra_badges: bool = True  # 確率モード・分割・役割バッジを表示
 
     # 項目パネル表示モード (i289): 0=詳細表示, 1=シンプル表示
     item_panel_display_mode: int = 1  # i315: デフォルトはシンプルモード
@@ -123,6 +125,7 @@ class AppSettings:
     # リプレイ:
     replay_max_count: int = 5        # リプレイ保存上限
     replay_show_indicator: bool = True  # リプレイ中インジケーター表示
+    replay_record_effects: bool = True  # v0.6.1: 特殊演出もリプレイに記録/再現
 
     # 全面非表示 (i485):
     auto_hide_enabled: bool = True   # 自動全面非表示 ON/OFF (デフォルト: ON)
@@ -253,8 +256,9 @@ class AppSettings:
             auto_shuffle=config.get("auto_shuffle", False),
             sound_tick_enabled=config.get("sound_tick_enabled", True),
             sound_result_enabled=config.get("sound_result_enabled", True),
-            tick_volume=config.get("tick_volume", 100),
-            win_volume=config.get("win_volume", 100),
+            tick_volume=config.get("tick_volume", 50),
+            win_volume=config.get("win_volume", 50),
+            effect_volume=config.get("effect_volume", 50),
             tick_pattern=config.get("tick_pattern", 0),
             win_pattern=config.get("win_pattern", 0),
             tick_custom_file=config.get("tick_custom_file", ""),
@@ -332,6 +336,7 @@ class AppSettings:
             confirm_item_delete=config.get("confirm_item_delete", True),
             replay_max_count=config.get("replay_max_count", 5),
             replay_show_indicator=config.get("replay_show_indicator", True),
+            replay_record_effects=config.get("replay_record_effects", True),
             auto_hide_enabled=config.get("auto_hide_enabled", True),
             auto_hide_seconds=config.get("auto_hide_seconds", 10),
             auto_hide_fade_enabled=config.get("auto_hide_fade_enabled", True),
@@ -340,6 +345,7 @@ class AppSettings:
             auto_hide_after_spin_after_restore=config.get("auto_hide_after_spin_after_restore", False),
             show_item_prob=config.get("show_item_prob", True),
             show_item_win_count=config.get("show_item_win_count", True),
+            show_item_extra_badges=config.get("show_item_extra_badges", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
             roulette_only_show_selection_handle=config.get("roulette_only_show_selection_handle", True),
             roulette_only_show_title_plate=config.get("roulette_only_show_title_plate", True),
@@ -409,6 +415,7 @@ class AppSettings:
             "sound_result_enabled": self.sound_result_enabled,
             "tick_volume": self.tick_volume,
             "win_volume": self.win_volume,
+            "effect_volume": self.effect_volume,
             "tick_pattern": self.tick_pattern,
             "win_pattern": self.win_pattern,
             "tick_custom_file": self.tick_custom_file,
@@ -468,6 +475,7 @@ class AppSettings:
             "confirm_item_delete": self.confirm_item_delete,
             "replay_max_count": self.replay_max_count,
             "replay_show_indicator": self.replay_show_indicator,
+            "replay_record_effects": self.replay_record_effects,
             "auto_hide_enabled": self.auto_hide_enabled,
             "auto_hide_seconds": self.auto_hide_seconds,
             "auto_hide_fade_enabled": self.auto_hide_fade_enabled,
@@ -476,6 +484,7 @@ class AppSettings:
             "auto_hide_after_spin_after_restore": self.auto_hide_after_spin_after_restore,
             "show_item_prob": self.show_item_prob,
             "show_item_win_count": self.show_item_win_count,
+            "show_item_extra_badges": self.show_item_extra_badges,
             "item_panel_display_mode": self.item_panel_display_mode,
             "roulette_only_show_selection_handle": self.roulette_only_show_selection_handle,
             "roulette_only_show_title_plate": self.roulette_only_show_title_plate,

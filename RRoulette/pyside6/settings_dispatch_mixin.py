@@ -103,6 +103,15 @@ class SettingsDispatchMixin:
             self._sound.set_tick_volume(value / 100.0)
         elif key == "win_volume":
             self._sound.set_win_volume(value / 100.0)
+        elif key == "effect_volume":
+            self._sound.set_effect_volume(value / 100.0)
+        elif key == "replay_record_effects":
+            # v0.6.1: 全ルーレットの SpinController に設定を伝達
+            self._settings.replay_record_effects = bool(value)
+            for _rid in self._manager.ids():
+                _ctx = self._manager.get(_rid)
+                if _ctx and _ctx.panel and hasattr(_ctx.panel.spin_ctrl, "set_replay_record_effects"):
+                    _ctx.panel.spin_ctrl.set_replay_record_effects(bool(value))
         elif key == "tick_pattern":
             # i370: per-roulette — active パネルの SpinController に設定する
             rp.spin_ctrl.set_tick_pattern(value)
@@ -124,12 +133,26 @@ class SettingsDispatchMixin:
             rp.wheel.set_log_all_patterns(value)
         elif key == "spin_duration":
             rp.spin_ctrl.set_spin_duration(value)
+        elif key == "spin_preset_profile":
+            rp.spin_ctrl.set_spin_profile(value)
+        elif key == "spin_preset_random":
+            rp.spin_ctrl.set_spin_preset_random(value)
+        elif key == "spin_duration_random":
+            rp.spin_ctrl.set_spin_duration_random(value)
+        elif key == "spin_duration_random_ratio":
+            rp.spin_ctrl.set_spin_duration_random_ratio(value)
+        elif key == "spin_phase_randomize":
+            rp.spin_ctrl.set_spin_phase_randomize(value)
+        elif key == "spin_phase_overrides":
+            rp.spin_ctrl.set_spin_phase_overrides(value)
         elif key == "spin_mode":
             rp.spin_ctrl.set_spin_mode(value)
         elif key == "double_duration":
             rp.spin_ctrl.set_double_duration(value)
         elif key == "triple_duration":
             rp.spin_ctrl.set_triple_duration(value)
+        elif key == "spin_effects":
+            rp.set_effect_settings(value)
         elif key == "replay_max_count":
             # i351: 全ルーレットの ReplayManager に上限を適用する
             for _rp_mgr_v in self._replay_mgrs.values():
@@ -176,6 +199,11 @@ class SettingsDispatchMixin:
             self._settings.show_item_win_count = bool(value)
             self._settings_panel.update_setting("show_item_win_count", value)
             self._item_panel.update_setting("show_item_win_count", value)
+        elif key == "show_item_extra_badges":
+            # v0.6.1: 確率モード/分割/役割バッジの一括 ON/OFF。
+            self._settings.show_item_extra_badges = bool(value)
+            self._settings_panel.update_setting("show_item_extra_badges", value)
+            self._item_panel.update_setting("show_item_extra_badges", value)
         elif key == "item_panel_display_mode":
             # i289: 項目パネル表示モード切替。
             self._settings.item_panel_display_mode = int(value)
@@ -193,6 +221,19 @@ class SettingsDispatchMixin:
         # i346: 全ルーレット一括適用（active パネルへの適用は上記で完了済み）
         if getattr(self, "_apply_to_all", False):
             self._apply_setting_to_all_panels(key, value)
+
+        # v0.6.1: アプリ全体設定は管理パネル側 UI も同期する
+        _APP_KEYS = (
+            "window_transparent", "roulette_transparent", "panels_transparent",
+            "always_on_top", "theme_mode", "confirm_item_delete",
+            "float_win_show_instance", "tick_volume", "win_volume",
+            "effect_volume", "replay_max_count", "replay_show_indicator",
+            "replay_record_effects", "confirm_reset",
+        )
+        if key in _APP_KEYS and hasattr(self, "_manage_panel"):
+            mp = self._manage_panel
+            if hasattr(mp, "update_app_setting"):
+                mp.update_app_setting(key, value)
 
         self._save_config()
         return True
@@ -233,6 +274,18 @@ class SettingsDispatchMixin:
                 p.wheel.set_log_box_border(value)
             elif key == "spin_duration":
                 p.spin_ctrl.set_spin_duration(value)
+            elif key == "spin_preset_profile":
+                p.spin_ctrl.set_spin_profile(value)
+            elif key == "spin_preset_random":
+                p.spin_ctrl.set_spin_preset_random(value)
+            elif key == "spin_duration_random":
+                p.spin_ctrl.set_spin_duration_random(value)
+            elif key == "spin_duration_random_ratio":
+                p.spin_ctrl.set_spin_duration_random_ratio(value)
+            elif key == "spin_phase_randomize":
+                p.spin_ctrl.set_spin_phase_randomize(value)
+            elif key == "spin_phase_overrides":
+                p.spin_ctrl.set_spin_phase_overrides(value)
             elif key == "spin_mode":
                 p.spin_ctrl.set_spin_mode(value)
             elif key == "double_duration":
@@ -254,35 +307,24 @@ class SettingsDispatchMixin:
             elif key == "pointer_angle":
                 p.wheel.set_pointer_angle(value)
             elif key == "text_size_mode":
-                # 対になる text_direction は ctx.settings から読む（runtime ではなく）
                 p.wheel.set_text_mode(value, ctx.settings.text_direction)
             elif key == "text_direction":
-                # 対になる text_size_mode は ctx.settings から読む
                 p.wheel.set_text_mode(ctx.settings.text_size_mode, value)
-            elif key == "spin_preset_name":
-                p.spin_ctrl.set_spin_preset(value)
             elif key == "tick_pattern":
                 p.spin_ctrl.set_tick_pattern(value)
             elif key == "win_pattern":
                 p.spin_ctrl.set_win_pattern(value)
-
-    # ------------------------------------------------------------------
-    #  spin プリセット切替
-    # ------------------------------------------------------------------
-
-    def _on_preset_changed(self, name: str):
-        from spin_preset import SPIN_PRESETS
-        ctx = self._active_context
-        ctx.panel.spin_ctrl.set_spin_preset(name)
-        # i369: spin_preset_name / spin_duration は per-roulette 設定 → ctx.settings に書く
-        ctx.settings.spin_preset_name = name
-        # プリセット切替時、そのプリセットの duration で spin_duration を連動更新
-        if name in SPIN_PRESETS:
-            dur = SPIN_PRESETS[name].duration
-            ctx.settings.spin_duration = dur
-            ctx.panel.spin_ctrl.set_spin_duration(dur)
-            self._settings_panel.update_setting("spin_duration", dur)
-        self._save_config()
+            elif key == "spin_effects":
+                p.set_effect_settings(value)
+            elif key == "profile_idx":
+                # v0.6.1: ルーレットサイズも全ルーレット適用時に各パネルへ反映
+                idx = min(value, len(SIZE_PROFILES) - 1)
+                _, _w, _h = SIZE_PROFILES[idx]
+                if not self._settings.roulette_only_mode:
+                    p.resize(_w, _h)
+            # tick_custom_file / win_custom_file は active 切替時に
+            # _sync_settings_to_active 経由で sound_manager にロード。
+            # ここでは ctx.settings 書き込みのみ（先頭で完了済み）。
 
     # ------------------------------------------------------------------
     #  音プレビュー
@@ -298,18 +340,66 @@ class SettingsDispatchMixin:
         # i370: active ルーレットの per-roulette パターンを使う
         self._sound.preview_win(self._active_context.settings.win_pattern)
 
+    def _on_preview_effect(self, key: str, variant: int):
+        """演出音プレビュー再生（旧 sound key 用、後方互換）。"""
+        self._sound.preview_effect(key, variant)
+
+    def _on_preview_full_effect(self, key: str, variant: int):
+        """演出全体プレビュー（演出確認モードからの呼び出し）。
+
+        EffectKey ("soundConfirm" / "miniCharTarget" / "cutInExpect" 等) を受け、
+        対応する音・キャラ・カットイン・フラッシュ・グロー・テキストを実行する。
+        """
+        rp = self._active_context.panel
+        # 音系: SoundManager.preview_effect
+        if key == "soundConfirm":
+            self._sound.preview_effect("confirm", variant)
+        elif key == "soundExpect":
+            self._sound.preview_effect("expect", variant)
+        elif key == "soundNgConfirm":
+            self._sound.preview_effect("ng", variant)
+        # ミニキャラ系: char_type は dragon/rabbit/ghost
+        elif key == "miniCharTarget":
+            rp._mini_char.fire("dragon", variant if 1 <= variant <= 5 else 1)
+        elif key == "miniCharExpect":
+            rp._mini_char.fire("rabbit", variant if 1 <= variant <= 5 else 1)
+        elif key == "miniCharNg":
+            rp._mini_char.fire("ghost", variant if 1 <= variant <= 5 else 1)
+        # カットイン系
+        elif key == "cutInTarget":
+            rp._cutin_effect.fire("dragon", variant if 1 <= variant <= 5 else 1)
+        elif key == "cutInExpect":
+            rp._cutin_effect.fire("rabbit", variant if 1 <= variant <= 5 else 1)
+        elif key == "cutInNg":
+            rp._cutin_effect.fire("ghost", variant if 1 <= variant <= 5 else 1)
+        # その他
+        elif key == "flashConfirm":
+            rp._flash_overlay.fire(variant if 1 <= variant <= 5 else 1)
+        elif key == "wheelGlow":
+            rp.wheel.set_glow_variant(variant if 1 <= variant <= 5 else 1)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(1500, lambda: rp.wheel.set_glow_variant(0))
+        elif key == "textChance":
+            # ChanceTextOverlay は roulette_panel に存在するか確認
+            if hasattr(rp, "_chance_text"):
+                rp._chance_text.fire(variant if 1 <= variant <= 5 else 1)
+
     # ------------------------------------------------------------------
     #  カスタム音ファイル変更
     # ------------------------------------------------------------------
 
     def _on_custom_tick_file(self, path: str):
-        """カスタムtick音ファイル変更。"""
-        self._settings.tick_custom_file = path
-        self._sound.load_tick_custom(path)
+        """v0.6.1: カスタムtick音ファイル変更（per-roulette）。"""
+        ctx = self._active_context
+        ctx.settings.tick_custom_file = path
+        if path:
+            self._sound.load_tick_custom(path)
         self._save_config()
 
     def _on_custom_win_file(self, path: str):
-        """カスタムresult音ファイル変更。"""
-        self._settings.win_custom_file = path
-        self._sound.load_win_custom(path)
+        """v0.6.1: カスタムresult音ファイル変更（per-roulette）。"""
+        ctx = self._active_context
+        ctx.settings.win_custom_file = path
+        if path:
+            self._sound.load_win_custom(path)
         self._save_config()

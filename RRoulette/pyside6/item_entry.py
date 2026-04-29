@@ -32,6 +32,7 @@ class ItemEntry:
         prob_mode: 確率モード (None / "fixed" / "weight")
         prob_value: 確率値（prob_mode に応じた意味）
         item_id: 項目を一意に識別する UUID 文字列（i076: チケット効果での項目特定用）
+        special_role: 特殊演出ロール ("target" / "avoid" / None)
     """
 
     text: str
@@ -40,6 +41,7 @@ class ItemEntry:
     prob_mode: str | None = None
     prob_value: float | None = None
     item_id: str = field(default_factory=lambda: str(_uuid_mod.uuid4()))
+    special_role: str | None = None
 
     @classmethod
     def from_config_entry(cls, entry, *, keep_disabled: bool = False
@@ -66,6 +68,9 @@ class ItemEntry:
                 return None
             # i076: 既存データに item_id がなければ新規生成して付与する
             item_id = entry.get("item_id") or str(_uuid_mod.uuid4())
+            special_role = entry.get("special_role")
+            if special_role not in ("target", "avoid"):
+                special_role = None
             return cls(
                 text=text,
                 enabled=enabled,
@@ -73,12 +78,13 @@ class ItemEntry:
                 prob_mode=entry.get("prob_mode"),
                 prob_value=entry.get("prob_value"),
                 item_id=item_id,
+                special_role=special_role,
             )
         return None
 
     def to_dict(self) -> dict:
         """config 保存用の dict 表現を返す。"""
-        return {
+        d: dict = {
             "text": self.text,
             "enabled": self.enabled,
             "split_count": self.split_count,
@@ -86,3 +92,6 @@ class ItemEntry:
             "prob_value": self.prob_value,
             "item_id": self.item_id,
         }
+        if self.special_role:
+            d["special_role"] = self.special_role
+        return d

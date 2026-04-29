@@ -31,6 +31,9 @@ from wheel_widget import WheelWidget, _CHUNK_PREFIX
 from spin_controller import SpinController
 from result_overlay import ResultOverlay
 from panel_widgets import _PanelGrip
+from effect_overlay import FlashOverlay, ChanceTextOverlay
+from character_effect_widget import MiniCharEffect, CutInEffect
+from spin_effect_settings import SpinEffectSettings
 
 
 # ホイール + ポインター + 余白を含むパネル最小サイズ
@@ -380,6 +383,16 @@ class RoulettePanel(QFrame):
         self._result_overlay = ResultOverlay(self)
         self._result_overlay.apply_style(design)
 
+        # ── 特殊演出ウィジェット ──
+        # z-order: _result_overlay < 演出系 (演出は result より上に表示)
+        self._flash_overlay = FlashOverlay(self)
+        self._chance_text = ChanceTextOverlay(self)
+        self._mini_char = MiniCharEffect(self)
+        # カットイン: フルウィンドウに表示するため MainWindow を parent にしたいが、
+        # 生成時点では window() が確定しないため遅延 parent 設定で対応する。
+        self._cutin_effect = CutInEffect(self)
+        self._setup_effect_callbacks()
+
         # ── リサイズグリップ ──
         self._grip = _PanelGrip(
             self, design, mode="panel",
@@ -526,6 +539,76 @@ class RoulettePanel(QFrame):
     def set_segments(self, segments):
         """ルーレットのセグメントを設定する。"""
         self._wheel.set_segments(segments)
+
+    # ================================================================
+    #  特殊演出
+    # ================================================================
+
+    def _setup_effect_callbacks(self) -> None:
+        """演出発火コールバックを SpinController に登録する。"""
+        sound = self._spin_ctrl._sound
+
+        def _fire_flash(variant: int):
+            self._flash_overlay.fire(variant)
+
+        def _fire_chance(variant: int):
+            self._chance_text.fire(variant)
+
+        def _fire_glow(variant: int):
+            self._wheel.set_glow_variant(variant)
+
+        def _fire_mini_dragon(variant: int):
+            self._mini_char.fire("dragon", variant)
+
+        def _fire_mini_rabbit(variant: int):
+            self._mini_char.fire("rabbit", variant)
+
+        def _fire_mini_ghost(variant: int):
+            self._mini_char.fire("ghost", variant)
+
+        def _fire_cutin_dragon(variant: int):
+            # v0.6.1: setParent(window) は MainWindow 全体に表示される原因のため廃止。
+            # CutInEffect は __init__ で RoulettePanel を parent としており、
+            # fire() 内で parent サイズに resize される（パネル範囲内に閉じる）。
+            self._cutin_effect.fire("dragon", variant)
+
+        def _fire_cutin_rabbit(variant: int):
+            self._cutin_effect.fire("rabbit", variant)
+
+        def _fire_cutin_ghost(variant: int):
+            self._cutin_effect.fire("ghost", variant)
+
+        def _fire_sound_confirm(variant: int):
+            if sound:
+                sound.play_effect("confirm", variant)
+
+        def _fire_sound_expect(variant: int):
+            if sound:
+                sound.play_effect("expect", variant)
+
+        def _fire_sound_ng(variant: int):
+            if sound:
+                sound.play_effect("ng", variant)
+
+        callbacks = {
+            "soundConfirm":   _fire_sound_confirm,
+            "soundExpect":    _fire_sound_expect,
+            "soundNgConfirm": _fire_sound_ng,
+            "miniCharTarget": _fire_mini_dragon,
+            "miniCharExpect": _fire_mini_rabbit,
+            "miniCharNg":     _fire_mini_ghost,
+            "cutInTarget":    _fire_cutin_dragon,
+            "cutInExpect":    _fire_cutin_rabbit,
+            "cutInNg":        _fire_cutin_ghost,
+            "flashConfirm":   _fire_flash,
+            "wheelGlow":      _fire_glow,
+            "textChance":     _fire_chance,
+        }
+        self._spin_ctrl.set_effect_callbacks(callbacks)
+
+    def set_effect_settings(self, settings: SpinEffectSettings) -> None:
+        """特殊演出設定を更新して SpinController に反映する。"""
+        self._spin_ctrl.set_effect_settings(settings)
 
     def set_instance_label(self, number: int | None):
         """インスタンス番号ラベルを設定する。

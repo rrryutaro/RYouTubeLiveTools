@@ -215,8 +215,6 @@ class UIToggleMixin:
                         _p._title_plate.hide()
                     if not _s.roulette_only_show_graph_btn:
                         _p._graph_btn.hide()
-                    if not _s.roulette_only_show_grip:
-                        _p._grip.hide()
             # ウィンドウ・ルーレットを透過
             self._apply_window_transparent(True)
             self._apply_roulette_transparent(True)
@@ -288,13 +286,15 @@ class UIToggleMixin:
                         _p._title_plate.show()
                     if _ui.get("graph_btn", True):
                         _p._graph_btn.show()
-                    if _ui.get("grip", True):
-                        _p._grip.show()
                     # i469: roulette_only 状態をリセットしてからログオーバーレイを復元
                     _p._roulette_only_active = False
                     _p._roulette_only_log_show = True
                     _p._refresh_log_overlay()
 
+        # i120: グリップ表示状態を現在設定から再計算して全ルーレットへ同期する。
+        # 局所的な show/hide による状態ズレを防ぐため、ON/OFF どちらの経路でも
+        # 最終状態を _effective_roulette_grip_visible() から一元決定する。
+        self._sync_roulette_grips_visible()
         # i101: roulette_only_mode の ON/OFF 変更時にアイドルタイマーを再評価する。
         # auto_hide_only_in_roulette_only_mode = ON の場合、
         # roulette_only_mode = ON でタイマー起動、OFF でタイマー停止の切り替えが
@@ -324,18 +324,28 @@ class UIToggleMixin:
     # ================================================================
 
     def _toggle_always_on_top(self):
-        """常に最前面の ON/OFF を切り替える。"""
+        """常に最前面の ON/OFF を切り替える。
+
+        v0.6.1: setWindowFlags 後の show だけでは Windows で即時反映されない
+        ことがあるため、raise_() + activateWindow() で確実に前面化する。
+        """
         self._settings.always_on_top = not self._settings.always_on_top
         was_visible = self.isVisible()
         self._apply_window_flags()
         if was_visible:
-            self.show()  # setWindowFlags 後に再表示が必要
+            self.show()
+            # 即時反映: WindowStaysOnTopHint 付与時に最前面化を確実にする
+            self.raise_()
+            self.activateWindow()
         # i471: floating 中の全パネルにも always_on_top を同期する
         self._reapply_floating_panel_flags()
-        # クイック設定バーのチェックボックスを同期
-        self._settings_panel.update_setting(
-            "always_on_top", self._settings.always_on_top
-        )
+        # v0.6.1: 管理パネル側のチェックボックスを同期
+        if hasattr(self, "_manage_panel") and hasattr(
+            self._manage_panel, "update_app_setting"
+        ):
+            self._manage_panel.update_app_setting(
+                "always_on_top", self._settings.always_on_top
+            )
         self._save_config()
 
     def _floating_panel_flags(self):
@@ -594,10 +604,44 @@ class UIToggleMixin:
         self._last_sp_x = cur_x
         self._last_sp_y = cur_y
 
+    def _effective_roulette_grip_visible(self) -> bool:
+        """ルーレットパネルのグリップ実効表示状態を返す。
+
+        grip_visible と roulette_only_mode / roulette_only_show_grip の組み合わせで
+        一意に決まる。
+        """
+        return bool(
+            self._settings.grip_visible
+            and (
+                not self._settings.roulette_only_mode
+                or self._settings.roulette_only_show_grip
+            )
+        )
+
+    def _sync_roulette_grips_visible(self) -> None:
+        """全ルーレットパネルのグリップ表示状態を現在設定から再計算して同期する。
+
+        局所的な show/hide の積み重ねによる状態ズレを防ぐため、
+        常に設定値から算出した実効状態を全パネルへ適用する。
+        """
+        visible = self._effective_roulette_grip_visible()
+        for rid in self._manager.ids():
+            ctx = self._manager.get(rid)
+            if ctx is None or ctx.panel is None:
+                continue
+            grip = getattr(ctx.panel, "_grip", None)
+            if grip is not None:
+                grip.setVisible(visible)
+                if visible:
+                    grip.reposition()
+                    grip.raise_()
+
     def _apply_grip_visible(self, visible: bool):
         """全パネルのリサイズグリップの表示状態を反映する。"""
-        self._active_panel._grip.setVisible(visible)
-        self._settings_panel._resize_grip.setVisible(visible)
+        self._settings.grip_visible = bool(visible)
+        self._sync_roulette_grips_visible()
+        if hasattr(self._settings_panel, "_resize_grip"):
+            self._settings_panel._resize_grip.setVisible(bool(visible))
 
     def _apply_ctrl_box_visible(self, visible: bool):
         """コントロールボックス相当UIの表示状態を反映する。

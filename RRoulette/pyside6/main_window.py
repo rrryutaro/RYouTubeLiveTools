@@ -276,6 +276,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._replay_mgrs: dict[str, ReplayManager] = {}
         self._sound.set_tick_volume(self._settings.tick_volume / 100.0)
         self._sound.set_win_volume(self._settings.win_volume / 100.0)
+        self._sound.set_effect_volume(self._settings.effect_volume / 100.0)
         self._sound.set_tick_pattern(self._settings.tick_pattern)
         self._sound.set_win_pattern(self._settings.win_pattern)
         if self._settings.tick_custom_file:
@@ -351,7 +352,6 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
     def _connect_settings_panel_signals(self):
         """SettingsPanel の全シグナルを接続する。"""
         self._settings_panel.spin_requested.connect(self._start_spin)
-        self._settings_panel.preset_changed.connect(self._on_preset_changed)
         self._settings_panel.setting_changed.connect(self._on_setting_changed)
         self._settings_panel.item_entries_changed.connect(
             self._on_item_entries_changed
@@ -362,6 +362,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._settings_panel.pattern_renamed.connect(self._on_pattern_renamed)  # i400
         self._settings_panel.preview_tick_requested.connect(self._on_preview_tick)
         self._settings_panel.preview_win_requested.connect(self._on_preview_win)
+        self._settings_panel.preview_effect_requested.connect(self._on_preview_effect)
+        self._settings_panel.preview_full_effect_requested.connect(self._on_preview_full_effect)
+        # v0.6.1: 主要セクションの「初期化」要求
+        self._settings_panel.section_reset_requested.connect(self._on_section_reset_requested)
         self._settings_panel.custom_tick_file_changed.connect(self._on_custom_tick_file)
         self._settings_panel.custom_win_file_changed.connect(self._on_custom_win_file)
         self._settings_panel.log_clear_requested.connect(self._on_log_clear)
@@ -450,6 +454,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             link_integration_port=self._settings.link_integration_port,
             link_integration_max_hold=self._settings.link_integration_max_hold,
             link_panel_show_time=self._settings.link_panel_show_time,
+            settings=self._settings,
             parent=central,
         )
 
@@ -614,9 +619,15 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
     def _on_link_spin_requested(self, row: int) -> None:
         """連携パネルから spin 要求を受け取る (i109/i114)。キューで管理する。"""
         panel = self._link_panel
+        # v0.6.1: 連携メッセージから投稿者名を取得して保持
+        # （結果オーバーレイで「投稿者: xxx」として表示するため）
+        author = self._fetch_link_author(row)
         if not self._link_spin_is_busy():
             # スピン中でなければ即実行
+            # _start_spin が冒頭で result_overlay の link_author をクリアするため、
+            # クリアの後に再セットする順序にする
             self._start_spin()
+            self._apply_link_author_to_active(author)
             panel.set_row_status(row, "実行済")
             return
         # スピン中: キュー追加
@@ -624,11 +635,34 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             panel.set_row_status(row, "未実行: キュー満杯")
             _log.warning("[MainWindow] link spin queue full, dropping row=%d", row)
             return
-        self._link_spin_queue.append(row)
+        # v0.6.1: キューイング時は author も併せて保存
+        self._link_spin_queue.append((row, author))
         panel.set_row_status(row, "キュー待ち")
         panel.update_queue_display(len(self._link_spin_queue))
         _log.info("[MainWindow] link spin queued row=%d, queue_len=%d",
                   row, len(self._link_spin_queue))
+
+    def _fetch_link_author(self, row: int) -> str:
+        """v0.6.1: 連携パネルテーブルの指定行から投稿者名を取得する。"""
+        try:
+            from link_panel import _COL_AUTHOR
+            tbl = getattr(self._link_panel, "_table", None)
+            if tbl is None:
+                return ""
+            item = tbl.item(row, _COL_AUTHOR)
+            return item.text().strip() if item is not None else ""
+        except Exception:
+            return ""
+
+    def _apply_link_author_to_active(self, author: str) -> None:
+        """v0.6.1: 取得した連携投稿者名を active panel の result_overlay へ設定する。
+        次のスピン結果表示で「投稿者: xxx」として併記される。"""
+        try:
+            ctx = self._active_context
+            if ctx is not None and ctx.panel is not None:
+                ctx.panel.result_overlay.set_link_author(author)
+        except Exception:
+            pass
 
     def _process_link_spin_queue(self) -> None:
         """スピン完了後に連携スピンキューの次の要求を処理する (i114)。"""
@@ -636,9 +670,15 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
             return
         if self._link_spin_is_busy():
             return
-        row = self._link_spin_queue.popleft()
+        # v0.6.1: キュー要素は (row, author) のタプル
+        item = self._link_spin_queue.popleft()
+        if isinstance(item, tuple):
+            row, author = item
+        else:
+            row, author = int(item), ""
         self._link_panel.update_queue_display(len(self._link_spin_queue))
         self._start_spin()
+        self._apply_link_author_to_active(author)
         self._link_panel.set_row_status(row, "実行済")
         _log.info("[MainWindow] link spin queue processed row=%d, remaining=%d",
                   row, len(self._link_spin_queue))
@@ -1289,9 +1329,17 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.roulette_delete_requested.connect(
             self._on_manage_roulette_delete
         )
-        self._manage_panel.apply_to_all_changed.connect(  # i347
+        # v0.6.1: 「全ルーレットに適用」CB は設定パネル側へ移動
+        self._settings_panel.apply_to_all_changed.connect(
             self._on_manage_apply_to_all_changed
         )
+        # v0.6.1: 設定パネルから移動したアプリ全体設定の変更
+        self._manage_panel.app_setting_changed.connect(self._on_setting_changed)
+        # v0.6.1: 全体初期化要求 + グループ単位の初期化要求
+        self._manage_panel.global_reset_requested.connect(self._on_global_reset_requested)
+        self._manage_panel.ro_only_reset_requested.connect(self._on_ro_only_reset_requested)
+        self._manage_panel.app_settings_reset_requested.connect(self._on_app_settings_reset_requested)
+        self._manage_panel.app_subgroup_reset_requested.connect(self._on_app_subgroup_reset_requested)
         self._manage_panel.roulette_pkg_export_requested.connect(  # i419
             self._on_roulette_pkg_export
         )

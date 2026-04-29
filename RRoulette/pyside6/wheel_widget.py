@@ -100,6 +100,11 @@ class WheelWidget(QWidget):
         self._cy: float = 0.0
         self._r: float = MIN_R
 
+        # --- ホイールグロー演出 ---
+        self._glow_variant: int = 0  # 0=非表示
+        self._glow_start_ms: float = 0.0
+        self._glow_duration_ms: float = 1800.0
+
         # --- レイアウトキャッシュ ---
         self._layout_cache: list[LayoutResult] | None = None
         self._layout_cache_key: tuple | None = None
@@ -395,6 +400,38 @@ class WheelWidget(QWidget):
         self._transparent = enabled
         self.update()
 
+    def set_glow_variant(self, variant: int) -> None:
+        """ホイール外周グロー演出を開始する (wheelGlow)。
+
+        PWA WheelCanvas.svelte::drawGlowRing と一致させる。
+        duration = 1.0 秒、variant 1-5 で色/動きが異なる。
+        """
+        import time as _time
+        if variant <= 0:
+            # 0 以下なら停止
+            self._glow_variant = 0
+            if hasattr(self, '_glow_timer'):
+                self._glow_timer.stop()
+            self.update()
+            return
+        self._glow_variant = max(1, min(5, variant))
+        self._glow_start_ms = _time.perf_counter() * 1000.0
+        self._glow_duration_ms = 1000.0   # PWA: GLOW_DURATION_MS = 1000
+        if not hasattr(self, '_glow_timer'):
+            from PySide6.QtCore import QTimer
+            self._glow_timer = QTimer(self)
+            self._glow_timer.setInterval(16)
+            self._glow_timer.timeout.connect(self._glow_tick)
+        self._glow_timer.start()
+
+    def _glow_tick(self) -> None:
+        import time as _time
+        elapsed = _time.perf_counter() * 1000.0 - self._glow_start_ms
+        if elapsed >= self._glow_duration_ms:
+            self._glow_timer.stop()
+            self._glow_variant = 0
+        self.update()
+
     def set_pointer_move_range(self, base_angle: float, max_deg: float) -> None:
         """ポインター操作モードの可動範囲を設定して表示する (i069)。"""
         self._pm_base_angle = base_angle % 360.0
@@ -660,6 +697,95 @@ class WheelWidget(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 "REPLAY",
             )
+
+        # --- ホイールグロー演出 (PWA WheelCanvas.svelte::drawGlowRing と一致) ---
+        if self._glow_variant > 0:
+            import time as _time
+            from PySide6.QtGui import QColor as _QC
+            elapsed = _time.perf_counter() * 1000.0 - self._glow_start_ms
+            t = min(1.0, max(0.0, elapsed / self._glow_duration_ms))
+            # PWA: フェード 0-15% で立ち上がり, 85-100% でフェードアウト
+            if t < 0.15:
+                fade = t / 0.15
+            elif t > 0.85:
+                fade = (1.0 - t) / 0.15
+            else:
+                fade = 1.0
+            if fade > 0:
+                gv = self._glow_variant
+                if gv == 1:
+                    # 虹色循環: HSL hue を時間で回す
+                    hue = int(t * 360 * 1.2) % 360
+                    col = _QC.fromHsl(hue, 255, int(0.55 * 255))
+                    line_w = max(3, int(5 + math.sin(t * math.pi) * 3))
+                    alpha = 0.95 * fade
+                    painter.setPen(QPen(
+                        QColor(col.red(), col.green(), col.blue(), int(alpha * 255)),
+                        line_w,
+                    ))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+                elif gv == 2:
+                    # ゴールド単色脈動
+                    intensity = 0.7 + 0.3 * math.sin(t * math.pi * 2)
+                    col = _QC.fromHsl(45, 255, int(0.55 * 255))
+                    line_w = max(3, int(6 + intensity * 2))
+                    alpha = (0.6 + intensity * 0.4) * fade
+                    painter.setPen(QPen(
+                        QColor(col.red(), col.green(), col.blue(), int(alpha * 255)),
+                        line_w,
+                    ))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+                elif gv == 3:
+                    # 赤系2回点滅
+                    blink1 = max(0.0, 1.0 - abs(t - 0.20) / 0.13)
+                    blink2 = max(0.0, 1.0 - abs(t - 0.55) / 0.13)
+                    intensity = max(blink1, blink2)
+                    if intensity > 0.05:
+                        alpha = intensity * fade
+                        painter.setPen(QPen(
+                            QColor(255, 80, 80, int(alpha * 255)), 6
+                        ))
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
+                        painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+                elif gv == 4:
+                    # 6 セグメント回転 (虹色)
+                    rot = t * math.pi * 2 * 1.5
+                    colors_v4 = [
+                        QColor(255, 80, 80),  QColor(255, 170, 40),
+                        QColor(255, 240, 60), QColor(80, 220, 80),
+                        QColor(60, 160, 255), QColor(180, 80, 255),
+                    ]
+                    alpha = fade
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    for i in range(6):
+                        start_a = rot + (i / 6.0) * math.pi * 2
+                        span_a  = math.pi * 2 / 6 + 0.02
+                        c = colors_v4[i]
+                        painter.setPen(QPen(
+                            QColor(c.red(), c.green(), c.blue(), int(alpha * 255)), 5
+                        ))
+                        # Qt の drawArc は 1/16 度単位、開始角は 3 時位置から反時計回り
+                        start_deg16 = int(-math.degrees(start_a) * 16)
+                        span_deg16  = int(-math.degrees(span_a) * 16)
+                        painter.drawArc(
+                            QRectF(cx - r, cy - r, r * 2, r * 2),
+                            start_deg16, span_deg16,
+                        )
+                elif gv == 5:
+                    # ピンク紫シマー
+                    hue = int(300 + 30 * math.sin(t * math.pi * 8)) % 360
+                    intensity = 0.7 + 0.3 * math.sin(t * math.pi * 5)
+                    col = _QC.fromHsl(hue, 255, int(0.65 * 255))
+                    line_w = max(3, int(5 + intensity * 2))
+                    alpha = intensity * fade
+                    painter.setPen(QPen(
+                        QColor(col.red(), col.green(), col.blue(), int(alpha * 255)),
+                        line_w,
+                    ))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
 
         # --- 被りなし連続抽選 状態表示 (i023: paintEvent 内描画で OBS キャプチャ保証) ---
         if self._seq_status_text:

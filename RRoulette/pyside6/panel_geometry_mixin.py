@@ -821,8 +821,12 @@ class PanelGeometryMixin:
             entry["log_overlay_show"] = p.wheel._log_visible
             entry["log_on_top"] = p.wheel._log_on_top
             # i364: per-roulette 実設定を保存（スピン・サウンド・表示・結果表示）
-            entry["spin_preset_name"]   = p.spin_ctrl.preset_name
-            entry["spin_duration"]      = p.spin_ctrl._spin_duration
+            entry["spin_duration"]              = p.spin_ctrl._spin_duration
+            entry["spin_preset_profile"]        = p.spin_ctrl._spin_profile
+            entry["spin_preset_random"]         = p.spin_ctrl._spin_preset_random
+            entry["spin_duration_random"]       = p.spin_ctrl._spin_duration_random
+            entry["spin_duration_random_ratio"] = p.spin_ctrl._spin_duration_random_ratio
+            entry["spin_phase_randomize"]       = p.spin_ctrl._spin_phase_randomize
             entry["spin_mode"]          = p.spin_ctrl._spin_mode
             entry["double_duration"]    = p.spin_ctrl._double_duration
             entry["triple_duration"]    = p.spin_ctrl._triple_duration
@@ -837,6 +841,7 @@ class PanelGeometryMixin:
             entry["log_box_border"]  = p.wheel._log_box_border
             entry["result_close_mode"] = p.result_overlay._close_mode
             entry["result_hold_sec"]   = p.result_overlay._hold_sec
+            entry["spin_effects"]      = p.spin_ctrl._effect_settings.to_dict()
             # i050/i052: チケットデータを保存（active ルーレットはパネルから最新値を取得）
             if rid == self._manager.active_id and hasattr(self, "_ticket_panel"):
                 entry["ticket_holdings"]  = self._ticket_panel.get_current_holdings()

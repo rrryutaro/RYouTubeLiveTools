@@ -125,6 +125,7 @@ class ReplayManager(QObject):
             },
             "frames": [],
             "sounds": [],
+            "effects": [],   # v0.6.1: 特殊演出イベント [{"t": ms, "key": EffectKey, "variant": int}]
             "result": None,
         }
         self._recording = True
@@ -142,6 +143,21 @@ class ReplayManager(QObject):
             return
         t = (time.perf_counter() - self._start_time) * 1000
         self._rec["sounds"].append({"t": t, "type": sound_type})
+
+    def record_effect(self, effect_key: str, variant: int):
+        """v0.6.1: 特殊演出イベントを記録する。
+
+        Args:
+            effect_key: EffectKey ("soundConfirm" / "miniCharTarget" / etc.)
+            variant: バリエーション番号 (1〜5、または 0=ランダム抽選結果)
+        """
+        if not self._recording or self._rec is None:
+            return
+        t = (time.perf_counter() - self._start_time) * 1000
+        # effects フィールド未初期化の旧データ対応
+        if "effects" not in self._rec:
+            self._rec["effects"] = []
+        self._rec["effects"].append({"t": t, "key": effect_key, "variant": int(variant)})
 
     def finish_recording(self, winner: str, winner_item_index: int,
                          final_angle: float):
@@ -337,13 +353,17 @@ class ReplayManager(QObject):
     #  再生
     # ================================================================
 
-    def start_playback(self, idx: int, wheel, sound_mgr=None) -> bool:
+    def start_playback(self, idx: int, wheel, sound_mgr=None,
+                        roulette_panel=None, replay_effects: bool = True) -> bool:
         """指定インデックスの replay を再生開始する。
 
         Args:
             idx: records のインデックス（0=最新）
             wheel: WheelWidget（角度・セグメント設定先）
             sound_mgr: SoundManager（音再生用、省略可）
+            roulette_panel: RoulettePanel（v0.6.1: 特殊演出再現用、省略可）
+            replay_effects: v0.6.1: 特殊演出を再現するか
+                            (AppSettings.replay_record_effects から渡される)
 
         Returns:
             再生を開始できたら True
@@ -359,6 +379,9 @@ class ReplayManager(QObject):
         self._play_sound_mgr = sound_mgr
         self._play_frame_idx = 0
         self._play_sound_idx = 0
+        self._play_effect_idx = 0           # v0.6.1
+        self._play_roulette_panel = roulette_panel  # v0.6.1
+        self._play_replay_effects = bool(replay_effects)  # v0.6.1
         self._playing = True
 
         # スナップショットを適用
@@ -394,6 +417,8 @@ class ReplayManager(QObject):
         self._play_rec = None
         self._play_wheel = None
         self._play_sound_mgr = None
+        self._play_roulette_panel = None
+        self._play_replay_effects = False
 
     def _schedule_next_frame(self):
         """次のフレームをタイマーでスケジュールする。"""
@@ -443,7 +468,51 @@ class ReplayManager(QObject):
                     self._play_sound_mgr.play_win()
             self._play_sound_idx += 1
 
+        # v0.6.1: この時刻以前の特殊演出イベントを発火
+        if getattr(self, "_play_replay_effects", False):
+            effects = self._play_rec.get("effects", [])
+            while (getattr(self, "_play_effect_idx", 0) < len(effects) and
+                   effects[self._play_effect_idx]["t"] <= fr["t"]):
+                eev = effects[self._play_effect_idx]
+                self._fire_replay_effect(eev.get("key", ""), int(eev.get("variant", 0)))
+                self._play_effect_idx += 1
+
         self._schedule_next_frame()
+
+    def _fire_replay_effect(self, key: str, variant: int):
+        """v0.6.1: 再生中に特殊演出 1 件を発火させる。
+
+        roulette_panel と sound_manager を使い分けて、各 EffectKey に対応する
+        ウィジェット/音を呼び出す。
+        """
+        rp = getattr(self, "_play_roulette_panel", None)
+        sm = self._play_sound_mgr
+        if key == "soundConfirm" and sm is not None:
+            sm.play_effect("confirm", variant)
+        elif key == "soundExpect" and sm is not None:
+            sm.play_effect("expect", variant)
+        elif key == "soundNgConfirm" and sm is not None:
+            sm.play_effect("ng", variant)
+        elif rp is None:
+            return
+        elif key == "miniCharTarget":
+            rp._mini_char.fire("dragon", variant if 1 <= variant <= 5 else 1)
+        elif key == "miniCharExpect":
+            rp._mini_char.fire("rabbit", variant if 1 <= variant <= 5 else 1)
+        elif key == "miniCharNg":
+            rp._mini_char.fire("ghost", variant if 1 <= variant <= 5 else 1)
+        elif key == "cutInTarget":
+            rp._cutin_effect.fire("dragon", variant if 1 <= variant <= 5 else 1)
+        elif key == "cutInExpect":
+            rp._cutin_effect.fire("rabbit", variant if 1 <= variant <= 5 else 1)
+        elif key == "cutInNg":
+            rp._cutin_effect.fire("ghost", variant if 1 <= variant <= 5 else 1)
+        elif key == "flashConfirm":
+            rp._flash_overlay.fire(variant if 1 <= variant <= 5 else 1)
+        elif key == "wheelGlow":
+            rp.wheel.set_glow_variant(variant if 1 <= variant <= 5 else 1)
+        elif key == "textChance" and hasattr(rp, "_chance_text"):
+            rp._chance_text.fire(variant if 1 <= variant <= 5 else 1)
 
     def _on_playback_finish(self):
         """再生完了処理。"""

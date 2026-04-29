@@ -40,6 +40,11 @@ def build_segments_from_entries(
 
     enabled_raw = [e.to_dict() for e, _ in enabled_pairs]
     orig_indices = [i for _, i in enabled_pairs]
+    # special_role の orig_idx → role マッピングを構築
+    role_map: dict[int, str | None] = {
+        orig_indices[j]: enabled_pairs[j][0].special_role
+        for j in range(len(enabled_pairs))
+    }
     probs = _calc_probs(enabled_raw)
     entries_with_probs = [
         (enabled_raw[j], orig_indices[j], probs[j]) for j in range(len(enabled_raw))
@@ -63,7 +68,8 @@ def build_segments_from_entries(
     segments = []
     angle = 0.0
     for text, idx, arc in ordered:
-        seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle)
+        seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle,
+                      special_role=role_map.get(idx))
         segments.append(seg)
         angle += arc
 
@@ -100,6 +106,11 @@ def build_segments_from_config(config: dict | None = None) -> tuple[list[Segment
 
     enabled_entries = [e for e, _ in enabled]
     orig_indices = [i for _, i in enabled]
+    role_map: dict[int, str | None] = {
+        orig_indices[j]: enabled_entries[j].get("special_role")
+        if isinstance(enabled_entries[j], dict) else None
+        for j in range(len(enabled_entries))
+    }
 
     probs = _calc_probs(enabled_entries)
     entries_with_probs = [
@@ -125,7 +136,8 @@ def build_segments_from_config(config: dict | None = None) -> tuple[list[Segment
     segments = []
     angle = 0.0
     for text, idx, arc in ordered:
-        seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle)
+        seg = Segment(item_text=text, item_index=idx, arc=arc, start_angle=angle,
+                      special_role=role_map.get(idx))
         segments.append(seg)
         angle += arc
 

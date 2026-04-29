@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QMenu,
 )
 
-from panel_widgets import _SectionHeader, CollapsibleSection, _PlaceholderSection
+from panel_widgets import (
+    _SectionHeader, CollapsibleSection, _PlaceholderSection,
+    NoWheelSlider, NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
+)
 
 from app_constants import (
     SIDEBAR_W, SIZE_PROFILES,
@@ -25,7 +28,11 @@ from app_constants import (
 from design_models import DesignSettings
 from app_settings import AppSettings
 from item_entry import ItemEntry
-from spin_preset import SPIN_PRESET_NAMES, DEFAULT_PRESET_NAME
+from spin_preset import PRESET_DURATIONS_MS, PRESET_PROFILES_LIST, get_preset_phase_times, get_effective_phase_times
+from spin_effect_settings import (
+    EFFECT_KEYS, EFFECT_DISPLAY_NAMES, SpinEffectSettings,
+    default_spin_effect_settings, EffectConfig,
+)
 from dark_theme import dark_checkbox_style, dark_spinbox_style, get_header_colors
 
 
@@ -43,6 +50,35 @@ class _SectionsMixin:
             for name, cs in self._collapsible_map.items()
         }
         self.setting_changed.emit("collapsed_sections", state)
+
+    def _attach_section_reset(self, section: "CollapsibleSection",
+                               section_name: str, design: DesignSettings,
+                               tooltip: str = ""):
+        """折り畳みセクションのヘッダー右側に「初期化」ボタンを追加する。
+
+        ボタン押下で section_reset_requested(section_name) を発火する。
+        """
+        btn = QPushButton("初期化")
+        btn.setFont(QFont("Meiryo", 7))
+        btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text_sub};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 6px; font-family: Meiryo; font-size: 7pt;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: #c0392b; color: white; border-color: #c0392b;"
+            f"}}"
+        )
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        else:
+            btn.setToolTip(f"{section_name} を初期値に戻す")
+        btn.clicked.connect(
+            lambda _chk=False, n=section_name: self.section_reset_requested.emit(n)
+        )
+        section.add_header_widget(btn)
 
     def _build_quick_settings_bar(self, outer_layout: QVBoxLayout,
                                    settings: AppSettings,
@@ -64,55 +100,20 @@ class _SectionsMixin:
         bar_layout.setContentsMargins(8, 4, 8, 4)
         bar_layout.setSpacing(10)
 
-        # ウィンドウ透過 (メインウィンドウ自体)
-        self._window_transparent_cb = QCheckBox("ウィンドウ透過")
-        self._window_transparent_cb.setFont(QFont("Meiryo", 8))
-        self._window_transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._window_transparent_cb.setChecked(settings.window_transparent)
-        self._window_transparent_cb.setToolTip(
-            "メインウィンドウ自体の背景を透過する"
-        )
-        self._window_transparent_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("window_transparent", v)
-        )
-        bar_layout.addWidget(self._window_transparent_cb)
+        # v0.6.1: ウィンドウ透過 / ルーレット透過 / パネル透過 / 最前面 は
+        # 管理パネルへ移動済み。
 
-        # ルーレット透過 (ルーレットパネル単独)
-        self._roulette_transparent_cb = QCheckBox("ルーレット透過")
-        self._roulette_transparent_cb.setFont(QFont("Meiryo", 8))
-        self._roulette_transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._roulette_transparent_cb.setChecked(settings.roulette_transparent)
-        self._roulette_transparent_cb.setToolTip(
-            "ルーレットパネル (ホイール領域) の背景を透過する"
+        # v0.6.1: 「全ルーレットに適用」CB（管理パネルから移動）
+        self._apply_all_cb = QCheckBox("全ルーレットに適用")
+        self._apply_all_cb.setFont(QFont("Meiryo", 8))
+        self._apply_all_cb.setStyleSheet(f"color: {design.text};")
+        self._apply_all_cb.setChecked(False)
+        self._apply_all_cb.setToolTip(
+            "ON: 設定パネルの変更を全ルーレットに一括適用\n"
+            "OFF: 選択中ルーレットのみに適用"
         )
-        self._roulette_transparent_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("roulette_transparent", v)
-        )
-        bar_layout.addWidget(self._roulette_transparent_cb)
-
-        # パネル背景透過（試験）
-        self._panels_transparent_cb = QCheckBox("パネル透過（試験）")
-        self._panels_transparent_cb.setFont(QFont("Meiryo", 8))
-        self._panels_transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._panels_transparent_cb.setChecked(False)
-        self._panels_transparent_cb.setToolTip(
-            "ルーレット以外の全パネル背景を透過する（試験的機能）"
-        )
-        self._panels_transparent_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("panels_transparent", v)
-        )
-        bar_layout.addWidget(self._panels_transparent_cb)
-
-        # 常に最前面
-        self._aot_cb = QCheckBox("最前面")
-        self._aot_cb.setFont(QFont("Meiryo", 8))
-        self._aot_cb.setStyleSheet(f"color: {design.text};")
-        self._aot_cb.setChecked(settings.always_on_top)
-        self._aot_cb.setToolTip("メインウィンドウを常に最前面に表示")
-        self._aot_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("always_on_top", v)
-        )
-        bar_layout.addWidget(self._aot_cb)
+        self._apply_all_cb.toggled.connect(self.apply_to_all_changed.emit)
+        bar_layout.addWidget(self._apply_all_cb)
 
         # i468: 設定パネル独立化トグルボタン（項目パネルと同スタイル）
         _sp_float_btn_style = (
@@ -165,6 +166,28 @@ class _SectionsMixin:
         self._cfg_import_btn.setToolTip("設定をインポート（JSONから設定値一式を読み込む）")
         self._cfg_import_btn.clicked.connect(self.settings_import_requested.emit)
         bar_layout.addWidget(self._cfg_import_btn)
+
+        # v0.6.1: 全体初期化ボタン（クイック設定バー最右）
+        self._all_reset_btn = QPushButton("全体初期化")
+        self._all_reset_btn.setFont(QFont("Meiryo", 8))
+        self._all_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._all_reset_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.accent}; border-radius: 3px;"
+            f"  padding: 2px 8px; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; "
+            f"  border-color: #c0392b; }}"
+        )
+        self._all_reset_btn.setToolTip(
+            "このルーレットの全設定を新規ルーレット作成時の状態に戻す。\n"
+            "「全ルーレットに適用」ON 時は全ルーレット対象。"
+        )
+        self._all_reset_btn.clicked.connect(
+            lambda: self.section_reset_requested.emit("all")
+        )
+        bar_layout.addWidget(self._all_reset_btn)
 
         outer_layout.addWidget(bar)
         self._quick_bar = bar
@@ -234,180 +257,603 @@ class _SectionsMixin:
 
     def _build_spin_section(self, settings: AppSettings,
                             design: DesignSettings):
-        # スピンセクション全体をコンテナで囲む（ctrl_box_visible で一括制御用）
         self._spin_collapsible = CollapsibleSection("スピン", design, expanded=True, theme_mode=settings.theme_mode)
         self._spin_section = self._spin_collapsible
         spin_layout = self._spin_collapsible.content_layout
 
-        # spin ボタン
-        self._spin_btn = QPushButton("▶  スピン開始")
-        self._spin_btn.setFont(QFont("Meiryo", 10, QFont.Weight.Bold))
-        self._spin_btn.setMinimumHeight(36)
-        self._spin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._apply_spin_btn_style(design)
-        self._spin_btn.clicked.connect(self.spin_requested.emit)
-        spin_layout.addWidget(self._spin_btn)
-
-        # プリセット選択
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(4)
-
-        preset_lbl = QLabel("プリセット:")
-        preset_lbl.setFont(QFont("Meiryo", 8))
-        preset_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._preset_lbl = preset_lbl
-        preset_row.addWidget(preset_lbl)
-
-        self._preset_combo = QComboBox()
-        self._preset_combo.setFont(QFont("Meiryo", 8))
-        self._apply_combo_style(self._preset_combo, design)
-        for name in SPIN_PRESET_NAMES:
-            self._preset_combo.addItem(name)
-        self._preset_combo.setCurrentText(DEFAULT_PRESET_NAME)
-        self._preset_combo.currentTextChanged.connect(self.preset_changed.emit)
-        preset_row.addWidget(self._preset_combo, stretch=1)
-
-        spin_layout.addLayout(preset_row)
-
-        # スピン時間
-        dur_row = QHBoxLayout()
-        dur_row.setSpacing(4)
-
-        dur_lbl = QLabel("スピン時間:")
-        dur_lbl.setFont(QFont("Meiryo", 8))
-        dur_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dur_lbl = dur_lbl
-        dur_row.addWidget(dur_lbl)
-
-        self._dur_spin = QDoubleSpinBox()
-        self._dur_spin.setFont(QFont("Meiryo", 8))
-        self._dur_spin.setRange(1.0, 30.0)
-        self._dur_spin.setSingleStep(1.0)
-        self._dur_spin.setDecimals(1)
-        self._dur_spin.setSuffix(" 秒")
-        self._dur_spin.setValue(settings.spin_duration)
-        self._dur_spin.setStyleSheet(
-            f"QDoubleSpinBox {{"
+        lbl_style = f"color: {design.text_sub};"
+        profile_btn_base = (
+            f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
             f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
+            f"  padding: 2px 4px; font-family: Meiryo; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
             f"}}"
         )
-        self._dur_spin.valueChanged.connect(
-            lambda v: self.setting_changed.emit("spin_duration", v)
-        )
-        dur_row.addWidget(self._dur_spin, stretch=1)
-
-        spin_layout.addLayout(dur_row)
-
-        # スピンモード選択
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(4)
-
-        mode_lbl = QLabel("モード:")
-        mode_lbl.setFont(QFont("Meiryo", 8))
-        mode_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._mode_lbl = mode_lbl
-        mode_row.addWidget(mode_lbl)
-
-        self._mode_combo = QComboBox()
-        self._mode_combo.setFont(QFont("Meiryo", 8))
-        self._apply_combo_style(self._mode_combo, design)
-        self._mode_combo.addItems(["シングル", "ダブル", "トリプル"])
-        self._mode_combo.setCurrentIndex(settings.spin_mode)
-        self._mode_combo.currentIndexChanged.connect(self._on_spin_mode_changed)
-        mode_row.addWidget(self._mode_combo, stretch=1)
-
-        spin_layout.addLayout(mode_row)
-
-        # ダブルスピン時間
-        dbl_row = QHBoxLayout()
-        dbl_row.setSpacing(4)
-
-        dbl_lbl = QLabel("ダブル時間:")
-        dbl_lbl.setFont(QFont("Meiryo", 8))
-        dbl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dbl_lbl = dbl_lbl
-        dbl_row.addWidget(dbl_lbl)
-
-        self._dbl_spin = QDoubleSpinBox()
-        self._dbl_spin.setFont(QFont("Meiryo", 8))
-        self._dbl_spin.setRange(1.0, 30.0)
-        self._dbl_spin.setSingleStep(1.0)
-        self._dbl_spin.setDecimals(1)
-        self._dbl_spin.setSuffix(" 秒")
-        self._dbl_spin.setValue(settings.double_duration)
-        self._dbl_spin.setStyleSheet(
-            f"QDoubleSpinBox {{"
+        dur_btn_style = (
+            f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
             f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
+            f"  padding: 1px 3px; font-family: Meiryo; font-size: 7pt;"
             f"}}"
         )
-        self._dbl_spin.valueChanged.connect(
-            lambda v: self.setting_changed.emit("double_duration", v)
+
+        # ── プロファイル選択 (z=バランス型 / y=緩急強調 / x=AIお勧め) ──
+        profile_lbl = QLabel("プロファイル:")
+        profile_lbl.setFont(QFont("Meiryo", 8))
+        profile_lbl.setStyleSheet(lbl_style)
+        spin_layout.addWidget(profile_lbl)
+
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(3)
+        self._profile_btns: dict[str, QPushButton] = {}
+        _profile_labels = [('z', 'バランス型'), ('y', '緩急強調'), ('x', 'AIお勧め')]
+        for key, label in _profile_labels:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(profile_btn_base)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked, k=key: self._on_profile_btn_clicked(k))
+            profile_row.addWidget(btn, stretch=1)
+            self._profile_btns[key] = btn
+        cur_profile = getattr(settings, "spin_preset_profile", 'z')
+        self._profile_btns.get(cur_profile, self._profile_btns['z']).setChecked(True)
+        spin_layout.addLayout(profile_row)
+
+        # プロファイルランダム抽選
+        self._profile_random_cb = QCheckBox("毎スピンでプロファイルをランダム抽選")
+        self._profile_random_cb.setFont(QFont("Meiryo", 8))
+        self._profile_random_cb.setStyleSheet(dark_checkbox_style(design))
+        self._profile_random_cb.setChecked(getattr(settings, "spin_preset_random", False))
+        self._profile_random_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("spin_preset_random", v)
         )
-        dbl_row.addWidget(self._dbl_spin, stretch=1)
+        spin_layout.addWidget(self._profile_random_cb)
 
-        self._dbl_row_widget = QWidget(self._spin_collapsible._container)  # i289 t09
-        dbl_row_container = QHBoxLayout(self._dbl_row_widget)
-        dbl_row_container.setContentsMargins(0, 0, 0, 0)
-        dbl_row_container.setSpacing(4)
-        dbl_row_container.addWidget(self._dbl_lbl)
-        dbl_row_container.addWidget(self._dbl_spin, stretch=1)
-        spin_layout.addWidget(self._dbl_row_widget)
+        # ── スピン時間スライダー (1.0〜15.0 秒) ─────────────────────
+        dur_val_sec = float(getattr(settings, "spin_duration", 5.0))
+        dur_slider_val = max(10, min(150, int(round(dur_val_sec * 10))))
+        self._dur_lbl = QLabel(f"スピン時間: {dur_slider_val / 10:.1f} 秒")
+        self._dur_lbl.setFont(QFont("Meiryo", 8))
+        self._dur_lbl.setStyleSheet(lbl_style)
+        spin_layout.addWidget(self._dur_lbl)
 
-        # トリプルスピン時間
-        self._tpl_row_widget = QWidget(self._spin_collapsible._container)  # i289 t09
-        tpl_row_container = QHBoxLayout(self._tpl_row_widget)
-        tpl_row_container.setContentsMargins(0, 0, 0, 0)
-        tpl_row_container.setSpacing(4)
+        self._dur_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        self._dur_slider.setRange(10, 150)   # value / 10 = 秒 (1.0〜15.0)
+        self._dur_slider.setSingleStep(1)
+        self._dur_slider.setValue(dur_slider_val)
+        self._dur_slider.valueChanged.connect(self._on_dur_slider_changed)
+        spin_layout.addWidget(self._dur_slider)
 
-        tpl_lbl = QLabel("トリプル時間:")
-        tpl_lbl.setFont(QFont("Meiryo", 8))
-        tpl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._tpl_lbl = tpl_lbl
-        tpl_row_container.addWidget(tpl_lbl)
-
-        self._tpl_spin = QDoubleSpinBox()
-        self._tpl_spin.setFont(QFont("Meiryo", 8))
-        self._tpl_spin.setRange(1.0, 30.0)
-        self._tpl_spin.setSingleStep(1.0)
-        self._tpl_spin.setDecimals(1)
-        self._tpl_spin.setSuffix(" 秒")
-        self._tpl_spin.setValue(settings.triple_duration)
-        self._tpl_spin.setStyleSheet(
-            f"QDoubleSpinBox {{"
+        # プリセット秒数クイックボタン [1秒][3秒][5秒][7秒][9秒][12秒]
+        # PWA 同等: スライダー値が一致するボタンをアクティブ表示する
+        dur_preset_btn_style = (
+            f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
             f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
+            f"  padding: 1px 3px; font-family: Meiryo; font-size: 7pt;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
             f"}}"
         )
-        self._tpl_spin.valueChanged.connect(
-            lambda v: self.setting_changed.emit("triple_duration", v)
-        )
-        tpl_row_container.addWidget(self._tpl_spin, stretch=1)
-        spin_layout.addWidget(self._tpl_row_widget)
+        dur_btn_row = QHBoxLayout()
+        dur_btn_row.setSpacing(2)
+        self._dur_preset_btns: list[tuple[int, QPushButton]] = []
+        for ms in PRESET_DURATIONS_MS:
+            sec = ms // 1000
+            btn = QPushButton(f"{sec}秒")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(False)
+            btn.setStyleSheet(dur_preset_btn_style)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked, s=float(sec): self._on_dur_preset_clicked(s))
+            dur_btn_row.addWidget(btn, stretch=1)
+            self._dur_preset_btns.append((ms, btn))
+        spin_layout.addLayout(dur_btn_row)
+        # 初期同期（スライダー値とプリセットの一致を反映）
+        self._sync_dur_preset_btns(int(round(dur_val_sec * 1000)))
 
-        # 初期表示: モードに応じて duration 行の表示/非表示
-        self._update_duration_rows_visibility(settings.spin_mode)
+        # 秒数ランダム抽選
+        self._dur_random_cb = QCheckBox("毎スピンで秒数をランダム抽選 (1/3/5/7/9/12秒)")
+        self._dur_random_cb.setFont(QFont("Meiryo", 8))
+        self._dur_random_cb.setStyleSheet(dark_checkbox_style(design))
+        self._dur_random_cb.setChecked(getattr(settings, "spin_duration_random", False))
+        self._dur_random_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("spin_duration_random", v)
+        )
+        spin_layout.addWidget(self._dur_random_cb)
+
+        # ── 終了時間ランダム化スライダー ──────────────────────────────
+        dur_rand_ratio = float(getattr(settings, "spin_duration_random_ratio", 0.0))
+        dur_rand_pct = max(0, min(50, int(round(dur_rand_ratio * 100))))
+        self._dur_rand_lbl = QLabel(f"終了時間ランダム化: ±{dur_rand_pct}%")
+        self._dur_rand_lbl.setFont(QFont("Meiryo", 8))
+        self._dur_rand_lbl.setStyleSheet(lbl_style)
+        spin_layout.addWidget(self._dur_rand_lbl)
+
+        self._dur_rand_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        self._dur_rand_slider.setRange(0, 50)
+        self._dur_rand_slider.setValue(dur_rand_pct)
+        self._dur_rand_slider.valueChanged.connect(self._on_dur_rand_slider_changed)
+        spin_layout.addWidget(self._dur_rand_slider)
+
+        # ── スピン詳細ランダム化スライダー ────────────────────────────
+        phase_rand = float(getattr(settings, "spin_phase_randomize", 0.0))
+        phase_rand_pct = max(0, min(100, int(round(phase_rand * 100))))
+        self._phase_rand_lbl = QLabel(f"スピン詳細ランダム化: {phase_rand_pct}%")
+        self._phase_rand_lbl.setFont(QFont("Meiryo", 8))
+        self._phase_rand_lbl.setStyleSheet(lbl_style)
+        spin_layout.addWidget(self._phase_rand_lbl)
+
+        self._phase_rand_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        self._phase_rand_slider.setRange(0, 100)
+        self._phase_rand_slider.setValue(phase_rand_pct)
+        self._phase_rand_slider.valueChanged.connect(self._on_phase_rand_slider_changed)
+        spin_layout.addWidget(self._phase_rand_slider)
+
+        # ── スピン詳細（4段階個別調整）───────────────────────────────
+        self._build_spin_detail_subsection(settings, design, spin_layout)
 
         self._layout.addWidget(self._spin_collapsible)
+        # v0.6.1: ヘッダー右に「初期化」ボタン
+        self._attach_section_reset(self._spin_collapsible, "spin", design)
 
-    def _on_spin_mode_changed(self, index: int):
-        """スピンモード変更時のハンドラ。"""
-        self._update_duration_rows_visibility(index)
-        self.setting_changed.emit("spin_mode", index)
+    def _on_profile_btn_clicked(self, profile: str):
+        """プロファイルボタンが押されたとき、排他選択にして設定を emit する。"""
+        for key, btn in self._profile_btns.items():
+            btn.setChecked(key == profile)
+        # スピン詳細のデフォルト値を再計算（未上書き項目のスライダー値を更新）
+        self._recompute_spin_detail_defaults(profile_override=profile)
+        self.setting_changed.emit("spin_preset_profile", profile)
 
-    def _update_duration_rows_visibility(self, mode: int):
-        """スピンモードに応じて duration 行の表示を切り替える。"""
-        # シングル: 通常スピン時間のみ表示
-        # ダブル: ダブル時間のみ表示（通常時間は非表示）
-        # トリプル: トリプル時間のみ表示（通常時間は非表示）
-        self._dur_lbl.setVisible(mode == 0)
-        self._dur_spin.setVisible(mode == 0)
-        self._dbl_row_widget.setVisible(mode == 1)
-        self._tpl_row_widget.setVisible(mode == 2)
+    def _on_dur_slider_changed(self, value: int):
+        """スピン時間スライダー変更。"""
+        sec = value / 10.0
+        self._dur_lbl.setText(f"スピン時間: {sec:.1f} 秒")
+        # プリセットボタンのアクティブ状態を同期
+        self._sync_dur_preset_btns(int(round(sec * 1000)))
+        # スピン詳細のデフォルト値を再計算（未上書き項目のスライダー値を更新）
+        self._recompute_spin_detail_defaults()
+        self.setting_changed.emit("spin_duration", sec)
+
+    def _on_dur_preset_clicked(self, sec: float):
+        """クイック秒数ボタン押下: スピン時間スライダーを更新（valueChanged 経由で emit）。"""
+        slider_val = max(10, min(150, int(round(sec * 10))))
+        self._dur_slider.setValue(slider_val)
+
+    def _sync_dur_preset_btns(self, current_ms: int):
+        """スライダー現在値（ms）に一致するプリセットボタンのみ checked にする。"""
+        if not hasattr(self, "_dur_preset_btns"):
+            return
+        for preset_ms, btn in self._dur_preset_btns:
+            btn.blockSignals(True)
+            btn.setChecked(preset_ms == current_ms)
+            btn.blockSignals(False)
+
+    def _on_dur_rand_slider_changed(self, value: int):
+        """終了時間ランダム化スライダー変更。"""
+        ratio = value / 100.0  # 0-50 → 0.0-0.5
+        self._dur_rand_lbl.setText(f"終了時間ランダム化: ±{value}%")
+        self.setting_changed.emit("spin_duration_random_ratio", ratio)
+
+    def _on_phase_rand_slider_changed(self, value: int):
+        """スピン詳細ランダム化スライダー変更。"""
+        intensity = value / 100.0  # 0-100 → 0.0-1.0
+        self._phase_rand_lbl.setText(f"スピン詳細ランダム化: {value}%")
+        self.setting_changed.emit("spin_phase_randomize", intensity)
+
+    # ================================================================
+    #  スピン詳細（4段階個別調整）サブセクション
+    # ================================================================
+
+    def _build_spin_detail_subsection(self, settings: AppSettings,
+                                       design: DesignSettings,
+                                       parent_layout) -> None:
+        """スピン詳細（4段階個別調整）折りたたみサブセクションを構築する。"""
+        self._spin_detail_collapsible = CollapsibleSection(
+            "スピン詳細（4段階個別調整）", design, expanded=False,
+            theme_mode=settings.theme_mode, nested=True,
+        )
+        sec = self._spin_detail_collapsible.content_layout
+        parent_layout.addWidget(self._spin_detail_collapsible)
+
+        lbl_style = f"color: {design.text_sub};"
+        curve_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 3px; font-family: Meiryo; font-size: 7pt;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+        x_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text_sub};"
+            f"  border: none; padding: 0px 2px; font-size: 9pt;"
+            f"}}"
+            f"QPushButton:hover {{ color: #c0392b; }}"
+        )
+        action_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 3px; padding: 3px 8px;"
+            f"  font-family: Meiryo; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+            f"QPushButton:disabled {{ color: {design.text_sub}; }}"
+        )
+
+        # デフォルトフェーズタイムを取得（初期スライダー値に使用）
+        dur_ms = max(1000, int(round(float(getattr(settings, "spin_duration", 5.0)) * 1000)))
+        profile = getattr(settings, "spin_preset_profile", 'z')
+        try:
+            pt = get_preset_phase_times(dur_ms, profile)
+            _def = {
+                "push_end_ms":  int(pt.push_end_ms),
+                "cruise_end_ms": int(pt.cruise_end_ms),
+                "decel_end_ms": int(pt.decel_end_ms),
+                "push_end_rps":  pt.v1,
+                "cruise_end_rps": pt.v2,
+                "decel_end_rps": pt.v3,
+                "push_curve":    pt.push_curve,
+                "cruise_curve":  pt.cruise_curve,
+                "decel_curve":   pt.decel_curve,
+                "landing_curve": pt.landing_curve,
+            }
+        except Exception:
+            _def = {
+                "push_end_ms": 1000, "cruise_end_ms": 3000, "decel_end_ms": 4500,
+                "push_end_rps": 12.0, "cruise_end_rps": 15.0, "decel_end_rps": 3.0,
+                "push_curve": "easeOut", "cruise_curve": "linear",
+                "decel_curve": "easeIn", "landing_curve": "easeInOut",
+            }
+
+        curve_opts = [("linear", "一定"), ("easeOut", "減速"), ("easeIn", "加速"), ("easeInOut", "S字")]
+        curve_keys = [k for k, _ in curve_opts]
+
+        phases_def = [
+            ("push",    "① 加速", True),
+            ("cruise",  "② 巡航", True),
+            ("decel",   "③ 減速", True),
+            ("landing", "④ 着地", False),
+        ]
+
+        self._phase_widgets: dict[str, dict] = {}
+        self._spin_detail_dirty = False
+        # PWA: local.spinPhaseOverrides 相当（dict、明示的に上書きされたフィールドのみ持つ）
+        _init_ovr = getattr(settings, "spin_phase_overrides", None)
+        self._local_overrides: dict = dict(_init_ovr) if isinstance(_init_ovr, dict) else {}
+        self._spin_detail_saved_overrides: dict = dict(self._local_overrides)
+
+        for phase_key, phase_label, has_end in phases_def:
+            hdr = QLabel(phase_label)
+            hdr.setFont(QFont("Meiryo", 8, QFont.Weight.Bold))
+            hdr.setStyleSheet(f"color: {design.text}; margin-top: 4px;")
+            sec.addWidget(hdr)
+
+            pw: dict = {}
+
+            if has_end:
+                def_end_ms  = _def[f"{phase_key}_end_ms"]
+                def_end_rps = _def[f"{phase_key}_end_rps"]
+
+                # 終了時刻スライダー
+                end_ms_row = QHBoxLayout()
+                end_ms_row.setSpacing(4)
+                end_ms_lbl = QLabel(f"終了時刻: {def_end_ms / 1000:.2f} 秒")
+                end_ms_lbl.setFont(QFont("Meiryo", 7))
+                end_ms_lbl.setStyleSheet(lbl_style)
+                end_ms_row.addWidget(end_ms_lbl, stretch=1)
+                end_ms_reset = QPushButton("×")
+                end_ms_reset.setFont(QFont("Meiryo", 8))
+                end_ms_reset.setFixedSize(20, 18)
+                end_ms_reset.setStyleSheet(x_btn_style)
+                end_ms_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+                end_ms_reset.setToolTip("初期値に戻す")
+                end_ms_row.addWidget(end_ms_reset)
+                sec.addLayout(end_ms_row)
+
+                end_ms_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+                end_ms_slider.setRange(30, 14970)
+                end_ms_slider.setSingleStep(10)
+                end_ms_slider.setValue(max(30, min(14970, def_end_ms)))
+                sec.addWidget(end_ms_slider)
+
+                # 終了速度スライダー
+                end_rps_row = QHBoxLayout()
+                end_rps_row.setSpacing(4)
+                end_rps_lbl = QLabel(f"終了速度: {def_end_rps:.1f} RPS")
+                end_rps_lbl.setFont(QFont("Meiryo", 7))
+                end_rps_lbl.setStyleSheet(lbl_style)
+                end_rps_row.addWidget(end_rps_lbl, stretch=1)
+                end_rps_reset = QPushButton("×")
+                end_rps_reset.setFont(QFont("Meiryo", 8))
+                end_rps_reset.setFixedSize(20, 18)
+                end_rps_reset.setStyleSheet(x_btn_style)
+                end_rps_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+                end_rps_reset.setToolTip("初期値に戻す")
+                end_rps_row.addWidget(end_rps_reset)
+                sec.addLayout(end_rps_row)
+
+                end_rps_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+                end_rps_slider.setRange(0, 250)   # value / 10 = RPS
+                end_rps_slider.setSingleStep(1)
+                end_rps_slider.setValue(max(0, min(250, int(round(def_end_rps * 10)))))
+                sec.addWidget(end_rps_slider)
+
+                pw.update({
+                    "end_ms_lbl":    end_ms_lbl,
+                    "end_ms_slider": end_ms_slider,
+                    "end_ms_reset":  end_ms_reset,
+                    "def_end_ms":    def_end_ms,
+                    "end_rps_lbl":   end_rps_lbl,
+                    "end_rps_slider": end_rps_slider,
+                    "end_rps_reset": end_rps_reset,
+                    "def_end_rps":   def_end_rps,
+                })
+
+            # 曲線選択ボタン
+            curve_row = QHBoxLayout()
+            curve_row.setSpacing(2)
+            curve_lbl_w = QLabel("曲線:")
+            curve_lbl_w.setFont(QFont("Meiryo", 7))
+            curve_lbl_w.setStyleSheet(lbl_style)
+            curve_row.addWidget(curve_lbl_w)
+            curve_btns: list[QPushButton] = []
+            for c_key, c_label in curve_opts:
+                cb_btn = QPushButton(c_label)
+                cb_btn.setCheckable(True)
+                cb_btn.setStyleSheet(curve_btn_style)
+                cb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                cb_btn.clicked.connect(
+                    lambda _chk=False, pk=phase_key, ck=c_key:
+                    self._on_spin_detail_curve_clicked(pk, ck)
+                )
+                curve_row.addWidget(cb_btn, stretch=1)
+                curve_btns.append(cb_btn)
+            def_curve = _def[f"{phase_key}_curve"]
+            cur_curve_idx = curve_keys.index(def_curve) if def_curve in curve_keys else 0
+            curve_btns[cur_curve_idx].setChecked(True)
+            curve_reset = QPushButton("×")
+            curve_reset.setFont(QFont("Meiryo", 8))
+            curve_reset.setFixedSize(20, 18)
+            curve_reset.setStyleSheet(x_btn_style)
+            curve_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+            curve_reset.setToolTip("初期値に戻す")
+            curve_row.addWidget(curve_reset)
+            sec.addLayout(curve_row)
+
+            pw.update({
+                "curve_btns":  curve_btns,
+                "curve_keys":  curve_keys,
+                "def_curve":   def_curve,
+                "curve_reset": curve_reset,
+            })
+            self._phase_widgets[phase_key] = pw
+
+        # アクションボタン行
+        action_row = QHBoxLayout()
+        action_row.setSpacing(4)
+
+        self._detail_save_btn = QPushButton("保存")
+        self._detail_save_btn.setFont(QFont("Meiryo", 8))
+        self._detail_save_btn.setEnabled(False)
+        self._detail_save_btn.setStyleSheet(action_btn_style)
+        self._detail_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_save_btn.clicked.connect(self._on_spin_detail_save)
+        action_row.addWidget(self._detail_save_btn)
+
+        self._detail_cancel_btn = QPushButton("キャンセル")
+        self._detail_cancel_btn.setFont(QFont("Meiryo", 8))
+        self._detail_cancel_btn.setEnabled(False)
+        self._detail_cancel_btn.setStyleSheet(action_btn_style)
+        self._detail_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_cancel_btn.clicked.connect(self._on_spin_detail_cancel)
+        action_row.addWidget(self._detail_cancel_btn)
+
+        self._detail_reset_btn = QPushButton("初期化")
+        self._detail_reset_btn.setFont(QFont("Meiryo", 8))
+        self._detail_reset_btn.setStyleSheet(action_btn_style)
+        self._detail_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_reset_btn.setToolTip("フェーズ詳細をデフォルト値に戻す")
+        self._detail_reset_btn.clicked.connect(self._on_spin_detail_reset)
+        action_row.addWidget(self._detail_reset_btn)
+        sec.addLayout(action_row)
+
+        # シグナル接続（PWA reactive 構造）
+        for pk, pw in self._phase_widgets.items():
+            if "end_ms_slider" in pw:
+                pw["end_ms_slider"].valueChanged.connect(
+                    lambda v, _pk=pk: self._on_detail_ms_slider_changed(_pk, v)
+                )
+                pw["end_rps_slider"].valueChanged.connect(
+                    lambda v, _pk=pk: self._on_detail_rps_slider_changed(_pk, v)
+                )
+                pw["end_ms_reset"].clicked.connect(
+                    lambda _chk=False, _pk=pk: self._on_detail_reset_phase_ms(_pk)
+                )
+                pw["end_rps_reset"].clicked.connect(
+                    lambda _chk=False, _pk=pk: self._on_detail_reset_phase_rps(_pk)
+                )
+            pw["curve_reset"].clicked.connect(
+                lambda _chk=False, _pk=pk: self._on_detail_reset_phase_curve(_pk)
+            )
+
+        # 初期表示: 全 phase の effTimes を計算してスライダー値・range を設定
+        self._refresh_spin_detail_ui()
+
+    # ── PWA 互換: local.spinPhaseOverrides を更新して全 phase 再計算 ──
+
+    def _on_detail_ms_slider_changed(self, phase_key: str, value: int):
+        # PWA: setNumericOverride('pushEndMs', val) → effTimes 再計算
+        self._local_overrides[f"{phase_key}_end_ms"] = float(value)
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _on_detail_rps_slider_changed(self, phase_key: str, value: int):
+        self._local_overrides[f"{phase_key}_end_rps"] = value / 10.0
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _on_spin_detail_curve_clicked(self, phase_key: str, curve_key: str):
+        self._local_overrides[f"{phase_key}_curve"] = curve_key
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _on_detail_reset_phase_ms(self, phase_key: str):
+        # PWA: clearOverride('pushEndMs') → そのフィールドだけ override から削除
+        self._local_overrides.pop(f"{phase_key}_end_ms", None)
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _on_detail_reset_phase_rps(self, phase_key: str):
+        self._local_overrides.pop(f"{phase_key}_end_rps", None)
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _on_detail_reset_phase_curve(self, phase_key: str):
+        self._local_overrides.pop(f"{phase_key}_curve", None)
+        self._refresh_spin_detail_ui()
+        self._mark_spin_detail_dirty()
+
+    def _mark_spin_detail_dirty(self):
+        if not getattr(self, "_spin_detail_dirty", False):
+            self._spin_detail_dirty = True
+            self._detail_save_btn.setEnabled(True)
+            self._detail_cancel_btn.setEnabled(True)
+
+    def _refresh_spin_detail_ui(self):
+        """PWA: effTimes = $derived(getEffectivePhaseTimes(...)) 相当。
+
+        現在のスピン時間 + プロファイル + _local_overrides から実効フェーズ値を計算し、
+        全スライダー value, range, 曲線ボタンの checked 状態を更新する。
+        cruise の min は push 終了+0.05秒、decel の min は cruise 終了+0.05秒、
+        など PWA と同じ依存関係でスライダー range も再設定する。
+        """
+        if not hasattr(self, "_phase_widgets") or not self._phase_widgets:
+            return
+        try:
+            dur_ms = max(1000, int(round(self._dur_slider.value() * 100)))
+        except Exception:
+            return
+        profile = 'z'
+        for k, b in getattr(self, "_profile_btns", {}).items():
+            if b.isChecked():
+                profile = k
+                break
+        ovr = self._local_overrides if self._local_overrides else None
+        try:
+            pt = get_effective_phase_times(dur_ms, ovr, profile)
+        except Exception:
+            return
+
+        total_ms = pt.total_ms
+        push_end_ms = pt.push_end_ms
+        cruise_end_ms = pt.cruise_end_ms
+        decel_end_ms = pt.decel_end_ms
+
+        # phase ごとの (実効値ms, 実効RPS, 曲線, msスライダーmin, msスライダーmax)
+        # min/max は PWA と同じ依存式で動的決定
+        phases_data = {
+            "push": (
+                int(round(push_end_ms)), pt.v1, pt.push_curve,
+                50, max(51, int(round(total_ms - 150))),
+            ),
+            "cruise": (
+                int(round(cruise_end_ms)), pt.v2, pt.cruise_curve,
+                max(51, int(round(push_end_ms + 50))),
+                max(52, int(round(total_ms - 100))),
+            ),
+            "decel": (
+                int(round(decel_end_ms)), pt.v3, pt.decel_curve,
+                max(52, int(round(cruise_end_ms + 50))),
+                max(53, int(round(total_ms - 50))),
+            ),
+            "landing": (0, 0.0, pt.landing_curve, 0, 0),
+        }
+
+        for phase_key, pw in self._phase_widgets.items():
+            eff_ms, eff_rps, eff_curve, ms_min, ms_max = phases_data.get(
+                phase_key, (0, 0.0, "linear", 0, 0)
+            )
+            if "end_ms_slider" in pw:
+                # range を依存関係で更新
+                ms_min = max(30, min(14970, ms_min))
+                ms_max = max(ms_min + 1, min(14970, ms_max))
+                ms_val = max(ms_min, min(ms_max, int(round(eff_ms))))
+                pw["end_ms_slider"].blockSignals(True)
+                pw["end_ms_slider"].setRange(ms_min, ms_max)
+                pw["end_ms_slider"].setValue(ms_val)
+                pw["end_ms_lbl"].setText(f"終了時刻: {ms_val / 1000:.2f} 秒")
+                pw["end_ms_slider"].blockSignals(False)
+
+                rps_val = max(0, min(250, int(round(eff_rps * 10))))
+                pw["end_rps_slider"].blockSignals(True)
+                pw["end_rps_slider"].setValue(rps_val)
+                pw["end_rps_lbl"].setText(f"終了速度: {rps_val / 10:.1f} RPS")
+                pw["end_rps_slider"].blockSignals(False)
+
+            curve_keys = pw.get("curve_keys", [])
+            for i, btn in enumerate(pw.get("curve_btns", [])):
+                btn.blockSignals(True)
+                btn.setChecked(curve_keys[i] == eff_curve)
+                btn.blockSignals(False)
+
+    # 後方互換: 旧シグネチャ呼び出しを reactive 版に転送
+    def _recompute_spin_detail_defaults(self, profile_override: str | None = None):
+        self._refresh_spin_detail_ui()
+
+    def _on_spin_detail_save(self):
+        # PWA: saveDetailNow()
+        overrides = dict(self._local_overrides) if self._local_overrides else None
+        self._spin_detail_saved_overrides = (
+            dict(self._local_overrides) if self._local_overrides else {}
+        )
+        self._spin_detail_dirty = False
+        self._detail_save_btn.setEnabled(False)
+        self._detail_cancel_btn.setEnabled(False)
+        self.setting_changed.emit("spin_phase_overrides", overrides)
+
+    def _on_spin_detail_cancel(self):
+        # PWA: cancelDetail() — snapshot に戻す
+        self._local_overrides = (
+            dict(self._spin_detail_saved_overrides)
+            if self._spin_detail_saved_overrides else {}
+        )
+        self._refresh_spin_detail_ui()
+        self._spin_detail_dirty = False
+        self._detail_save_btn.setEnabled(False)
+        self._detail_cancel_btn.setEnabled(False)
+
+    def _on_spin_detail_reset(self):
+        # PWA: resetDetailToPreset() — overrides を空に
+        self._local_overrides = {}
+        self._spin_detail_saved_overrides = {}
+        self._refresh_spin_detail_ui()
+        self._spin_detail_dirty = False
+        self._detail_save_btn.setEnabled(False)
+        self._detail_cancel_btn.setEnabled(False)
+        self.setting_changed.emit("spin_phase_overrides", None)
+
+    def _update_spin_detail_ui(self, overrides: dict | None):
+        """外部からの設定変更（update_setting）を UI に反映する。"""
+        if not hasattr(self, "_phase_widgets"):
+            return
+        self._local_overrides = dict(overrides) if isinstance(overrides, dict) else {}
+        self._spin_detail_saved_overrides = dict(self._local_overrides)
+        self._spin_detail_dirty = False
+        if hasattr(self, "_detail_save_btn"):
+            self._detail_save_btn.setEnabled(False)
+            self._detail_cancel_btn.setEnabled(False)
+        self._refresh_spin_detail_ui()
 
     # ================================================================
     #  セクション 2: 表示設定（実装済み）
@@ -418,32 +864,10 @@ class _SectionsMixin:
         self._display_section = CollapsibleSection("表示", design, expanded=True, theme_mode=settings.theme_mode)
         sec = self._display_section.content_layout
         self._layout.addWidget(self._display_section)
+        # v0.6.1: ヘッダー右に「初期化」ボタン
+        self._attach_section_reset(self._display_section, "display", design)
 
-        # テーマモード
-        theme_row = QHBoxLayout()
-        theme_row.setSpacing(4)
-        theme_lbl = QLabel("テーマ:")
-        theme_lbl.setFont(QFont("Meiryo", 8))
-        theme_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._theme_lbl = theme_lbl
-        theme_row.addWidget(theme_lbl)
-
-        self._theme_combo = QComboBox()
-        self._theme_combo.setFont(QFont("Meiryo", 8))
-        self._apply_combo_style(self._theme_combo, design)
-        self._theme_combo.addItems(["ダーク", "ライト", "システム"])
-        _theme_idx_map = {"dark": 0, "light": 1, "system": 2, "auto": 2}
-        self._theme_combo.setCurrentIndex(
-            _theme_idx_map.get(settings.theme_mode, 0)
-        )
-        _theme_val_map = ["dark", "light", "system"]
-        self._theme_combo.currentIndexChanged.connect(
-            lambda idx: self.setting_changed.emit(
-                "theme_mode", _theme_val_map[idx] if idx < len(_theme_val_map) else "dark"
-            )
-        )
-        theme_row.addWidget(self._theme_combo, stretch=1)
-        sec.addLayout(theme_row)
+        # v0.6.1: テーマは管理パネルへ移動済み
 
         # テキスト表示モード
         text_row = QHBoxLayout()
@@ -454,7 +878,7 @@ class _SectionsMixin:
         self._text_lbl = text_lbl
         text_row.addWidget(text_lbl)
 
-        self._text_mode_combo = QComboBox()
+        self._text_mode_combo = NoWheelComboBox()
         self._text_mode_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._text_mode_combo, design)
         for name in ["省略", "収める", "縮小"]:
@@ -479,15 +903,7 @@ class _SectionsMixin:
         # 透過モード はクイック設定バー（パネル上部）に常設化したため
         # ここには配置しない。
 
-        # インスタンス番号表示
-        self._instance_label_cb = QCheckBox("インスタンス番号表示")
-        self._instance_label_cb.setFont(QFont("Meiryo", 8))
-        self._instance_label_cb.setStyleSheet(f"color: {design.text};")
-        self._instance_label_cb.setChecked(settings.float_win_show_instance)
-        self._instance_label_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("float_win_show_instance", v)
-        )
-        sec.addWidget(self._instance_label_cb)
+        # v0.6.1: インスタンス番号表示は管理パネルへ移動済み
 
         # i468: 設定パネル独立化はクイック設定バーの「独」ボタンに移動済み
 
@@ -501,7 +917,7 @@ class _SectionsMixin:
         self._prof_lbl = prof_lbl
         prof_row.addWidget(prof_lbl)
 
-        self._prof_combo = QComboBox()
+        self._prof_combo = NoWheelComboBox()
         self._prof_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._prof_combo, design)
         for label, w, h in SIZE_PROFILES:
@@ -523,7 +939,7 @@ class _SectionsMixin:
         self._tdir_lbl = tdir_lbl
         tdir_row.addWidget(tdir_lbl)
 
-        self._tdir_combo = QComboBox()
+        self._tdir_combo = NoWheelComboBox()
         self._tdir_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._tdir_combo, design)
         for name in ["横(回転)", "横(水平)", "縦上", "縦下", "縦直立"]:
@@ -544,7 +960,7 @@ class _SectionsMixin:
         self._sdir_lbl = sdir_lbl
         sdir_row.addWidget(sdir_lbl)
 
-        self._sdir_combo = QComboBox()
+        self._sdir_combo = NoWheelComboBox()
         self._sdir_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._sdir_combo, design)
         for name in ["反時計回り", "時計回り"]:
@@ -565,7 +981,7 @@ class _SectionsMixin:
         self._ptr_lbl = ptr_lbl
         ptr_row.addWidget(ptr_lbl)
 
-        self._ptr_combo = QComboBox()
+        self._ptr_combo = NoWheelComboBox()
         self._ptr_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._ptr_combo, design)
         for name in POINTER_PRESET_NAMES:
@@ -578,18 +994,7 @@ class _SectionsMixin:
         sec.addLayout(ptr_row)
 
         # i289: 項目削除確認（項目パネルから移動）
-        self._confirm_item_delete_cb = QCheckBox("項目削除時に確認する")
-        self._confirm_item_delete_cb.setFont(QFont("Meiryo", 8))
-        self._confirm_item_delete_cb.setStyleSheet(f"color: {design.text};")
-        self._confirm_item_delete_cb.setChecked(settings.confirm_item_delete)
-        self._confirm_item_delete_cb.setToolTip(
-            "ON: 項目削除前に確認ダイアログを表示する\n"
-            "OFF: 確認なしで即時削除する"
-        )
-        self._confirm_item_delete_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("confirm_item_delete", v)
-        )
-        sec.addWidget(self._confirm_item_delete_cb)
+        # v0.6.1: 項目削除時確認は管理パネルへ移動済み
 
         # i289: 配置方向（項目パネルから移動）
         arr_row = QHBoxLayout()
@@ -599,7 +1004,7 @@ class _SectionsMixin:
         arr_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._arr_lbl = arr_lbl
         arr_row.addWidget(arr_lbl)
-        self._arr_combo = QComboBox()
+        self._arr_combo = NoWheelComboBox()
         self._arr_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._arr_combo, design)
         for name in ["時計回り", "反時計回り"]:
@@ -631,7 +1036,10 @@ class _SectionsMixin:
 
     def _build_design_section(self, settings: AppSettings,
                               design: DesignSettings):
-        self._design_collapsible = CollapsibleSection("デザイン", design, expanded=False, theme_mode=settings.theme_mode)
+        """デザインセクション（折り畳み式に戻す。初期化ボタンは設置しない）。"""
+        self._design_collapsible = CollapsibleSection(
+            "デザイン", design, expanded=False, theme_mode=settings.theme_mode
+        )
         sec = self._design_collapsible.content_layout
         self._layout.addWidget(self._design_collapsible)
 
@@ -659,6 +1067,7 @@ class _SectionsMixin:
         self._result_collapsible = CollapsibleSection("結果表示", design, expanded=False, theme_mode=settings.theme_mode)
         sec = self._result_collapsible.content_layout
         self._layout.addWidget(self._result_collapsible)
+        self._attach_section_reset(self._result_collapsible, "result", design)
 
         # 閉じ方モード
         mode_row = QHBoxLayout()
@@ -669,7 +1078,7 @@ class _SectionsMixin:
         self._result_mode_lbl = mode_lbl
         mode_row.addWidget(mode_lbl)
 
-        self._result_mode_combo = QComboBox()
+        self._result_mode_combo = NoWheelComboBox()
         self._result_mode_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._result_mode_combo, design)
         for name in ["クリック", "自動", "両方"]:
@@ -690,7 +1099,7 @@ class _SectionsMixin:
         self._result_sec_lbl = sec_lbl
         sec_row.addWidget(sec_lbl)
 
-        self._result_sec_spin = QDoubleSpinBox()
+        self._result_sec_spin = NoWheelDoubleSpinBox()
         self._result_sec_spin.setFont(QFont("Meiryo", 8))
         self._result_sec_spin.setRange(0.5, 30.0)
         self._result_sec_spin.setSingleStep(0.5)
@@ -726,7 +1135,7 @@ class _SectionsMixin:
         self._macro_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
         macro_sec_row.addWidget(self._macro_sec_lbl)
 
-        self._macro_sec_spin = QDoubleSpinBox()
+        self._macro_sec_spin = NoWheelDoubleSpinBox()
         self._macro_sec_spin.setFont(QFont("Meiryo", 8))
         self._macro_sec_spin.setRange(0.5, 30.0)
         self._macro_sec_spin.setSingleStep(0.5)
@@ -797,6 +1206,7 @@ class _SectionsMixin:
         self._sound_collapsible = CollapsibleSection("サウンド", design, expanded=False, theme_mode=settings.theme_mode)
         sec = self._sound_collapsible.content_layout
         self._layout.addWidget(self._sound_collapsible)
+        self._attach_section_reset(self._sound_collapsible, "sound", design)
 
         # tick 音 ON/OFF
         self._sound_tick_cb = QCheckBox("スピン音")
@@ -818,77 +1228,7 @@ class _SectionsMixin:
         )
         sec.addWidget(self._sound_result_cb)
 
-        # tick 音量スライダー
-        tick_vol_row = QHBoxLayout()
-        tick_vol_row.setSpacing(4)
-        tick_vol_lbl = QLabel("スピン音量:")
-        tick_vol_lbl.setFont(QFont("Meiryo", 8))
-        tick_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._tick_vol_lbl = tick_vol_lbl
-        tick_vol_row.addWidget(tick_vol_lbl)
-
-        self._tick_vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._tick_vol_slider.setRange(0, 100)
-        self._tick_vol_slider.setValue(settings.tick_volume)
-        self._tick_vol_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{"
-            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
-            f"}}"
-            f"QSlider::handle:horizontal {{"
-            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
-            f"  border-radius: 6px;"
-            f"}}"
-        )
-        self._tick_vol_slider.valueChanged.connect(
-            lambda v: self.setting_changed.emit("tick_volume", v)
-        )
-        tick_vol_row.addWidget(self._tick_vol_slider, stretch=1)
-
-        self._tick_vol_val = QLabel(f"{settings.tick_volume}%")
-        self._tick_vol_val.setFont(QFont("Meiryo", 7))
-        self._tick_vol_val.setStyleSheet(f"color: {design.text_sub};")
-        self._tick_vol_val.setFixedWidth(32)
-        self._tick_vol_slider.valueChanged.connect(
-            lambda v: self._tick_vol_val.setText(f"{v}%")
-        )
-        tick_vol_row.addWidget(self._tick_vol_val)
-        sec.addLayout(tick_vol_row)
-
-        # result 音量スライダー
-        win_vol_row = QHBoxLayout()
-        win_vol_row.setSpacing(4)
-        win_vol_lbl = QLabel("決定音量:")
-        win_vol_lbl.setFont(QFont("Meiryo", 8))
-        win_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._win_vol_lbl = win_vol_lbl
-        win_vol_row.addWidget(win_vol_lbl)
-
-        self._win_vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._win_vol_slider.setRange(0, 100)
-        self._win_vol_slider.setValue(settings.win_volume)
-        self._win_vol_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{"
-            f"  background: {design.separator}; height: 4px; border-radius: 2px;"
-            f"}}"
-            f"QSlider::handle:horizontal {{"
-            f"  background: {design.accent}; width: 12px; margin: -4px 0;"
-            f"  border-radius: 6px;"
-            f"}}"
-        )
-        self._win_vol_slider.valueChanged.connect(
-            lambda v: self.setting_changed.emit("win_volume", v)
-        )
-        win_vol_row.addWidget(self._win_vol_slider, stretch=1)
-
-        self._win_vol_val = QLabel(f"{settings.win_volume}%")
-        self._win_vol_val.setFont(QFont("Meiryo", 7))
-        self._win_vol_val.setStyleSheet(f"color: {design.text_sub};")
-        self._win_vol_val.setFixedWidth(32)
-        self._win_vol_slider.valueChanged.connect(
-            lambda v: self._win_vol_val.setText(f"{v}%")
-        )
-        win_vol_row.addWidget(self._win_vol_val)
-        sec.addLayout(win_vol_row)
+        # v0.6.1: スピン音量・決定音量は管理パネルへ移動済み
 
         # tick 音パターン選択
         from sound_manager import TICK_PATTERN_NAMES, WIN_PATTERN_NAMES
@@ -903,7 +1243,7 @@ class _SectionsMixin:
         self._tick_pat_lbl = tick_pat_lbl
         tick_pat_row.addWidget(tick_pat_lbl)
 
-        self._tick_pat_combo = QComboBox()
+        self._tick_pat_combo = NoWheelComboBox()
         self._tick_pat_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._tick_pat_combo, design)
         for name in TICK_PATTERN_NAMES:
@@ -952,7 +1292,7 @@ class _SectionsMixin:
         self._win_pat_lbl = win_pat_lbl
         win_pat_row.addWidget(win_pat_lbl)
 
-        self._win_pat_combo = QComboBox()
+        self._win_pat_combo = NoWheelComboBox()
         self._win_pat_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._win_pat_combo, design)
         for name in WIN_PATTERN_NAMES:
@@ -1017,6 +1357,7 @@ class _SectionsMixin:
                            design: DesignSettings):
         self._log_collapsible = CollapsibleSection("ログ", design, expanded=False, theme_mode=settings.theme_mode)
         sec = self._log_collapsible.content_layout
+        self._attach_section_reset(self._log_collapsible, "log", design)
         self._layout.addWidget(self._log_collapsible)
 
         # i342: ログ表示 ON/OFF (log_overlay_show) を明示的に持たせる。
@@ -1069,14 +1410,7 @@ class _SectionsMixin:
         sec.addWidget(self._log_all_patterns_cb)
 
         # リセット確認
-        self._confirm_reset_cb = QCheckBox("リセット確認")
-        self._confirm_reset_cb.setFont(QFont("Meiryo", 8))
-        self._confirm_reset_cb.setStyleSheet(f"color: {design.text};")
-        self._confirm_reset_cb.setChecked(settings.confirm_reset)
-        self._confirm_reset_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("confirm_reset", v)
-        )
-        sec.addWidget(self._confirm_reset_cb)
+        # v0.6.1: リセット確認は管理パネルへ移動済み
 
         # ログ操作ボタン行
         log_btn_row = QHBoxLayout()
@@ -1145,6 +1479,7 @@ class _SectionsMixin:
         self._replay_collapsible = CollapsibleSection("リプレイ", design, expanded=False, theme_mode=settings.theme_mode)
         sec = self._replay_collapsible.content_layout
         self._layout.addWidget(self._replay_collapsible)
+        # v0.6.1: リプレイ履歴クリアは管理画面で行うもののため、初期化ボタンは設置しない
 
         # リプレイ件数表示 + 再生/中断ボタン
         replay_row = QHBoxLayout()
@@ -1201,45 +1536,7 @@ class _SectionsMixin:
 
         sec.addLayout(replay_row)
 
-        # 設定行: 保存上限
-        max_row = QHBoxLayout()
-        max_row.setSpacing(4)
-
-        max_lbl = QLabel("保存上限:")
-        max_lbl.setFont(QFont("Meiryo", 8))
-        max_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._replay_max_lbl = max_lbl
-        max_row.addWidget(max_lbl)
-
-        self._replay_max_spin = QSpinBox()
-        self._replay_max_spin.setFont(QFont("Meiryo", 8))
-        self._replay_max_spin.setRange(1, 20)
-        self._replay_max_spin.setValue(settings.replay_max_count)
-        self._replay_max_spin.setStyleSheet(
-            f"QSpinBox {{"
-            f"  background-color: {design.separator}; color: {design.text};"
-            f"  border: 1px solid {design.separator}; border-radius: 3px;"
-            f"  padding: 2px 4px;"
-            f"}}"
-        )
-        self._replay_max_spin.valueChanged.connect(
-            lambda v: self.setting_changed.emit("replay_max_count", v)
-        )
-        max_row.addWidget(self._replay_max_spin)
-
-        max_row.addStretch(1)
-
-        sec.addLayout(max_row)
-
-        # 設定行: 再生中表示
-        self._replay_indicator_cb = QCheckBox("再生中表示")
-        self._replay_indicator_cb.setFont(QFont("Meiryo", 8))
-        self._replay_indicator_cb.setStyleSheet(f"color: {design.text};")
-        self._replay_indicator_cb.setChecked(settings.replay_show_indicator)
-        self._replay_indicator_cb.toggled.connect(
-            lambda v: self.setting_changed.emit("replay_show_indicator", v)
-        )
-        sec.addWidget(self._replay_indicator_cb)
+        # v0.6.1: 保存上限・再生中表示は管理パネルへ移動済み
 
     def set_replay_count(self, count: int):
         """リプレイ件数表示を更新する。"""
@@ -1265,7 +1562,7 @@ class _SectionsMixin:
         pat_row = QHBoxLayout()
         pat_row.setSpacing(4)
 
-        self._pattern_combo = QComboBox()
+        self._pattern_combo = NoWheelComboBox()
         self._pattern_combo.setFont(QFont("Meiryo", 8))
         self._apply_combo_style(self._pattern_combo, design)
         for name in self._pattern_names:
@@ -1507,16 +1804,6 @@ class _SectionsMixin:
         )
 
 
-    def _apply_spin_btn_style(self, design: DesignSettings):
-        self._spin_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {design.accent}; color: {design.text};"
-            f"  border: none; border-radius: 6px; padding: 6px;"
-            f"}}"
-            f"QPushButton:hover {{ background-color: {design.separator}; }}"
-            f"QPushButton:disabled {{ background-color: {design.separator}; color: {design.text_sub}; }}"
-        )
-
     @staticmethod
     def _dark_checkbox_style(design: DesignSettings) -> str:
         return dark_checkbox_style(design)
@@ -1541,4 +1828,550 @@ class _SectionsMixin:
             f"  border: 1px solid {design.separator};"
             f"}}"
         )
+
+    # ================================================================
+    #  特殊演出セクション (テスト版) — グループ別レイアウト
+    # ================================================================
+
+    _SOUND_EFFECT_KEYS = {"soundConfirm", "soundExpect", "soundNgConfirm"}
+    _SOUND_EFFECT_SND_KEY = {
+        "soundConfirm": "confirm",
+        "soundExpect": "expect",
+        "soundNgConfirm": "ng",
+    }
+    _EFFECT_GROUPS = [
+        ("音系",        ["soundConfirm", "soundExpect", "soundNgConfirm"]),
+        ("ミニキャラ系", ["miniCharTarget", "miniCharExpect", "miniCharNg"]),
+        ("カットイン系", ["cutInTarget", "cutInExpect", "cutInNg"]),
+        ("その他",      ["flashConfirm", "wheelGlow", "textChance"]),
+    ]
+
+    def _build_effects_section(self, settings: AppSettings, design: DesignSettings):
+        """特殊演出設定セクション（PWA SettingsSheet と 1:1 対応）。"""
+        self._effects_collapsible = CollapsibleSection(
+            "特殊演出（テスト版）", design, expanded=False, theme_mode=settings.theme_mode
+        )
+        sec = self._effects_collapsible.content_layout
+        self._layout.addWidget(self._effects_collapsible)
+        self._attach_section_reset(self._effects_collapsible, "effects", design)
+
+        lbl_style = f"color: {design.text_sub};"
+        var_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px; font-family: Meiryo; font-size: 8pt; min-width: 24px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+            f"QPushButton:disabled {{ color: {design.text_sub}; }}"
+        )
+        preview_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 2px 4px; font-family: Meiryo; font-size: 8pt; min-width: 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; color: white; }}"
+        )
+        mode_active_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent}; border-radius: 3px;"
+            f"  padding: 3px 10px; font-family: Meiryo; font-size: 8pt;"
+            f"}}"
+        )
+        mode_inactive_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 3px 10px; font-family: Meiryo; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; color: white; }}"
+        )
+        grp_reset_style = (
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text_sub};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 6px; font-family: Meiryo; font-size: 7pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #c0392b; color: white; border-color: #c0392b; }}"
+        )
+
+        # 1) 演出マスター ON/OFF + 全てランダム
+        master_row = QHBoxLayout()
+        self._effects_master_cb = QCheckBox("演出マスター ON/OFF")
+        self._effects_master_cb.setFont(QFont("Meiryo", 8))
+        self._effects_master_cb.setStyleSheet(f"color: {design.text};")
+        self._effects_master_cb.setChecked(False)
+        self._effects_master_cb.toggled.connect(self._on_effect_changed)
+        master_row.addWidget(self._effects_master_cb)
+
+        self._effects_all_random_cb = QCheckBox("全てランダム")
+        self._effects_all_random_cb.setFont(QFont("Meiryo", 8))
+        self._effects_all_random_cb.setStyleSheet(f"color: {design.text};")
+        self._effects_all_random_cb.setChecked(False)
+        self._effects_all_random_cb.setToolTip(
+            "ON の演出のバリアントを各項目の設定に関わらず毎回ランダムで選択する"
+        )
+        self._effects_all_random_cb.toggled.connect(self._on_effect_changed)
+        master_row.addWidget(self._effects_all_random_cb)
+
+        master_row.addStretch(1)
+        sec.addLayout(master_row)
+
+        # v0.6.1: グループ内の「演出設定を初期値に戻す」は廃止
+        # （セクションヘッダー右の「初期化」ボタンと役割が重複するため）
+        # 演出音量は管理パネル「アプリ設定」の音量グループへ移動済み
+
+        # 4) モード切替: 演出選択 / 演出確認
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(0)
+        self._effects_select_btn = QPushButton("演出選択")
+        self._effects_select_btn.setFont(QFont("Meiryo", 8))
+        self._effects_select_btn.setStyleSheet(mode_active_style)
+        self._effects_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._effects_select_btn.clicked.connect(lambda: self._set_effects_mode("select"))
+        mode_row.addWidget(self._effects_select_btn)
+        self._effects_confirm_btn = QPushButton("演出確認")
+        self._effects_confirm_btn.setFont(QFont("Meiryo", 8))
+        self._effects_confirm_btn.setStyleSheet(mode_inactive_style)
+        self._effects_confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._effects_confirm_btn.clicked.connect(lambda: self._set_effects_mode("confirm"))
+        mode_row.addWidget(self._effects_confirm_btn)
+        mode_row.addStretch(1)
+        sec.addLayout(mode_row)
+
+        self._effects_mode_hint = QLabel("各演出のバリエーション・確率・タイミングを設定します。")
+        self._effects_mode_hint.setFont(QFont("Meiryo", 7))
+        self._effects_mode_hint.setStyleSheet(lbl_style)
+        self._effects_mode_hint.setWordWrap(True)
+        sec.addWidget(self._effects_mode_hint)
+
+        self._effects_mode = "select"
+        self._effects_mode_styles = {"active": mode_active_style, "inactive": mode_inactive_style}
+
+        self._effect_rows: dict[str, dict] = {}
+
+        # 5) グループ別に演出行を構築。各グループは折り畳み可能で、
+        #    ヘッダー（折り畳みボタン同行）の右側に「初期化」ボタンを配置。
+        self._effect_group_sections: dict[str, CollapsibleSection] = {}
+        for group_name, group_keys in self._EFFECT_GROUPS:
+            grp_section = CollapsibleSection(
+                group_name, design, expanded=True,
+                theme_mode=settings.theme_mode, nested=True,
+            )
+            grp_reset_btn = QPushButton("初期化")
+            grp_reset_btn.setFont(QFont("Meiryo", 7))
+            grp_reset_btn.setStyleSheet(grp_reset_style)
+            grp_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            grp_reset_btn.setToolTip(f"{group_name}の演出設定を初期値に戻す")
+            grp_reset_btn.clicked.connect(
+                lambda _chk=False, gk=group_keys: self._on_effects_group_reset(gk)
+            )
+            grp_section.add_header_widget(grp_reset_btn)
+            grp_layout = grp_section.content_layout
+            for key in group_keys:
+                self._build_effect_item_widget(grp_layout, key, design,
+                                               var_btn_style, preview_btn_style)
+            sec.addWidget(grp_section)
+            self._effect_group_sections[group_name] = grp_section
+
+    def _build_effect_item_widget(self, sec, key: str, design: DesignSettings,
+                                   var_btn_style: str, preview_btn_style: str):
+        """演出1項目のウィジェットを構築して sec に追加する（PWA 1:1）。
+
+        演出選択モード:
+          - 1行目: [enabled CB] [表示名] [1][2][3][4][5][🎲]
+          - 2行目: 確率: [値テキスト] [🎲ランダムトグル]
+          - 3行目: [min slider][max slider] (プログレスバー風配置)
+          - 4行目: タイミング: [値テキスト] [🎲ランダムトグル]
+          - 5行目: [min slider][max slider]
+        演出確認モード:
+          - 1行目: [表示名] [1][2][3][4][5][🎲]
+        """
+        lbl_style = f"color: {design.text_sub};"
+        rand_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text_sub};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 3px; font-size: 8pt; min-width: 22px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+
+        container = QWidget()
+        c_layout = QVBoxLayout(container)
+        c_layout.setContentsMargins(4, 2, 4, 4)
+        c_layout.setSpacing(2)
+
+        # ── 演出選択モード用 ──────────────────────────────────────
+        select_widget = QWidget()
+        sel_layout = QVBoxLayout(select_widget)
+        sel_layout.setContentsMargins(0, 0, 0, 0)
+        sel_layout.setSpacing(2)
+
+        # 1行目: CB + 名前 + バリエーション [1][2][3][4][5][🎲]
+        sel_top = QHBoxLayout()
+        sel_top.setSpacing(4)
+        cb = QCheckBox()
+        cb.setChecked(True)
+        cb.setStyleSheet(f"color: {design.text};")
+        cb.toggled.connect(self._on_effect_changed)
+        sel_top.addWidget(cb)
+        name_lbl = QLabel(EFFECT_DISPLAY_NAMES.get(key, key))
+        name_lbl.setFont(QFont("Meiryo", 7))
+        name_lbl.setStyleSheet(f"color: {design.text};")
+        sel_top.addWidget(name_lbl, stretch=1)
+        var_btns: list[QPushButton] = []
+        # PWA 順序: [1][2][3][4][5][🎲] (🎲 は末尾)
+        _var_labels = ["1", "2", "3", "4", "5", "🎲"]
+        _var_data   = [1,   2,   3,   4,   5,   0]
+        for v_lbl, v_dat in zip(_var_labels, _var_data):
+            vb = QPushButton(v_lbl)
+            vb.setCheckable(True)
+            vb.setStyleSheet(var_btn_style)
+            vb.setCursor(Qt.CursorShape.PointingHandCursor)
+            if v_dat == 0:
+                vb.setToolTip("毎スピン 1〜5 からランダム抽選")
+            else:
+                vb.setToolTip(f"バリエーション {v_dat}")
+            vb.clicked.connect(
+                lambda _chk=False, k=key, vd=v_dat: self._on_effect_variant_clicked(k, vd)
+            )
+            sel_top.addWidget(vb)
+            var_btns.append(vb)
+        var_btns[5].setChecked(True)  # 既定: 🎲 (ランダム)
+        sel_layout.addLayout(sel_top)
+
+        # 2行目: 確率: 値テキスト + 🎲トグル
+        prob_hdr = QHBoxLayout()
+        prob_hdr.setSpacing(4)
+        prob_text_lbl = QLabel("確率: 1% 〜 10%")
+        prob_text_lbl.setFont(QFont("Meiryo", 7))
+        prob_text_lbl.setStyleSheet(lbl_style)
+        prob_hdr.addWidget(prob_text_lbl, stretch=1)
+        prob_rand_btn = QPushButton("🎲")
+        prob_rand_btn.setCheckable(True)
+        prob_rand_btn.setStyleSheet(rand_btn_style)
+        prob_rand_btn.setFixedWidth(28)
+        prob_rand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        prob_rand_btn.setToolTip("完全ランダム（毎スピン 0〜100% から抽選）")
+        prob_rand_btn.toggled.connect(self._on_effect_changed)
+        prob_hdr.addWidget(prob_rand_btn)
+        sel_layout.addLayout(prob_hdr)
+
+        # 3行目: 確率 min/max スライダー（PWA は 2 input を縦に並べる）
+        prob_min_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        prob_min_slider.setRange(0, 100)
+        prob_min_slider.setValue(1)
+        sel_layout.addWidget(prob_min_slider)
+        prob_max_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        prob_max_slider.setRange(0, 100)
+        prob_max_slider.setValue(10)
+        sel_layout.addWidget(prob_max_slider)
+
+        # 4行目: タイミング: 値テキスト + 🎲トグル
+        timing_hdr = QHBoxLayout()
+        timing_hdr.setSpacing(4)
+        timing_text_lbl = QLabel("タイミング: 40% 〜 60%")
+        timing_text_lbl.setFont(QFont("Meiryo", 7))
+        timing_text_lbl.setStyleSheet(lbl_style)
+        timing_hdr.addWidget(timing_text_lbl, stretch=1)
+        timing_rand_btn = QPushButton("🎲")
+        timing_rand_btn.setCheckable(True)
+        timing_rand_btn.setStyleSheet(rand_btn_style)
+        timing_rand_btn.setFixedWidth(28)
+        timing_rand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        timing_rand_btn.setToolTip("完全ランダムタイミング")
+        timing_rand_btn.toggled.connect(self._on_effect_changed)
+        timing_hdr.addWidget(timing_rand_btn)
+        sel_layout.addLayout(timing_hdr)
+
+        timing_min_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        timing_min_slider.setRange(0, 100)
+        timing_min_slider.setValue(40)
+        sel_layout.addWidget(timing_min_slider)
+        timing_max_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        timing_max_slider.setRange(0, 100)
+        timing_max_slider.setValue(60)
+        sel_layout.addWidget(timing_max_slider)
+
+        c_layout.addWidget(select_widget)
+
+        # ── 演出確認モード用 ──────────────────────────────────────
+        # PWA: [表示名] [1][2][3][4][5][🎲] のみ
+        confirm_widget = QWidget()
+        conf_layout = QHBoxLayout(confirm_widget)
+        conf_layout.setContentsMargins(0, 0, 0, 0)
+        conf_layout.setSpacing(4)
+        conf_name_lbl = QLabel(EFFECT_DISPLAY_NAMES.get(key, key))
+        conf_name_lbl.setFont(QFont("Meiryo", 7))
+        conf_name_lbl.setStyleSheet(f"color: {design.text};")
+        conf_layout.addWidget(conf_name_lbl, stretch=1)
+        prev_btns: list[QPushButton] = []
+        for v_label, v_dat in zip(["1", "2", "3", "4", "5", "🎲"], [1, 2, 3, 4, 5, 0]):
+            pb = QPushButton(v_label)
+            pb.setFont(QFont("Meiryo", 8))
+            pb.setStyleSheet(preview_btn_style)
+            pb.setCursor(Qt.CursorShape.PointingHandCursor)
+            if v_dat == 0:
+                pb.setToolTip(f"バリエーション 1〜5 からランダム試聴")
+            else:
+                pb.setToolTip(f"バリエーション {v_dat} を試聴")
+            # 全演出タイプを試聴するため preview_full_effect_requested を使う
+            pb.clicked.connect(
+                lambda _chk=False, ek=key, vd=v_dat:
+                self.preview_full_effect_requested.emit(ek, vd)
+            )
+            prev_btns.append(pb)
+            conf_layout.addWidget(pb)
+        confirm_widget.setVisible(False)
+        c_layout.addWidget(confirm_widget)
+
+        sec.addWidget(container)
+
+        # シグナル接続
+        prob_min_slider.valueChanged.connect(
+            lambda v, k=key: self._on_prob_min_changed(k, v)
+        )
+        prob_max_slider.valueChanged.connect(
+            lambda v, k=key: self._on_prob_max_changed(k, v)
+        )
+        timing_min_slider.valueChanged.connect(
+            lambda v, k=key: self._on_timing_min_changed(k, v)
+        )
+        timing_max_slider.valueChanged.connect(
+            lambda v, k=key: self._on_timing_max_changed(k, v)
+        )
+
+        self._effect_rows[key] = {
+            "cb":                cb,
+            "var_btns":          var_btns,
+            "selected_variant":  0,
+            "prob_rand_btn":     prob_rand_btn,
+            "prob_min_slider":   prob_min_slider,
+            "prob_max_slider":   prob_max_slider,
+            "prob_text_lbl":     prob_text_lbl,
+            "timing_rand_btn":   timing_rand_btn,
+            "timing_min_slider": timing_min_slider,
+            "timing_max_slider": timing_max_slider,
+            "timing_text_lbl":   timing_text_lbl,
+            "select_widget":     select_widget,
+            "confirm_widget":    confirm_widget,
+            "prev_btns":         prev_btns,
+        }
+
+    # ── 演出モード切替 ──────────────────────────────────────────────
+
+    def _set_effects_mode(self, mode: str):
+        self._effects_mode = mode
+        styles = getattr(self, "_effects_mode_styles", {})
+        self._effects_select_btn.setStyleSheet(
+            styles.get("active" if mode == "select" else "inactive", "")
+        )
+        self._effects_confirm_btn.setStyleSheet(
+            styles.get("active" if mode == "confirm" else "inactive", "")
+        )
+        for row in self._effect_rows.values():
+            row["select_widget"].setVisible(mode == "select")
+            row["confirm_widget"].setVisible(mode == "confirm")
+        if hasattr(self, "_effects_mode_hint"):
+            self._effects_mode_hint.setText(
+                "各演出のバリエーション・確率・タイミングを設定します。"
+                if mode == "select"
+                else "項目をタップすると、選択中のバリエーションでその場で試聴/視聴します。"
+            )
+
+    # ── バリアント・確率・タイミングハンドラ ───────────────────────
+
+    def _on_effect_variant_clicked(self, key: str, variant: int):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        _var_data = [1, 2, 3, 4, 5, 0]  # PWA順序: [1][2][3][4][5][🎲]
+        for i, btn in enumerate(row["var_btns"]):
+            btn.setChecked(_var_data[i] == variant)
+        row["selected_variant"] = variant
+        self._on_effect_changed()
+
+    def _update_prob_text(self, key: str):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        if row["prob_rand_btn"].isChecked():
+            row["prob_text_lbl"].setText("確率: 0〜100% (完全ランダム)")
+        else:
+            row["prob_text_lbl"].setText(
+                f"確率: {row['prob_min_slider'].value()}% 〜 {row['prob_max_slider'].value()}%"
+            )
+
+    def _update_timing_text(self, key: str):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        if row["timing_rand_btn"].isChecked():
+            row["timing_text_lbl"].setText("タイミング: 0〜100% (完全ランダム)")
+        else:
+            row["timing_text_lbl"].setText(
+                f"タイミング: {row['timing_min_slider'].value()}% 〜 {row['timing_max_slider'].value()}%"
+            )
+
+    def _on_prob_min_changed(self, key: str, value: int):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        # PWA: newMin = Math.min(v, max) — クランプ
+        if value > row["prob_max_slider"].value():
+            row["prob_min_slider"].blockSignals(True)
+            row["prob_min_slider"].setValue(row["prob_max_slider"].value())
+            row["prob_min_slider"].blockSignals(False)
+        self._update_prob_text(key)
+        self._on_effect_changed()
+
+    def _on_prob_max_changed(self, key: str, value: int):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        if value < row["prob_min_slider"].value():
+            row["prob_max_slider"].blockSignals(True)
+            row["prob_max_slider"].setValue(row["prob_min_slider"].value())
+            row["prob_max_slider"].blockSignals(False)
+        self._update_prob_text(key)
+        self._on_effect_changed()
+
+    def _on_timing_min_changed(self, key: str, value: int):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        if value > row["timing_max_slider"].value():
+            row["timing_min_slider"].blockSignals(True)
+            row["timing_min_slider"].setValue(row["timing_max_slider"].value())
+            row["timing_min_slider"].blockSignals(False)
+        self._update_timing_text(key)
+        self._on_effect_changed()
+
+    def _on_timing_max_changed(self, key: str, value: int):
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        if value < row["timing_min_slider"].value():
+            row["timing_max_slider"].blockSignals(True)
+            row["timing_max_slider"].setValue(row["timing_min_slider"].value())
+            row["timing_max_slider"].blockSignals(False)
+        self._update_timing_text(key)
+        self._on_effect_changed()
+
+    # ── グループ・全体リセット ─────────────────────────────────────
+
+    def _on_effects_group_reset(self, group_keys: list[str]):
+        from spin_effect_settings import default_effect_config
+        for key in group_keys:
+            self._apply_effect_config_to_ui(key, default_effect_config(key))
+        self._on_effect_changed()
+
+    def _on_effects_global_reset(self):
+        from spin_effect_settings import default_effect_config
+        master_state = self._effects_master_cb.isChecked()
+        for key in EFFECT_KEYS:
+            self._apply_effect_config_to_ui(key, default_effect_config(key))
+        self._effects_master_cb.blockSignals(True)
+        self._effects_master_cb.setChecked(master_state)
+        self._effects_master_cb.blockSignals(False)
+        self._on_effect_changed()
+
+    def _apply_effect_config_to_ui(self, key: str, cfg: EffectConfig):
+        """EffectConfig を UI に反映する（シグナルなし）。"""
+        row = self._effect_rows.get(key)
+        if row is None:
+            return
+        row["cb"].blockSignals(True)
+        row["cb"].setChecked(cfg.enabled)
+        row["cb"].blockSignals(False)
+        _var_data = [1, 2, 3, 4, 5, 0]  # PWA順序: [1][2][3][4][5][🎲]
+        for i, btn in enumerate(row["var_btns"]):
+            btn.blockSignals(True)
+            btn.setChecked(_var_data[i] == cfg.selected_variant)
+            btn.blockSignals(False)
+        row["selected_variant"] = cfg.selected_variant
+        prob_min = max(0, min(100, int(round(cfg.probability_range[0] * 100))))
+        prob_max = max(0, min(100, int(round(cfg.probability_range[1] * 100))))
+        row["prob_min_slider"].blockSignals(True)
+        row["prob_min_slider"].setValue(prob_min)
+        row["prob_min_slider"].blockSignals(False)
+        row["prob_max_slider"].blockSignals(True)
+        row["prob_max_slider"].setValue(prob_max)
+        row["prob_max_slider"].blockSignals(False)
+        row["prob_rand_btn"].blockSignals(True)
+        row["prob_rand_btn"].setChecked(cfg.probability_random)
+        row["prob_rand_btn"].blockSignals(False)
+        self._update_prob_text(key)
+        timing_min = max(0, min(100, int(round(cfg.timing_range[0] * 100))))
+        timing_max = max(0, min(100, int(round(cfg.timing_range[1] * 100))))
+        row["timing_min_slider"].blockSignals(True)
+        row["timing_min_slider"].setValue(timing_min)
+        row["timing_min_slider"].blockSignals(False)
+        row["timing_max_slider"].blockSignals(True)
+        row["timing_max_slider"].setValue(timing_max)
+        row["timing_max_slider"].blockSignals(False)
+        row["timing_rand_btn"].blockSignals(True)
+        row["timing_rand_btn"].setChecked(cfg.timing_random)
+        row["timing_rand_btn"].blockSignals(False)
+        self._update_timing_text(key)
+
+    # ── collect / update ──────────────────────────────────────────
+
+    def _collect_effects_settings(self) -> SpinEffectSettings:
+        """現在の演出 UI 状態から SpinEffectSettings を構築する。"""
+        from spin_effect_settings import default_effect_config
+        enabled = self._effects_master_cb.isChecked()
+        all_random = self._effects_all_random_cb.isChecked()
+        effects = {}
+        for key in EFFECT_KEYS:
+            row = self._effect_rows.get(key)
+            if row is None:
+                effects[key] = default_effect_config(key)
+                continue
+            effects[key] = EffectConfig(
+                enabled=row["cb"].isChecked(),
+                probability_range=(
+                    row["prob_min_slider"].value() / 100.0,
+                    row["prob_max_slider"].value() / 100.0,
+                ),
+                probability_random=row["prob_rand_btn"].isChecked(),
+                timing_range=(
+                    row["timing_min_slider"].value() / 100.0,
+                    row["timing_max_slider"].value() / 100.0,
+                ),
+                timing_random=row["timing_rand_btn"].isChecked(),
+                selected_variant=row.get("selected_variant", 0),
+            )
+        return SpinEffectSettings(enabled=enabled, all_random=all_random, effects=effects)
+
+    def _on_effect_changed(self):
+        """演出設定変更時: SpinEffectSettings を構築してシグナルを発火。"""
+        if not hasattr(self, "_effect_rows"):
+            return
+        self.setting_changed.emit("spin_effects", self._collect_effects_settings())
+
+    def _update_effects_ui(self, s: SpinEffectSettings):
+        """SpinEffectSettings から演出 UI を更新する（シグナルなし）。"""
+        if not hasattr(self, "_effects_master_cb"):
+            return
+        self._effects_master_cb.blockSignals(True)
+        self._effects_master_cb.setChecked(s.enabled)
+        self._effects_master_cb.blockSignals(False)
+        if hasattr(self, "_effects_all_random_cb"):
+            self._effects_all_random_cb.blockSignals(True)
+            self._effects_all_random_cb.setChecked(s.all_random)
+            self._effects_all_random_cb.blockSignals(False)
+        for key in EFFECT_KEYS:
+            cfg = s.effects.get(key)
+            if cfg is not None:
+                self._apply_effect_config_to_ui(key, cfg)
 

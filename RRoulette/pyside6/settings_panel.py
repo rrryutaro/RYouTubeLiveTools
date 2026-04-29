@@ -86,6 +86,12 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
     pattern_renamed = Signal(str, str)  # パターン名変更 (旧名, 新名)
     preview_tick_requested = Signal()   # tick音テスト再生
     preview_win_requested = Signal()    # result音テスト再生
+    preview_effect_requested = Signal(str, int)  # 演出音プレビュー (sound_key, variant) — 旧
+    preview_full_effect_requested = Signal(str, int)  # 演出全体プレビュー (effect_key, variant)
+    # v0.6.1: 主要セクションごとの「初期化」要求 (section_name)
+    section_reset_requested = Signal(str)
+    # v0.6.1: 「全ルーレットに適用」CB の変更通知（管理パネルから移動）
+    apply_to_all_changed = Signal(bool)
     log_clear_requested = Signal()     # 履歴クリア
     log_export_requested = Signal()    # ログエクスポート
     log_import_requested = Signal()    # ログインポート
@@ -172,6 +178,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._build_sound_section(settings, design)
         self._build_log_section(settings, design)
         self._build_replay_section(settings, design)
+        self._build_effects_section(settings, design)
         # ── パターン管理セクション ──
         self._pattern_names = list(pattern_names or ["デフォルト"])
         self._current_pattern = current_pattern
@@ -190,6 +197,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             "sound": self._sound_collapsible,
             "log": self._log_collapsible,
             "replay": self._replay_collapsible,
+            "effects": self._effects_collapsible,
             "pattern": self._pattern_collapsible,
             "items": self._items_collapsible,
         }
@@ -405,9 +413,8 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             row._win_lbl.setText(str(n) if n > 0 else "0")
 
     def set_spinning(self, spinning: bool):
-        """spin 状態に応じてボタンを有効/無効にする。"""
-        self._spin_btn.setEnabled(not spinning)
-        self._spin_btn.setText("⏳  スピン中..." if spinning else "▶  スピン開始")
+        """spin 状態変化を通知する（スピンボタン廃止後は no-op）。"""
+        pass  # スピンボタンは設定パネルから削除済み。ホイールクリックでスピン。
 
     def set_preset(self, name: str):
         """プリセット表示を外部から更新する。"""
@@ -479,23 +486,40 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             self._log_show_cb.blockSignals(True)
             self._log_show_cb.setChecked(value)
             self._log_show_cb.blockSignals(False)
+        elif key == "spin_preset_profile":
+            for k, btn in self._profile_btns.items():
+                btn.blockSignals(True)
+                btn.setChecked(k == value)
+                btn.blockSignals(False)
+        elif key == "spin_preset_random":
+            self._profile_random_cb.blockSignals(True)
+            self._profile_random_cb.setChecked(bool(value))
+            self._profile_random_cb.blockSignals(False)
+        elif key == "spin_duration_random":
+            self._dur_random_cb.blockSignals(True)
+            self._dur_random_cb.setChecked(bool(value))
+            self._dur_random_cb.blockSignals(False)
+        elif key == "spin_duration_random_ratio":
+            v_int = int(round(float(value) * 100))
+            self._dur_rand_slider.blockSignals(True)
+            self._dur_rand_slider.setValue(v_int)
+            self._dur_rand_lbl.setText(f"終了時間ランダム化: ±{v_int}%")
+            self._dur_rand_slider.blockSignals(False)
+        elif key == "spin_phase_randomize":
+            v_int = int(round(float(value) * 100))
+            self._phase_rand_slider.blockSignals(True)
+            self._phase_rand_slider.setValue(v_int)
+            self._phase_rand_lbl.setText(f"スピン詳細ランダム化: {v_int}%")
+            self._phase_rand_slider.blockSignals(False)
         elif key == "spin_duration":
-            self._dur_spin.blockSignals(True)
-            self._dur_spin.setValue(value)
-            self._dur_spin.blockSignals(False)
-        elif key == "spin_mode":
-            self._mode_combo.blockSignals(True)
-            self._mode_combo.setCurrentIndex(value)
-            self._mode_combo.blockSignals(False)
-            self._update_duration_rows_visibility(value)
-        elif key == "double_duration":
-            self._dbl_spin.blockSignals(True)
-            self._dbl_spin.setValue(value)
-            self._dbl_spin.blockSignals(False)
-        elif key == "triple_duration":
-            self._tpl_spin.blockSignals(True)
-            self._tpl_spin.setValue(value)
-            self._tpl_spin.blockSignals(False)
+            slider_val = max(10, min(150, int(round(float(value) * 10))))
+            self._dur_slider.blockSignals(True)
+            self._dur_slider.setValue(slider_val)
+            self._dur_lbl.setText(f"スピン時間: {slider_val / 10:.1f} 秒")
+            self._dur_slider.blockSignals(False)
+        elif key == "spin_phase_overrides":
+            if hasattr(self, "_update_spin_detail_ui"):
+                self._update_spin_detail_ui(value)
         elif key == "auto_shuffle":
             self._shuffle_cb.blockSignals(True)
             self._shuffle_cb.setChecked(value)
@@ -504,24 +528,9 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             self._arr_combo.blockSignals(True)
             self._arr_combo.setCurrentIndex(value)
             self._arr_combo.blockSignals(False)
-        elif key == "window_transparent":
-            self._window_transparent_cb.blockSignals(True)
-            self._window_transparent_cb.setChecked(value)
-            self._window_transparent_cb.blockSignals(False)
-        elif key == "roulette_transparent":
-            self._roulette_transparent_cb.blockSignals(True)
-            self._roulette_transparent_cb.setChecked(value)
-            self._roulette_transparent_cb.blockSignals(False)
-        elif key == "tick_volume":
-            self._tick_vol_slider.blockSignals(True)
-            self._tick_vol_slider.setValue(value)
-            self._tick_vol_slider.blockSignals(False)
-            self._tick_vol_val.setText(f"{value}%")
-        elif key == "win_volume":
-            self._win_vol_slider.blockSignals(True)
-            self._win_vol_slider.setValue(value)
-            self._win_vol_slider.blockSignals(False)
-            self._win_vol_val.setText(f"{value}%")
+        elif key in ("tick_volume", "win_volume", "effect_volume"):
+            # v0.6.1: 音量は管理パネル側へ移動済み
+            pass
         elif key == "tick_pattern":
             self._tick_pat_combo.blockSignals(True)
             self._tick_pat_combo.setCurrentIndex(value)
@@ -547,37 +556,22 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
                 self._log_all_patterns_cb.blockSignals(True)
                 self._log_all_patterns_cb.setChecked(value)
                 self._log_all_patterns_cb.blockSignals(False)
-        elif key == "confirm_reset":
-            self._confirm_reset_cb.blockSignals(True)
-            self._confirm_reset_cb.setChecked(value)
-            self._confirm_reset_cb.blockSignals(False)
-        elif key == "confirm_item_delete":
-            # i286: 項目削除確認設定の外部変更反映
-            self._settings.confirm_item_delete = bool(value)
-            if hasattr(self, "_confirm_item_delete_cb"):
-                self._confirm_item_delete_cb.blockSignals(True)
-                self._confirm_item_delete_cb.setChecked(bool(value))
-                self._confirm_item_delete_cb.blockSignals(False)
-        elif key == "replay_max_count":
-            self._replay_max_spin.blockSignals(True)
-            self._replay_max_spin.setValue(value)
-            self._replay_max_spin.blockSignals(False)
-        elif key == "replay_show_indicator":
-            self._replay_indicator_cb.blockSignals(True)
-            self._replay_indicator_cb.setChecked(value)
-            self._replay_indicator_cb.blockSignals(False)
-        elif key == "float_win_show_instance":
-            self._instance_label_cb.blockSignals(True)
-            self._instance_label_cb.setChecked(value)
-            self._instance_label_cb.blockSignals(False)
+        elif key in ("confirm_reset", "confirm_item_delete", "theme_mode",
+                      "float_win_show_instance",
+                      "window_transparent", "roulette_transparent",
+                      "panels_transparent", "always_on_top",
+                      "replay_max_count", "replay_show_indicator",
+                      "replay_record_effects"):
+            # v0.6.1: アプリ全体設定は管理パネル側へ移動済み
+            if key == "confirm_item_delete":
+                self._settings.confirm_item_delete = bool(value)
+        elif key == "spin_effects":
+            if hasattr(self, "_effects_master_cb"):
+                self._update_effects_ui(value)
         elif key == "settings_panel_float":
             self._settings_float_btn.blockSignals(True)
             self._settings_float_btn.setChecked(value)
             self._settings_float_btn.blockSignals(False)
-        elif key == "always_on_top":
-            self._aot_cb.blockSignals(True)
-            self._aot_cb.setChecked(value)
-            self._aot_cb.blockSignals(False)
         elif key == "show_item_prob":
             # i283: 確率/分割 UI の表示 ON/OFF
             self._settings.show_item_prob = bool(value)
@@ -593,6 +587,10 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
                 self._show_item_win_cb.blockSignals(True)
                 self._show_item_win_cb.setChecked(bool(value))
                 self._show_item_win_cb.blockSignals(False)
+            self._refresh_item_rows_visibility()
+        elif key == "show_item_extra_badges":
+            # v0.6.1: バッジ表示 ON/OFF
+            self._settings.show_item_extra_badges = bool(value)
             self._refresh_item_rows_visibility()
         elif key == "item_panel_display_mode":
             # i289: 項目パネル表示モード変更。ItemPanel 側で処理するため pass。
@@ -617,8 +615,6 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._apply_combo_style(self._tdir_combo, design)
         self._apply_combo_style(self._sdir_combo, design)
         self._apply_combo_style(self._ptr_combo, design)
-        self._apply_spin_btn_style(design)
-
         # パターンセクション
         self._apply_combo_style(self._pattern_combo, design)
         pat_btn_style = (
@@ -662,22 +658,12 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         sb_style = self._dark_spinbox_style(design)
         cb_style = self._dark_checkbox_style(design)
 
-        # スピン時間
+        # スピン時間ラベル
         self._dur_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dur_spin.setStyleSheet(sb_style)
-
-        # スピンモード / ダブル・トリプル時間
-        self._mode_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._apply_combo_style(self._mode_combo, design)
-        self._dbl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._dbl_spin.setStyleSheet(sb_style)
-        self._tpl_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._tpl_spin.setStyleSheet(sb_style)
 
         # ラベル
         self._preset_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._theme_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._apply_combo_style(self._theme_combo, design)
+        # v0.6.1: テーマは管理パネルへ移動済み
         self._text_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._prof_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._tdir_lbl.setStyleSheet(f"color: {design.text_sub};")
@@ -686,11 +672,9 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._anim_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._anim_spin.setStyleSheet(sb_style)
         self._donut_cb.setStyleSheet(cb_style)
-        self._window_transparent_cb.setStyleSheet(cb_style)
-        self._roulette_transparent_cb.setStyleSheet(cb_style)
-        self._aot_cb.setStyleSheet(cb_style)
-        self._instance_label_cb.setStyleSheet(cb_style)
-        self._float_panel_cb.setStyleSheet(cb_style)
+        # v0.6.1: ウィンドウ透過/ルーレット透過/最前面/インスタンス番号は管理パネルへ移動済み
+        if hasattr(self, "_float_panel_cb"):
+            self._float_panel_cb.setStyleSheet(cb_style)
         self._sound_tick_cb.setStyleSheet(cb_style)
         self._sound_result_cb.setStyleSheet(cb_style)
         slider_style = (
@@ -702,12 +686,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             f"  border-radius: 6px;"
             f"}}"
         )
-        self._tick_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._tick_vol_slider.setStyleSheet(slider_style)
-        self._tick_vol_val.setStyleSheet(f"color: {design.text_sub};")
-        self._win_vol_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._win_vol_slider.setStyleSheet(slider_style)
-        self._win_vol_val.setStyleSheet(f"color: {design.text_sub};")
+        # v0.6.1: 音量スライダー類は管理パネルへ移動済み
         self._tick_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._apply_combo_style(self._tick_pat_combo, design)
         self._win_pat_lbl.setStyleSheet(f"color: {design.text_sub};")
@@ -730,9 +709,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._log_on_top_cb.setStyleSheet(cb_style)
         if hasattr(self, "_log_all_patterns_cb"):
             self._log_all_patterns_cb.setStyleSheet(cb_style)
-        self._confirm_reset_cb.setStyleSheet(cb_style)
-        if hasattr(self, "_confirm_item_delete_cb"):
-            self._confirm_item_delete_cb.setStyleSheet(cb_style)
+        # v0.6.1: リセット確認・項目削除確認は管理パネルへ移動済み
         _log_btn_style = (
             f"QPushButton {{"
             f"  background-color: {design.separator}; color: {design.text};"
@@ -775,9 +752,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
         self._macro_hold_cb.setStyleSheet(cb_style)
         self._macro_sec_lbl.setStyleSheet(f"color: {design.text_sub};")
         self._macro_sec_spin.setStyleSheet(sb_style)
-        self._replay_indicator_cb.setStyleSheet(cb_style)
-        self._replay_max_lbl.setStyleSheet(f"color: {design.text_sub};")
-        self._replay_max_spin.setStyleSheet(sb_style)
+        # v0.6.1: リプレイ保存上限・再生中表示は管理パネルへ移動済み
         self._replay_count_lbl.setStyleSheet(f"color: {design.text_sub};")
 
         # 設定全体 export / import ボタン (i356)
@@ -799,9 +774,7 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             f"  border-bottom: 1px solid {design.separator};"
             f"}}"
         )
-        self._window_transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._roulette_transparent_cb.setStyleSheet(f"color: {design.text};")
-        self._aot_cb.setStyleSheet(f"color: {design.text};")
+        # v0.6.1: ウィンドウ透過/ルーレット透過/最前面は管理パネルへ移動済み
 
         # 検索・フィルター
         self._search_edit.setStyleSheet(

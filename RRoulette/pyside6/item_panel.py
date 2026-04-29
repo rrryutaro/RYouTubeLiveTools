@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 )
 
 from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits, validate_item_limits
-from panel_widgets import _PanelGrip, _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree
+from panel_widgets import (
+    _PanelGrip, _PanelDragBar, install_panel_context_menu,
+    apply_transparent_to_widget_tree,
+    NoWheelSlider, NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
+)
+from settings_panel_items import _ProbModeRadioGroup
 from settings_panel import _calc_item_probs, _populate_weight_combo
 
 from design_models import DesignSettings
@@ -115,11 +120,13 @@ class _SimpleItemDelegate(QStyledItemDelegate):
     背景・選択・チェックボックスは Qt 標準描画を再利用し、その上にテキストを追加する。
     """
 
-    PROB_ROLE = Qt.ItemDataRole.UserRole        # str: "12.3%" or ""
-    WIN_ROLE  = Qt.ItemDataRole.UserRole + 1   # str: "3" or ""
+    PROB_ROLE   = Qt.ItemDataRole.UserRole        # str: "12.3%" or ""
+    WIN_ROLE    = Qt.ItemDataRole.UserRole + 1   # str: "3" or "", None=非表示
+    BADGES_ROLE = Qt.ItemDataRole.UserRole + 2   # str: "固10% ÷2 ⭐" etc., None=非表示
 
     _PROB_W   = 46   # 確率列幅 (px) — "100.0%" 相当
     _WIN_W    = 24   # 当選回数列幅 (px) — 数字 1〜3 桁
+    _BADGE_W  = 90   # バッジ列幅 (px) — "固99% ÷10 ❌" 相当
     _COL_GAP  = 4    # 列間余白 (px)
     _R_MARGIN = 4    # 右端余白 (px)
 
@@ -127,9 +134,11 @@ class _SimpleItemDelegate(QStyledItemDelegate):
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
 
-        prob_str = index.data(self.PROB_ROLE) or ""
+        prob_str  = index.data(self.PROB_ROLE) or ""
         # win_str: None = 当選回数列非表示, "" = 表示だが 0 件（空欄で幅確保）, "N" = 値あり
-        win_str  = index.data(self.WIN_ROLE)
+        win_str   = index.data(self.WIN_ROLE)
+        # badges_str: None = バッジ列非表示, "" = 表示だが内容なし（幅確保）, "固10% ⭐" 等
+        badges_str = index.data(self.BADGES_ROLE)
 
         # 右列の総幅を計算
         # win_str is not None のとき列幅を常に確保する（0 件でも確率列がずれない）
@@ -138,6 +147,8 @@ class _SimpleItemDelegate(QStyledItemDelegate):
             right_w += self._WIN_W + self._COL_GAP
         if prob_str:
             right_w += self._PROB_W + self._COL_GAP
+        if badges_str is not None:
+            right_w += self._BADGE_W + self._COL_GAP
 
         # text を空にして標準描画（背景・選択・チェックボックス・focus rect のみ）
         opt.text = ""
@@ -185,6 +196,13 @@ class _SimpleItemDelegate(QStyledItemDelegate):
             painter.drawText(
                 prob_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, prob_str
             )
+            right_x -= self._PROB_W + self._COL_GAP
+        if badges_str is not None:
+            badge_rect = QRect(right_x - self._BADGE_W, opt.rect.top(), self._BADGE_W, opt.rect.height())
+            if badges_str:
+                painter.drawText(
+                    badge_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, badges_str
+                )
 
         painter.restore()
 
@@ -326,6 +344,20 @@ class ItemPanel(QFrame):
         )
 
         settings = api.settings
+
+        # バッジ表示アイコン（show_item_prob の左側に配置）
+        self._show_badges_btn = QPushButton("バ")
+        self._show_badges_btn.setFont(QFont("Meiryo", 8))
+        self._show_badges_btn.setCheckable(True)
+        self._show_badges_btn.setChecked(getattr(settings, "show_item_extra_badges", True))
+        self._show_badges_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._show_badges_btn.setStyleSheet(icon_btn_style)
+        self._show_badges_btn.toggled.connect(
+            lambda v: self._api.setting_changed.emit("show_item_extra_badges", v)
+        )
+        self._register_hint(self._show_badges_btn,
+                            "バッジ表示: 確率モード・分割・役割バッジを表示／非表示")
+        title_layout.addWidget(self._show_badges_btn)
 
         # 確率表示アイコン
         self._show_prob_btn = QPushButton("確")
@@ -620,6 +652,12 @@ class ItemPanel(QFrame):
             if self._display_mode == 1:
                 self._simple_win_disp_lbl.setVisible(bool(value))
                 self._update_simple_labels()
+        elif key == "show_item_extra_badges":
+            self._show_badges_btn.blockSignals(True)
+            self._show_badges_btn.setChecked(bool(value))
+            self._show_badges_btn.blockSignals(False)
+            if self._display_mode == 1:
+                self._update_simple_labels()
         elif key == "item_panel_display_mode":
             self.set_display_mode(int(value))
 
@@ -866,12 +904,24 @@ class ItemPanel(QFrame):
         prob_row.setContentsMargins(20, 0, 0, 0)
         prob_row.setSpacing(4)
 
-        self._simple_mode_combo = QComboBox()
-        self._simple_mode_combo.setFont(QFont("Meiryo", 7))
-        self._simple_mode_combo.setStyleSheet(combo_style)
-        self._simple_mode_combo.addItems(self._PROB_MODE_LABELS)
+        # v0.6.1: 確率モード選択をラジオボタン群へ（OBS でドロップダウンが映らない問題回避）
+        mode_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 4px; font-family: Meiryo; font-size: 7pt;"
+            f"  min-width: 40px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+        _simple_mode_btns: list = []
+        self._simple_mode_combo = _ProbModeRadioGroup(
+            self._PROB_MODE_LABELS, mode_btn_style, prob_row, _simple_mode_btns,
+        )
         self._simple_mode_combo.currentIndexChanged.connect(self._on_simple_mode_changed)
-        prob_row.addWidget(self._simple_mode_combo)
 
         # 値ウィジェット (QStackedWidget: page0=空, page1=重み係数, page2=固定確率)
         self._simple_value_stack = QStackedWidget(self._simple_edit_frame)  # i068: 親なし HWND フラッシュ防止
@@ -880,14 +930,14 @@ class ItemPanel(QFrame):
         self._simple_value_stack.addWidget(empty_lbl)  # page 0
 
         n = len(self._api.entries) or 1
-        self._simple_weight_combo = QComboBox()
+        self._simple_weight_combo = NoWheelComboBox()
         self._simple_weight_combo.setFont(QFont("Meiryo", 7))
         self._simple_weight_combo.setStyleSheet(combo_style)
         _populate_weight_combo(self._simple_weight_combo, n)
         self._simple_weight_combo.currentIndexChanged.connect(self._on_simple_weight_changed)
         self._simple_value_stack.addWidget(self._simple_weight_combo)  # page 1
 
-        self._simple_fixed_spin = QDoubleSpinBox()
+        self._simple_fixed_spin = NoWheelDoubleSpinBox()
         self._simple_fixed_spin.setFont(QFont("Meiryo", 7))
         self._simple_fixed_spin.setRange(0.1, 99.9)
         self._simple_fixed_spin.setSingleStep(0.5)
@@ -901,7 +951,7 @@ class ItemPanel(QFrame):
             f"  padding: 1px 4px; font-size: 8pt;"
             f"}}"
         )
-        self._simple_fixed_spin.valueChanged.connect(self._on_simple_fixed_changed)  # i307: editingFinished → valueChanged で即時反映
+        self._simple_fixed_spin.valueChanged.connect(self._on_simple_fixed_changed)
         self._simple_value_stack.addWidget(self._simple_fixed_spin)  # page 2
 
         prob_row.addWidget(self._simple_value_stack, stretch=1)
@@ -911,7 +961,7 @@ class ItemPanel(QFrame):
         split_lbl.setStyleSheet(f"color: {design.text_sub};")
         prob_row.addWidget(split_lbl)
 
-        self._simple_split_spin = QSpinBox()
+        self._simple_split_spin = NoWheelSpinBox()
         self._simple_split_spin.setFont(QFont("Meiryo", 7))
         self._simple_split_spin.setRange(1, 10)
         self._simple_split_spin.setStyleSheet(
@@ -926,6 +976,47 @@ class ItemPanel(QFrame):
         prob_row.addWidget(self._simple_split_spin)
 
         edit_v.addLayout(prob_row)
+
+        # v0.6.1: 役割（当てたい / 当てたくない）選択ラジオボタン
+        role_row = QHBoxLayout()
+        role_row.setContentsMargins(20, 0, 0, 0)
+        role_row.setSpacing(4)
+        role_lbl = QLabel("役割:")
+        role_lbl.setFont(QFont("Meiryo", 7))
+        role_lbl.setStyleSheet(f"color: {design.text_sub};")
+        role_row.addWidget(role_lbl)
+
+        role_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: 1px solid {design.separator}; border-radius: 3px;"
+            f"  padding: 1px 8px; font-family: Meiryo; font-size: 7pt;"
+            f"  min-width: 60px;"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {design.accent}; color: white;"
+            f"  border: 1px solid {design.accent};"
+            f"}}"
+        )
+        self._simple_role_btns: dict = {}
+        for role_label, role_val, tooltip in (
+            ("通常",          None,     "通常項目"),
+            ("当てたい(当)",   "target", "当てたい項目（特殊演出のターゲット）"),
+            ("当てたくない(避)", "avoid", "当てたくない項目（特殊演出のアボイド）"),
+        ):
+            rb = QPushButton(role_label)
+            rb.setCheckable(True)
+            rb.setStyleSheet(role_btn_style)
+            rb.setCursor(Qt.CursorShape.PointingHandCursor)
+            rb.setToolTip(tooltip)
+            rb.clicked.connect(
+                lambda _chk=False, v=role_val: self._on_simple_role_clicked(v)
+            )
+            role_row.addWidget(rb)
+            self._simple_role_btns[role_val] = rb
+        role_row.addStretch(1)
+        self._simple_role_btns[None].setChecked(True)
+        edit_v.addLayout(role_row)
 
         self._simple_edit_frame.setVisible(False)
         page_v.addWidget(self._simple_edit_frame)
@@ -963,8 +1054,10 @@ class ItemPanel(QFrame):
             win_count = self._simple_win_counts.get(entry.text, 0)
             # None = 列非表示, "" = 表示だが 0 件（幅確保・テキスト空）, "N" = 値あり
             win_str = (str(win_count) if win_count > 0 else "") if s.show_item_win_count else None
+            badges_str = self._make_badges_str(entry, getattr(s, "show_item_extra_badges", True))
             item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
             item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
+            item.setData(_SimpleItemDelegate.BADGES_ROLE, badges_str)
             self._simple_list.addItem(item)
 
         # 選択復元
@@ -1005,8 +1098,10 @@ class ItemPanel(QFrame):
             win_count = self._simple_win_counts.get(entry.text, 0)
             # None = 列非表示, "" = 表示だが 0 件（幅確保・テキスト空）, "N" = 値あり
             win_str = (str(win_count) if win_count > 0 else "") if s.show_item_win_count else None
+            badges_str = self._make_badges_str(entry, getattr(s, "show_item_extra_badges", True))
             item.setData(_SimpleItemDelegate.PROB_ROLE, prob_str)
             item.setData(_SimpleItemDelegate.WIN_ROLE, win_str)
+            item.setData(_SimpleItemDelegate.BADGES_ROLE, badges_str)
             item.setCheckState(
                 Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
             )
@@ -1084,6 +1179,14 @@ class ItemPanel(QFrame):
 
         self._simple_value_stack.setCurrentIndex(mode_idx)
         self._simple_split_spin.setValue(entry.split_count if entry.split_count else 1)
+
+        # v0.6.1: 役割（special_role）をラジオボタンに反映
+        if hasattr(self, "_simple_role_btns"):
+            cur_role = getattr(entry, "special_role", None)
+            for v, btn in self._simple_role_btns.items():
+                btn.blockSignals(True)
+                btn.setChecked(v == cur_role)
+                btn.blockSignals(False)
 
         for w in (self._simple_name_edit, self._simple_enabled_cb,
                   self._simple_mode_combo, self._simple_weight_combo,
@@ -1183,6 +1286,16 @@ class ItemPanel(QFrame):
         """分割数変更。"""
         self._apply_simple_entry_change()
 
+    def _on_simple_role_clicked(self, value):
+        """v0.6.1: 役割ラジオボタン押下: 排他選択 + 通知。"""
+        if not hasattr(self, "_simple_role_btns"):
+            return
+        for v, btn in self._simple_role_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(v == value)
+            btn.blockSignals(False)
+        self._apply_simple_entry_change()
+
     def _apply_simple_entry_change(self):
         """編集エリアの値を _item_entries へ反映して通知する。"""
         idx = self._simple_selected_idx
@@ -1202,6 +1315,13 @@ class ItemPanel(QFrame):
         else:  # "fixed"
             entry.prob_value = self._simple_fixed_spin.value()
         entry.split_count = self._simple_split_spin.value()
+
+        # v0.6.1: special_role を役割ラジオボタンから収集
+        if hasattr(self, "_simple_role_btns"):
+            for v, btn in self._simple_role_btns.items():
+                if btn.isChecked():
+                    entry.special_role = v
+                    break
 
         # フルリビルドを防ぎつつ通知（確率再計算 + ルーレット反映）
         self._skip_simple_rebuild = True
@@ -1425,6 +1545,30 @@ class ItemPanel(QFrame):
     # ----------------------------------------------------------------
 
     @staticmethod
+    def _make_badges_str(entry, show: bool):
+        """バッジ列用文字列を生成する。
+
+        show=False → None（列非表示）
+        show=True  → "" (内容なし、幅確保) or "固10% ÷2 ⭐" 等
+        """
+        if not show:
+            return None
+        parts = []
+        if entry.prob_mode == "fixed" and entry.prob_value is not None:
+            parts.append(f"固{entry.prob_value:.0f}%")
+        elif entry.prob_mode == "weight" and entry.prob_value is not None:
+            parts.append(f"×{entry.prob_value:g}")
+        sc = getattr(entry, "split_count", 1) or 1
+        if sc > 1:
+            parts.append(f"÷{sc}")
+        role = getattr(entry, "special_role", None)
+        if role == "target":
+            parts.append("⭐")
+        elif role == "avoid":
+            parts.append("❌")
+        return " ".join(parts)
+
+    @staticmethod
     def _apply_scroll_style(scroll: QScrollArea, design: DesignSettings):
         scroll.setStyleSheet(
             f"QScrollArea {{ border: none; background-color: {design.panel}; }}"
@@ -1493,7 +1637,7 @@ class ItemPanel(QFrame):
             f"QPushButton:hover {{ background-color: {design.accent}; }}"
             f"QPushButton:checked {{ background-color: {design.accent}; }}"
         )
-        for btn in (self._show_prob_btn, self._show_win_btn,
+        for btn in (self._show_badges_btn, self._show_prob_btn, self._show_win_btn,
                     self._text_edit_btn, self._mode_btn):
             btn.setStyleSheet(icon_btn_style)
         # シンプルリストを再構築してデザイン反映
