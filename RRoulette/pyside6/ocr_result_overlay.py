@@ -448,10 +448,10 @@ class OcrResultOverlay(QWidget):
         scroll = QScrollArea(page)
         scroll.setWidgetResizable(False)
         scroll.setMinimumHeight(150)
-        scroll.setMaximumHeight(240)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         scroll.setWidget(self._crop_view)
         scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {self._design.bg}; }}")
-        layout.addWidget(scroll, stretch=0)
+        layout.addWidget(scroll, stretch=1)
 
         self._display_zoom_slider = self._add_slider(layout, "表示倍率", 25, 300, 100, "%")
         self._scale_slider = self._add_slider(layout, "拡大", 50, 300, 100, "%")

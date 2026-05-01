@@ -69,6 +69,8 @@ _ACTION_COLORS = {
     "unknown":    "#888888",
 }
 
+_MANUAL_REASON = "右クリックメニューで手動判定"
+
 
 class LinkPanel(QFrame):
     """連携メッセージパネル (Phase 2: 受信・分析・実行)。
@@ -621,25 +623,7 @@ class LinkPanel(QFrame):
             return
 
         parsed = analyze_link_message(text)
-        # 結果を行に反映
-        text_item.setData(Qt.ItemDataRole.UserRole, parsed)
-
-        action_lbl = action_type_label(parsed.action_type)
-        cand_lbl   = _candidate_text(parsed)
-        color      = _ACTION_COLORS.get(parsed.action_type, "#888888")
-
-        action_item = self._table.item(row, _COL_ACTION)
-        if action_item:
-            action_item.setText(action_lbl)
-            action_item.setForeground(QColor(color))
-
-        cand_item = self._table.item(row, _COL_CANDIDATE)
-        if cand_item:
-            cand_item.setText(cand_lbl)
-
-        # ボタン状態更新
-        can_exec = parsed.action_type != "unknown"
-        self._btn_execute.setEnabled(can_exec)
+        self._apply_parsed_to_row(row, parsed)
 
     def _on_execute_selected(self) -> None:
         """選択行の解析結果を手動実行する。"""
@@ -655,7 +639,7 @@ class LinkPanel(QFrame):
             if text_item is None:
                 return
             parsed = analyze_link_message(text_item.text())
-            text_item.setData(Qt.ItemDataRole.UserRole, parsed)
+            self._apply_parsed_to_row(row, parsed)
 
         if parsed.action_type == "spin":
             # i114: 行ステータス更新は MainWindow 側（キュー管理）に委譲
@@ -718,19 +702,105 @@ class LinkPanel(QFrame):
         self._update_count_label()
 
     def _on_table_context_menu(self, pos) -> None:
-        """テーブルの右クリックメニューを表示する（削除）。"""
+        """テーブルの右クリックメニューを表示する。"""
         row = self._table.rowAt(pos.y())
         if row < 0:
             return
+        self._table.selectRow(row)
         menu = QMenu(self)
+        verdict_menu = menu.addMenu("判定を設定")
+        act_set_spin = verdict_menu.addAction("spin")
+        act_set_ticket = verdict_menu.addAction("チケット追加")
+        act_set_unknown = verdict_menu.addAction("不明")
+        menu.addSeparator()
+        act_reanalyze = menu.addAction("再解析")
         act_delete = menu.addAction("削除")
         action = menu.exec(self._table.viewport().mapToGlobal(pos))
-        if action == act_delete:
+        if action == act_set_spin:
+            self._set_manual_verdict(row, "spin")
+        elif action == act_set_ticket:
+            self._set_manual_verdict(row, "ticket_add")
+        elif action == act_set_unknown:
+            self._set_manual_verdict(row, "unknown")
+        elif action == act_reanalyze:
+            self._reanalyze_row(row)
+        elif action == act_delete:
             self._table.removeRow(row)
             self._btn_delete.setEnabled(False)
             self._btn_analyze.setEnabled(False)
             self._btn_execute.setEnabled(False)
             self._update_count_label()
+
+    def _reanalyze_row(self, row: int) -> None:
+        """指定行を再解析する。コンテキストメニュー用。"""
+        text_item = self._table.item(row, _COL_TEXT)
+        if text_item is None:
+            return
+        text = text_item.text()
+        if not text:
+            return
+        self._apply_parsed_to_row(row, analyze_link_message(text))
+
+    def _set_manual_verdict(self, row: int, action_type: str) -> None:
+        """右クリックメニューから行の判定を手動設定する。"""
+        text_item = self._table.item(row, _COL_TEXT)
+        if text_item is None:
+            return
+        raw_text = text_item.text()
+        if action_type == "spin":
+            parsed = ParsedLinkAction(
+                action_type="spin",
+                confidence=1.0,
+                reason=_MANUAL_REASON,
+                raw_text=raw_text,
+                needs_review=False,
+            )
+        elif action_type == "ticket_add":
+            parsed = ParsedLinkAction(
+                action_type="ticket_add",
+                confidence=1.0,
+                reason=_MANUAL_REASON,
+                raw_text=raw_text,
+                ticket_name="連携チケット",
+                ticket_description=f"連携メッセージから手動作成: {raw_text}",
+                effect_type=EFFECT_NONE,
+                effect_params={},
+                needs_review=False,
+            )
+        else:
+            parsed = ParsedLinkAction(
+                action_type="unknown",
+                confidence=0.0,
+                reason=_MANUAL_REASON,
+                raw_text=raw_text,
+            )
+        self._apply_parsed_to_row(row, parsed)
+
+    def _apply_parsed_to_row(self, row: int, parsed: ParsedLinkAction) -> None:
+        """解析/手動判定の結果をテーブル行とボタン状態へ反映する。"""
+        text_item = self._table.item(row, _COL_TEXT)
+        if text_item is None:
+            return
+        text_item.setData(Qt.ItemDataRole.UserRole, parsed)
+
+        action_lbl = action_type_label(parsed.action_type)
+        cand_lbl = _candidate_text(parsed)
+        color = _ACTION_COLORS.get(parsed.action_type, "#888888")
+
+        action_item = self._table.item(row, _COL_ACTION)
+        if action_item:
+            action_item.setText(action_lbl)
+            action_item.setForeground(QColor(color))
+
+        cand_item = self._table.item(row, _COL_CANDIDATE)
+        if cand_item:
+            cand_item.setText(cand_lbl)
+
+        self._btn_analyze.setEnabled(True)
+        self._btn_delete.setEnabled(True)
+        self._btn_execute.setEnabled(parsed.action_type != "unknown")
+        if self._filter_mode != "すべて":
+            self._table.setRowHidden(row, not self._row_matches_filter(row, self._filter_mode))
 
     def _on_bulk_apply(self) -> None:
         """表示中のメッセージを一括適用する。
