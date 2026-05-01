@@ -645,6 +645,8 @@ class RouletteLifecycleMixin:
             # 透過 / 最前面
             "window_transparent", "roulette_transparent",
             "panels_transparent", "always_on_top",
+            # OCR
+            "ocr_capture_method",
             # テーマ / 動作
             "theme_mode", "confirm_item_delete",
             "float_win_show_instance", "confirm_reset",
@@ -670,6 +672,7 @@ class RouletteLifecycleMixin:
             "window_transparent", "roulette_transparent",
             "panels_transparent", "always_on_top",
         ],
+        "ocr": ["ocr_capture_method"],
         "theme_action": [
             "theme_mode", "confirm_item_delete",
             "float_win_show_instance", "confirm_reset",
@@ -693,6 +696,7 @@ class RouletteLifecycleMixin:
 
     _APP_SUBGROUP_LABELS = {
         "window_display": "ウィンドウ表示",
+        "ocr":            "OCR",
         "theme_action":   "テーマ・動作",
         "volume":         "音量",
         "replay":         "リプレイ",

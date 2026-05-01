@@ -170,8 +170,7 @@ class SettingsDispatchMixin:
         elif key == "panels_transparent":
             self._apply_panels_transparent(value)
         elif key == "always_on_top":
-            if value != self._settings.always_on_top:
-                self._toggle_always_on_top()
+            self._apply_always_on_top(value)
         elif key == "arrangement_direction":
             # 配置方向変更: config 更新 → セグメント再構築
             self._config["arrangement_direction"] = value
@@ -226,7 +225,8 @@ class SettingsDispatchMixin:
         _APP_KEYS = (
             "window_transparent", "roulette_transparent", "panels_transparent",
             "always_on_top", "theme_mode", "confirm_item_delete",
-            "float_win_show_instance", "tick_volume", "win_volume",
+            "float_win_show_instance", "ocr_capture_method",
+            "tick_volume", "win_volume",
             "effect_volume", "replay_max_count", "replay_show_indicator",
             "replay_record_effects", "confirm_reset",
         )

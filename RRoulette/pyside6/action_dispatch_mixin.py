@@ -19,6 +19,7 @@ from roulette_actions import (
     AddRoulette, RemoveRoulette, SetActiveRoulette,
     SpinRoulette, UpdateItemEntries, UpdateSettings,
 )
+from app_constants import APP_VERSION
 
 
 class ActionDispatchMixin:
@@ -127,9 +128,9 @@ class ActionDispatchMixin:
         """基本ウィンドウタイトルを返す。
 
         i462: 複数起動を廃止したためインスタンス番号は不要。
-        常に "RRoulette" を返す。
+        開発中はビルド番号付きのバージョンも含める。
         """
-        return "RRoulette"
+        return f"RRoulette v{APP_VERSION}"
 
     def _update_title_active_id(self):
         """ウィンドウタイトルに recording / playback 状態のみを反映する。

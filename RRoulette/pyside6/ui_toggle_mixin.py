@@ -16,6 +16,8 @@ i448: main_window.py から分離。
   class MainWindow(UIToggleMixin, PackageIOMixin, SettingsIOMixin, ..., QMainWindow)
 """
 
+import ctypes
+
 from PySide6.QtCore import Qt, QPoint, QVariantAnimation
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QApplication, QWidget
@@ -329,14 +331,19 @@ class UIToggleMixin:
         v0.6.1: setWindowFlags 後の show だけでは Windows で即時反映されない
         ことがあるため、raise_() + activateWindow() で確実に前面化する。
         """
-        self._settings.always_on_top = not self._settings.always_on_top
+        self._apply_always_on_top(not self._settings.always_on_top)
+
+    def _apply_always_on_top(self, enabled: bool):
+        """常に最前面の設定値をメインウィンドウへ即時反映する。"""
+        self._settings.always_on_top = bool(enabled)
         was_visible = self.isVisible()
         self._apply_window_flags()
         if was_visible:
             self.show()
-            # 即時反映: WindowStaysOnTopHint 付与時に最前面化を確実にする
-            self.raise_()
-            self.activateWindow()
+            self._apply_native_topmost(self._settings.always_on_top)
+            if self._settings.always_on_top:
+                self.raise_()
+                self.activateWindow()
         # i471: floating 中の全パネルにも always_on_top を同期する
         self._reapply_floating_panel_flags()
         # v0.6.1: 管理パネル側のチェックボックスを同期
@@ -347,6 +354,28 @@ class UIToggleMixin:
                 "always_on_top", self._settings.always_on_top
             )
         self._save_config()
+
+    def _apply_native_topmost(self, enabled: bool, widget=None):
+        """Apply topmost state immediately on Windows."""
+        try:
+            target = widget if widget is not None else self
+            hwnd = int(target.winId())
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            ctypes.windll.user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST if enabled else HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        except Exception:
+            pass
 
     def _floating_panel_flags(self):
         """独立化パネルに適用する windowFlags を返す。always_on_top と同期する。
@@ -373,6 +402,7 @@ class UIToggleMixin:
                 panel.setWindowFlags(flags)
                 if was_vis:
                     panel.show()
+                    self._apply_native_topmost(self._settings.always_on_top, panel)
                     panel.raise_()
         # 設定パネルは _settings_panel_visible で可視状態を管理する
         sp = self._settings_panel
@@ -382,6 +412,7 @@ class UIToggleMixin:
             sp.setWindowFlags(flags)
             if was_vis:
                 sp.show()
+                self._apply_native_topmost(self._settings.always_on_top, sp)
                 sp.raise_()
 
     def _toggle_grip_visible(self):

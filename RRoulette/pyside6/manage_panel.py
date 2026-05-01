@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QStackedWidget, QComboBox, QSlider,
 )
 
-from app_constants import VERSION
+from app_constants import APP_VERSION
 from design_models import DesignSettings
 from panel_widgets import (
     _PanelDragBar, install_panel_context_menu, apply_transparent_to_widget_tree,
@@ -719,7 +719,7 @@ class ManagePanel(QFrame):
         body_layout.addSpacing(4)
 
         # i467: バージョン表示（管理パネル下部）
-        _ver_lbl = QLabel(f"RRoulette  v{VERSION}")
+        _ver_lbl = QLabel(f"RRoulette  v{APP_VERSION}")
         _ver_lbl.setFont(QFont("Meiryo", 8))
         _ver_lbl.setStyleSheet(f"color: {design.text_sub};")
         _ver_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -914,7 +914,30 @@ class ManagePanel(QFrame):
         self._mp_aot_cb.toggled.connect(lambda v: emit("always_on_top", v))
         win_layout.addWidget(self._mp_aot_cb)
 
-        # === サブグループ 2: テーマ・動作 ===
+        # === サブグループ 2: OCR ===
+        ocr_layout = _make_subgroup("OCR", "ocr", expanded=False)
+        ocr_row = QHBoxLayout()
+        ocr_row.setSpacing(4)
+        ocr_lbl = QLabel("キャプチャ:")
+        ocr_lbl.setFont(QFont("Meiryo", 8))
+        ocr_lbl.setStyleSheet(lbl_style)
+        ocr_row.addWidget(ocr_lbl)
+        self._mp_ocr_capture_combo = NoWheelComboBox()
+        self._mp_ocr_capture_combo.setFont(QFont("Meiryo", 8))
+        self._mp_ocr_capture_combo.setStyleSheet(combo_style)
+        self._mp_ocr_capture_combo.addItems(["標準", "Windows GDI"])
+        _ocr_values = ["qt", "gdi"]
+        _ocr_current = _g("ocr_capture_method", "qt")
+        self._mp_ocr_capture_combo.setCurrentIndex(
+            _ocr_values.index(_ocr_current) if _ocr_current in _ocr_values else 0
+        )
+        self._mp_ocr_capture_combo.currentIndexChanged.connect(
+            lambda i: emit("ocr_capture_method", _ocr_values[i] if i < len(_ocr_values) else "qt")
+        )
+        ocr_row.addWidget(self._mp_ocr_capture_combo, stretch=1)
+        ocr_layout.addLayout(ocr_row)
+
+        # === サブグループ 3: テーマ・動作 ===
         theme_layout = _make_subgroup("テーマ・動作", "theme_action", expanded=False)
         theme_row = QHBoxLayout()
         theme_row.setSpacing(4)
@@ -1073,6 +1096,11 @@ class ManagePanel(QFrame):
             self._mp_theme_combo.blockSignals(True)
             self._mp_theme_combo.setCurrentIndex(_theme_idx.get(value, 0))
             self._mp_theme_combo.blockSignals(False)
+        elif key == "ocr_capture_method":
+            _ocr_idx = {"qt": 0, "gdi": 1}
+            self._mp_ocr_capture_combo.blockSignals(True)
+            self._mp_ocr_capture_combo.setCurrentIndex(_ocr_idx.get(value, 0))
+            self._mp_ocr_capture_combo.blockSignals(False)
         elif key in ("tick_volume", "win_volume", "effect_volume"):
             sl_attr = {
                 "tick_volume":   "_mp_tick_vol_slider",

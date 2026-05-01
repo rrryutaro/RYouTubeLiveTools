@@ -31,6 +31,8 @@ _NAME_BODY_GAP = 2      # 2行モード: 名前行と本文行の間隔 (px)
 _BG_BASE       = QColor("#0D0D1A")   # ベース背景色
 _SEP_COLOR     = QColor("#1A1A30")   # 行区切り線
 _SEL_COLOR     = QColor("#2A3A5A")   # 選択行ハイライト色
+_CURSOR_COLOR  = QColor("#3C4C72")   # 現在行ハイライト色
+_RR_MARK_W     = 16                  # RR送信状態マーカー幅
 
 
 # ─── 行データ ─────────────────────────────────────────────────────────────────
@@ -46,7 +48,10 @@ class _RowData:
     fg_color: 前景色
     cached_h: 計算済み行高（-1=未計算）
     """
-    __slots__ = ('header', 'body', 'author', 'bg_color', 'fg_color', 'cached_h', 'profile_url')
+    __slots__ = (
+        'header', 'body', 'author', 'bg_color', 'fg_color', 'cached_h',
+        'profile_url', 'rr_marker', 'rr_marker_color',
+    )
 
     def __init__(self, header: str, body: str,
                  author, bg_color, fg_color: QColor, profile_url: str = ""):
@@ -57,6 +62,8 @@ class _RowData:
         self.fg_color    = fg_color
         self.cached_h    = -1           # 未計算
         self.profile_url = profile_url  # プロフィール画像 URL（空文字 = なし）
+        self.rr_marker = ""
+        self.rr_marker_color = QColor("#666688")
 
 
 # ─── CommentView ──────────────────────────────────────────────────────────────
@@ -77,6 +84,7 @@ class CommentView(QAbstractScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # viewport の自動塗りつぶしを無効化（自前で全ピクセルを塗る）
         self.viewport().setAutoFillBackground(False)
@@ -102,8 +110,13 @@ class CommentView(QAbstractScrollArea):
 
         # 行選択（None=未選択、int=選択中行インデックス）
         self._selected_row: int | None = None
+        self._selected_rows: set[int] = set()
+        self._selection_anchor: int | None = None
+        self._rr_marker_column_visible = False
         # 選択行変更コールバック（外部からセット可能）: f(index: int | None) -> None
         self.on_row_selected = None
+        self.on_send_requested = None
+        self.on_context_menu_requested = None
 
         # プロフィール画像キャッシュ（URL → QPixmap または None=ロード済み失敗/読込中）
         self._icon_pixmap_cache: dict = {}
@@ -142,6 +155,15 @@ class CommentView(QAbstractScrollArea):
         # 最大件数を超えたら先頭から削除（残行の cached_h は有効のまま）
         while len(self._rows) > self.MAX_ROWS:
             self._rows.pop(0)
+            self._selected_rows = {i - 1 for i in self._selected_rows if i > 0}
+            self._selected_row = (
+                self._selected_row - 1
+                if self._selected_row is not None and self._selected_row > 0 else None
+            )
+            self._selection_anchor = (
+                self._selection_anchor - 1
+                if self._selection_anchor is not None and self._selection_anchor > 0 else None
+            )
 
         self._update_scrollbar()
         if self._auto_scroll:
@@ -170,6 +192,15 @@ class CommentView(QAbstractScrollArea):
             self._update_scrollbar()
             self.viewport().update()
 
+    def set_rr_marker_column_visible(self, visible: bool) -> None:
+        """左端のRR送信状態マーカー列の表示/非表示を切り替える。"""
+        if self._rr_marker_column_visible == bool(visible):
+            return
+        self._rr_marker_column_visible = bool(visible)
+        self._invalidate_heights()
+        self._update_scrollbar()
+        self.viewport().update()
+
     def clear(self) -> None:
         """全コメントを消去する。"""
         self._rows.clear()
@@ -181,6 +212,14 @@ class CommentView(QAbstractScrollArea):
         if 0 <= index < len(self._rows):
             self._rows[index].header  = header
             self._rows[index].cached_h = -1
+            self.viewport().update()
+
+    def update_row_marker(self, index: int, marker: str, color: QColor | None = None) -> None:
+        """指定インデックスの左端ステータスマーカーを更新して再描画する。"""
+        if 0 <= index < len(self._rows):
+            self._rows[index].rr_marker = marker
+            if color is not None:
+                self._rows[index].rr_marker_color = color
             self.viewport().update()
 
     def scroll_to_bottom(self) -> None:
@@ -201,13 +240,64 @@ class CommentView(QAbstractScrollArea):
             return True
         if event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
                 idx = self._row_at_y(int(event.position().y()))
-                self._selected_row = idx
+                self._select_row(idx, event.modifiers())
                 self.viewport().update()
                 if self.on_row_selected is not None:
                     self.on_row_selected(idx)
+            elif event.button() == Qt.MouseButton.RightButton:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                idx = self._row_at_y(int(event.position().y()))
+                if idx is not None and idx not in self._selected_rows:
+                    self._select_row(idx, Qt.KeyboardModifier.NoModifier)
+                    self.viewport().update()
+                    if self.on_row_selected is not None:
+                        self.on_row_selected(idx)
+                if self.on_context_menu_requested is not None:
+                    self.on_context_menu_requested(idx, event.globalPosition().toPoint())
+                return True
             return False
         return super().viewportEvent(event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and (
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            if self.on_send_requested is not None:
+                self.on_send_requested()
+            event.accept()
+            return
+        if key in (
+                Qt.Key.Key_Up, Qt.Key.Key_Down,
+                Qt.Key.Key_Home, Qt.Key.Key_End,
+                Qt.Key.Key_Space):
+            if not self._rows:
+                event.accept()
+                return
+            current = self._selected_row if self._selected_row is not None else 0
+            if key == Qt.Key.Key_Up:
+                idx = max(0, current - 1)
+                self._select_row(idx, event.modifiers(), ctrl_toggles=False)
+            elif key == Qt.Key.Key_Down:
+                idx = min(len(self._rows) - 1, current + 1)
+                self._select_row(idx, event.modifiers(), ctrl_toggles=False)
+            elif key == Qt.Key.Key_Home:
+                idx = 0
+                self._select_row(idx, event.modifiers(), ctrl_toggles=False)
+            elif key == Qt.Key.Key_End:
+                idx = len(self._rows) - 1
+                self._select_row(idx, event.modifiers(), ctrl_toggles=False)
+            else:
+                idx = current
+                self._toggle_row(idx)
+            self._ensure_row_visible(idx)
+            self.viewport().update()
+            if self.on_row_selected is not None:
+                self.on_row_selected(self._selected_row)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def scrollContentsBy(self, dx, dy):
         """スクロール時に viewport を再描画する（座標変換は自前で行うため）。"""
@@ -312,10 +402,66 @@ class CommentView(QAbstractScrollArea):
         """現在選択中の行インデックス（未選択なら None）。"""
         return self._selected_row
 
+    @property
+    def selected_row_indices(self) -> list[int]:
+        """現在選択中の行インデックス一覧。"""
+        return sorted(i for i in self._selected_rows if 0 <= i < len(self._rows))
+
     def deselect(self) -> None:
         """選択を解除する。"""
         self._selected_row = None
+        self._selected_rows.clear()
+        self._selection_anchor = None
         self.viewport().update()
+
+    def _select_row(self, idx: int | None, modifiers, *, ctrl_toggles: bool = True) -> None:
+        if idx is None:
+            self._selected_row = None
+            self._selected_rows.clear()
+            self._selection_anchor = None
+            return
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            anchor = self._selection_anchor if self._selection_anchor is not None else idx
+            start, end = sorted((anchor, idx))
+            self._selected_rows = set(range(start, end + 1))
+        elif modifiers & Qt.KeyboardModifier.ControlModifier:
+            if ctrl_toggles:
+                if idx in self._selected_rows:
+                    self._selected_rows.remove(idx)
+                else:
+                    self._selected_rows.add(idx)
+            elif not self._selected_rows:
+                self._selected_rows.add(idx)
+            self._selection_anchor = idx
+        else:
+            self._selected_rows = {idx}
+            self._selection_anchor = idx
+        self._selected_row = idx
+
+    def _toggle_row(self, idx: int) -> None:
+        if idx in self._selected_rows:
+            self._selected_rows.remove(idx)
+        else:
+            self._selected_rows.add(idx)
+        self._selected_row = idx
+        self._selection_anchor = idx
+
+    def _ensure_row_visible(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._rows):
+            return
+        vp_w = self.viewport().width()
+        top = 0
+        for i, row in enumerate(self._rows):
+            h = self._compute_row_height(row, vp_w)
+            if i == idx:
+                bottom = top + h
+                sb = self.verticalScrollBar()
+                if top < sb.value():
+                    sb.setValue(top)
+                elif bottom > sb.value() + self.viewport().height():
+                    sb.setValue(bottom - self.viewport().height())
+                return
+            top += h
 
     def _update_scrollbar(self) -> None:
         vp_h  = self.viewport().height()
@@ -439,10 +585,15 @@ class CommentView(QAbstractScrollArea):
                 break
 
             # ── 行背景 ─────────────────────────────────────────────────────
-            if i == self._selected_row:
+            if i in self._selected_rows:
                 painter.fillRect(0, draw_y, vp_w, row_h, _SEL_COLOR)
+            elif i == self._selected_row:
+                painter.fillRect(0, draw_y, vp_w, row_h, _CURSOR_COLOR)
             elif row.bg_color:
                 painter.fillRect(0, draw_y, vp_w, row_h, row.bg_color)
+            if i == self._selected_row:
+                painter.setPen(QColor("#88AADD"))
+                painter.drawRect(0, draw_y, vp_w - 1, row_h - 1)
 
             # ── 行区切り線 ─────────────────────────────────────────────────
             painter.setPen(_SEP_COLOR)
@@ -450,18 +601,31 @@ class CommentView(QAbstractScrollArea):
 
             # ── アイコン ───────────────────────────────────────────────────
             icon_off = self._icon_offset(row.author)
+            marker_off = _RR_MARK_W if self._rr_marker_column_visible else 0
             if icon_off and row.author:
                 icon_y = draw_y + max(0, (row_h - _ICON_SIZE) // 2)
                 self._draw_icon(
                     painter,
-                    QRect(4, icon_y, _ICON_SIZE, _ICON_SIZE),
+                    QRect(4 + marker_off, icon_y, _ICON_SIZE, _ICON_SIZE),
                     row.author,
                     row.profile_url,
                 )
 
             # ── テキスト ───────────────────────────────────────────────────
             painter.setPen(row.fg_color)
-            text_x   = 8 + icon_off
+            if self._rr_marker_column_visible and row.rr_marker:
+                mark_font = QFont()
+                mark_font.setPointSize(max(7, self._font_size_name))
+                mark_font.setBold(True)
+                painter.setFont(mark_font)
+                painter.setPen(row.rr_marker_color)
+                painter.drawText(
+                    QRect(2, draw_y, _RR_MARK_W - 4, row_h),
+                    Qt.AlignmentFlag.AlignCenter,
+                    row.rr_marker,
+                )
+                painter.setPen(row.fg_color)
+            text_x   = 8 + marker_off + icon_off
             text_w   = vp_w - text_x - 8
             text_top = draw_y + _VPAD
 

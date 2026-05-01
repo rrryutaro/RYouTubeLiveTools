@@ -286,6 +286,8 @@ class ItemPanel(QFrame):
         self._skip_simple_rebuild: bool = False
         # テキスト編集モード開始時のスナップショット（キャンセル時ロールバック用）
         self._text_edit_snapshot: list | None = None
+        self._capture_selector = None
+        self._ocr_result_overlay = None
 
         self._transparent = False
         self.setStyleSheet(f"background-color: {design.panel};")
@@ -386,6 +388,16 @@ class ItemPanel(QFrame):
         self._register_hint(self._show_win_btn,
                             "当選回数表示: 各項目の当選回数を表示／非表示")
         title_layout.addWidget(self._show_win_btn)
+
+        # 画面OCR取り込みアイコン
+        self._capture_ocr_btn = QPushButton("取")
+        self._capture_ocr_btn.setFont(QFont("Meiryo", 8))
+        self._capture_ocr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._capture_ocr_btn.setStyleSheet(icon_btn_style)
+        self._capture_ocr_btn.clicked.connect(self._on_capture_ocr_clicked)
+        self._register_hint(self._capture_ocr_btn,
+                            "画面OCR取り込み: 範囲選択した画面テキストを読み取る")
+        title_layout.addWidget(self._capture_ocr_btn)
 
         # テキスト編集アイコン
         self._text_edit_btn = QPushButton("✎")
@@ -611,6 +623,87 @@ class ItemPanel(QFrame):
         # AppSettings 経由で永続化 + 全体反映
         self._api.setting_changed.emit("item_panel_display_mode", new_mode)
         self.set_display_mode(new_mode)
+
+    # ----------------------------------------------------------------
+    #  画面OCR取り込み
+    # ----------------------------------------------------------------
+
+    def _on_capture_ocr_clicked(self):
+        """Start a Snipping Tool-like region capture and OCR flow."""
+        self._popup_hint.hide()
+        try:
+            from screen_ocr import check_ocr_runtime
+            ok, detail = check_ocr_runtime()
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        if not ok:
+            self._show_ocr_result_overlay(
+                "OCR機能を使うには winsdk パッケージが必要です。\n"
+                "ランチャーを起動しているPython環境で、次のコマンドを実行してください。\n\n"
+                "`python -m pip install -r RRoulette\\requirements.txt`\n\n"
+                f"詳細: {detail}"
+            )
+            return
+
+        try:
+            from screen_capture_selector import ScreenCaptureSelector
+        except Exception as exc:
+            self._show_ocr_result_overlay(f"OCR取り込みを開始できませんでした:\n{exc}")
+            return
+
+        capture_method = getattr(self._api.settings, "ocr_capture_method", "qt")
+        selector = ScreenCaptureSelector(capture_method=capture_method)
+        self._capture_selector = selector
+        selector.captured.connect(self._on_capture_ocr_image)
+        selector.canceled.connect(self._on_capture_ocr_canceled)
+        selector.show()
+        selector.raise_()
+        selector.activateWindow()
+
+    def _on_capture_ocr_canceled(self):
+        self._capture_selector = None
+
+    def _on_capture_ocr_image(self, image):
+        self._capture_selector = None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            from screen_ocr import ScreenOcrError, recognize_qimage
+            try:
+                text = recognize_qimage(image)
+            except ScreenOcrError as exc:
+                text = f"OCRに失敗しました:\n{exc}"
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not text.strip():
+            text = "テキストを認識できませんでした。"
+        self._show_ocr_result_overlay(text, image)
+
+    def _show_ocr_result_overlay(self, text: str, image=None):
+        from ocr_result_overlay import OcrResultOverlay
+
+        if self._ocr_result_overlay is not None:
+            try:
+                self._ocr_result_overlay.deleteLater()
+            except Exception:
+                pass
+        parent = self
+        win = self.window()
+        if win is not None and hasattr(win, "centralWidget") and win.centralWidget() is not None:
+            parent = win.centralWidget()
+        overlay = OcrResultOverlay(
+            text, self._design, parent, image=image,
+            capture_method=getattr(self._api.settings, "ocr_capture_method", "qt"),
+            capture_method_changed=self._on_ocr_capture_method_changed,
+        )
+        overlay.closed.connect(lambda: setattr(self, "_ocr_result_overlay", None))
+        self._ocr_result_overlay = overlay
+
+    def _on_ocr_capture_method_changed(self, value: str):
+        if value not in ("qt", "gdi"):
+            value = "qt"
+        self._api.setting_changed.emit("ocr_capture_method", value)
 
     def set_display_mode(self, mode: int):
         """表示モードを外部から適用する (0=詳細, 1=シンプル)。"""
@@ -1581,6 +1674,9 @@ class ItemPanel(QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._resize_grip.reposition()
+        if (self._ocr_result_overlay is not None
+                and self._ocr_result_overlay.parentWidget() is self):
+            self._ocr_result_overlay.setGeometry(self.rect())
         self.geometry_changed.emit()
 
     def moveEvent(self, event):
@@ -1638,7 +1734,8 @@ class ItemPanel(QFrame):
             f"QPushButton:checked {{ background-color: {design.accent}; }}"
         )
         for btn in (self._show_badges_btn, self._show_prob_btn, self._show_win_btn,
-                    self._text_edit_btn, self._mode_btn):
+                    self._capture_ocr_btn, self._text_edit_btn, self._mode_btn,
+                    self._items_float_btn):
             btn.setStyleSheet(icon_btn_style)
         # シンプルリストを再構築してデザイン反映
         if self._display_mode == 1:

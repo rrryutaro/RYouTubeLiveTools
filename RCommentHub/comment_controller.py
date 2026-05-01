@@ -532,6 +532,8 @@ class CommentController:
             return
 
         auto_mode = self._sm.get("rr_auto_send_mode", "off")
+        if auto_mode == "filter_match":
+            auto_mode = "all"
         _log.debug("_notify_roulette_link: author=%s mode=%s filter_match=%s",
                    item.author_name[:20], auto_mode, item.filter_match)
         if auto_mode == "off":
@@ -551,9 +553,10 @@ class CommentController:
             _log.info("_notify_roulette_link: dry-run author=%s mode=%s", item.author_name[:20], auto_mode)
             return
 
-        # ブラックリスト最優先除外（全モード共通）
         cid = item.channel_id or item.author_name
-        if cid and self._user_mgr.is_blacklisted(cid):
+        # "全て" はフィルタ一致したコメントをそのまま送信する。
+        # それ以外のモードではブラックリストを送信対象から外す。
+        if auto_mode != "all" and cid and self._user_mgr.is_blacklisted(cid):
             self._set_roulette_status(item, "除外", reason="ブラック指定")
             _log.debug("_notify_roulette_link: skip blacklisted: %s", (cid or "")[:20])
             return
@@ -569,7 +572,7 @@ class CommentController:
             if rec is None or not rec.is_filter_target:
                 self._set_roulette_status(item, "除外", reason="対象者未指定")
                 return
-        # "all" / "filter_match" (通過済み) はブラック除外のみで通過
+        # "all" / "no_black" はここまでの判定を通過したら送信
 
         port = int(cfg.get("port", 12345))
         url  = f"http://127.0.0.1:{port}/api/link-message"

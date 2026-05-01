@@ -2,7 +2,9 @@
 RCommentHub — 定数定義
 """
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
+DEV_BUILD = None
+APP_VERSION = f"{VERSION}-dev.{DEV_BUILD}" if DEV_BUILD is not None else VERSION
 
 # ─── ウィンドウ ──────────────────────────────────────────────────────────────
 WINDOW_TITLE   = "RCommentHub — 詳細"

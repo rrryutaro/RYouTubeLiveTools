@@ -7,6 +7,7 @@ Launcher — YouTubeLiveTools 管理ランチャー
 """
 
 import tkinter as tk
+from tkinter import messagebox
 import json, os, sys, glob, subprocess, ctypes, ctypes.wintypes, re
 
 # ─── ウィンドウスタイル定数 ──────────────────────────────────────────
@@ -33,19 +34,41 @@ ENTRY_OVERRIDES = {
 
 
 def _read_version(tool_dir, tool_name):
-    """VERSION_HINTS に登録された行を直接読んでバージョン文字列を返す。未登録・読み取り失敗時は None。"""
+    """VERSION/DEV_BUILD を読んで表示用バージョン文字列を返す。"""
     hint = VERSION_HINTS.get(tool_name)
     if not hint:
         return None
-    file_name, line_no = hint
+    file_name, _line_no = hint
     file_path = os.path.join(tool_dir, file_name)
     try:
         with open(file_path, encoding="utf-8") as f:
             lines = f.readlines()
-        if len(lines) >= line_no:
-            m = re.match(r'\s*VERSION\s*=\s*["\']([^"\']+)["\']', lines[line_no - 1])
-            if m:
-                return m.group(1)
+        values = {}
+        for line in lines:
+            m = re.match(r'\s*(VERSION|DEV_BUILD|APP_VERSION)\s*=\s*(.+?)\s*(?:#.*)?$', line)
+            if not m:
+                continue
+            key, raw = m.groups()
+            raw = raw.strip()
+            if raw in ("None", "null"):
+                values[key] = None
+            else:
+                sm = re.match(r'["\']([^"\']+)["\']', raw)
+                if sm:
+                    values[key] = sm.group(1)
+                else:
+                    im = re.match(r'\d+', raw)
+                    if im:
+                        values[key] = int(im.group(0))
+        if values.get("APP_VERSION"):
+            return str(values["APP_VERSION"])
+        version = values.get("VERSION")
+        if not version:
+            return None
+        dev_build = values.get("DEV_BUILD")
+        if dev_build is not None:
+            return f"{version}-dev.{dev_build}"
+        return str(version)
     except Exception:
         pass
     return None
@@ -72,6 +95,34 @@ FG2   = "#7A8899"
 BTN   = "#1E3A4A"
 BTN_H = "#2E5068"
 SEP   = "#1E3A4A"
+
+PYTHON_RUN_REQUIREMENT_SKIP = {"pyinstaller", "grpcio-tools"}
+
+REQUIREMENT_IMPORTS = {
+    "grpcio": "grpc",
+    "pillow": "PIL",
+    "pywin32": "win32com.client",
+    "google-auth": "google.auth",
+    "google-auth-oauthlib": "google_auth_oauthlib",
+    "httpx": "import httpx\nimport h2\n",
+    "winsdk": (
+        "from winsdk.windows.globalization import Language\n"
+        "from winsdk.windows.graphics.imaging import BitmapDecoder\n"
+        "from winsdk.windows.media.ocr import OcrEngine\n"
+        "from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream\n"
+    ),
+}
+
+
+def _requirement_package_name(line):
+    """Return the distribution name from one requirements.txt line."""
+    name = line.split("#", 1)[0].strip()
+    if not name:
+        return ""
+    name = name.split(";", 1)[0].strip()
+    name = re.split(r"\s*[<>=!~]", name, maxsplit=1)[0].strip()
+    name = name.split("[", 1)[0].strip()
+    return name
 
 
 def _is_on_any_monitor(x, y, w=1, h=1):
@@ -150,9 +201,18 @@ def discover_tools(base_dir):
 
         bat_path = os.path.join(folder, "build_exe.bat")
         build_bat = bat_path if os.path.exists(bat_path) else None
+        req_path = os.path.join(folder, "requirements.txt")
+        requirements = req_path if os.path.exists(req_path) else None
 
         version = _read_version(folder, entry.name)
-        tools.append({"name": entry.name, "py": main_py, "exe": main_exe, "bat": build_bat, "version": version})
+        tools.append({
+            "name": entry.name,
+            "py": main_py,
+            "exe": main_exe,
+            "bat": build_bat,
+            "requirements": requirements,
+            "version": version,
+        })
 
     return tools
 
@@ -270,6 +330,8 @@ class LauncherApp:
 
     # ─── 起動 ────────────────────────────────────────────────────
     def _run_python(self, tool):
+        if not self._check_python_requirements(tool):
+            return
         try:
             subprocess.Popen(
                 [sys.executable, tool["py"]],
@@ -277,6 +339,74 @@ class LauncherApp:
             )
         except Exception as e:
             print(f"Python起動エラー [{tool['name']}]: {e}")
+
+    def _check_python_requirements(self, tool):
+        req_path = tool.get("requirements")
+        if not req_path:
+            return True
+
+        missing = []
+        try:
+            with open(req_path, "r", encoding="utf-8") as f:
+                for raw_line in f:
+                    package = _requirement_package_name(raw_line)
+                    if not package:
+                        continue
+                    if package.lower() in PYTHON_RUN_REQUIREMENT_SKIP:
+                        continue
+                    import_check = REQUIREMENT_IMPORTS.get(
+                        package.lower(), package.replace("-", "_")
+                    )
+                    if not self._can_import(import_check):
+                        missing.append(package)
+        except Exception:
+            return True
+
+        if not missing:
+            return True
+
+        msg = (
+            f"{tool['name']} のPython実行に必要なパッケージが不足しています。\n\n"
+            f"不足: {', '.join(missing)}\n\n"
+            "このPython環境へ依存パッケージをインストールしますか？\n"
+            "実行する場合は、処理内容が見えるように別コンソールでpipを起動します。\n\n"
+            "手動で行う場合のコマンド:\n"
+            f'"{sys.executable}" -m pip install -r "{req_path}"'
+        )
+        if messagebox.askyesno("依存パッケージ不足", msg, parent=self.root):
+            self._run_requirements_install(tool, req_path)
+        return False
+
+    def _run_requirements_install(self, tool, req_path):
+        try:
+            subprocess.Popen(
+                [sys.executable, "-m", "pip", "install", "-r", req_path],
+                cwd=os.path.dirname(req_path),
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "依存パッケージのインストール失敗",
+                f"{tool['name']} の依存パッケージをインストールできませんでした。\n\n{e}",
+                parent=self.root,
+            )
+
+    def _can_import(self, import_check):
+        code = (
+            import_check
+            if "\n" in import_check or import_check.lstrip().startswith(("import ", "from "))
+            else f"import {import_check}"
+        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return completed.returncode == 0
+        except Exception:
+            return False
 
     def _run_exe(self, tool):
         if not tool["exe"] or not os.path.exists(tool["exe"]):

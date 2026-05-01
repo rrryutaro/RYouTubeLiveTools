@@ -2,7 +2,11 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
+# Private development builds append this number to VERSION as "-dev.N".
+# Set to None for release/public builds.
+DEV_BUILD = None
+APP_VERSION = f"{VERSION}-dev.{DEV_BUILD}" if DEV_BUILD is not None else VERSION
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20

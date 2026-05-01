@@ -179,6 +179,7 @@ class AppSettings:
     # 旧 `transparent` キーは互換のため from_config 側でフォールバック読込
     window_transparent: bool = False   # メインウィンドウ背景透過
     roulette_transparent: bool = False # ルーレットパネル背景透過
+    ocr_capture_method: str = "qt"     # 画面OCR取り込みのキャプチャ方式: qt / gdi
     grip_visible: bool = True          # リサイズグリップ表示
     ctrl_box_visible: bool = True      # コントロールボックス（ドラッグバー）表示
     float_win_show_instance: bool = True  # インスタンス番号表示
@@ -315,6 +316,7 @@ class AppSettings:
             roulette_transparent=config.get(
                 "roulette_transparent", config.get("transparent", False)
             ),
+            ocr_capture_method=config.get("ocr_capture_method", "qt"),
             grip_visible=config.get("grip_visible", True),
             ctrl_box_visible=config.get("ctrl_box_visible", True),
             float_win_show_instance=config.get("float_win_show_instance", True),
@@ -454,6 +456,7 @@ class AppSettings:
             "always_on_top": self.always_on_top,
             "window_transparent": self.window_transparent,
             "roulette_transparent": self.roulette_transparent,
+            "ocr_capture_method": self.ocr_capture_method,
             "grip_visible": self.grip_visible,
             "ctrl_box_visible": self.ctrl_box_visible,
             "float_win_show_instance": self.float_win_show_instance,

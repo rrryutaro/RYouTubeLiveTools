@@ -43,5 +43,5 @@ from constants import (
 
     # データクラス・バージョン
     Segment,
-    VERSION,
+    VERSION, DEV_BUILD, APP_VERSION,
 )

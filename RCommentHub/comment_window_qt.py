@@ -186,11 +186,13 @@ class CommentWindowQt(QMainWindow):
         self._filter_base_headers: dict = {}
         # i112: 手動送信中のitem参照（_on_rr_result でステータス更新用）
         self._rr_manual_item = None
+        self._rr_manual_items: dict[str, object] = {}
 
         # i113: 全メッセージビューの行追跡（seq_no → 全時通算インデックス）
         self._all_row_count: int = 0
         self._all_seq_to_abs_idx: dict = {}   # seq_no → 追加時の全時通算インデックス
         self._all_base_headers: dict = {}     # seq_no → ベースヘッダー文字列
+        self._all_buffer: deque = deque(maxlen=CommentView.MAX_ROWS)
 
         # フィルタ設定タブで現在選択中のルール ID
         self._current_rule_id: str | None = None
@@ -341,6 +343,7 @@ class CommentWindowQt(QMainWindow):
 
         # タブ1: 全メッセージ
         self._comment_view = CommentView()
+        self._comment_view.on_context_menu_requested = self._on_all_context_menu
         self._tab_widget.addTab(self._comment_view, "全メッセージ")
 
         # タブ2: フィルタ一致
@@ -370,7 +373,9 @@ class CommentWindowQt(QMainWindow):
 
         # CommentView
         self._filter_view = CommentView()
+        self._filter_view.set_rr_marker_column_visible(True)
         self._filter_view.on_row_selected = self._on_filter_row_selected
+        self._filter_view.on_send_requested = self._send_to_rroulette
         layout.addWidget(self._filter_view)
 
         # ── 送信ツールバー ────────────────────────────────────────────────
@@ -425,11 +430,13 @@ class CommentWindowQt(QMainWindow):
             "  padding: 1px 4px; font-size: 8pt; }"
             "QComboBox QAbstractItemView { background: #1A1A2A; color: #CCCCCC; }"
         )
-        # i112: モード値: off / all / filter_match / whitelist / target (5モード)
-        for label in ["OFF", "フィルタ一覧すべて", "フィルタ一致のみ", "ホワイトのみ", "対象者のみ"]:
+        # 自動送信モード: off / all / no_black / whitelist / target
+        for label in ["OFF", "全て", "ブラック以外全て", "ホワイトのみ", "対象ユーザーのみ"]:
             self._rr_auto_mode_combo.addItem(label)
         saved_mode = self._sm.get("rr_auto_send_mode", "off")
-        _mode_idx = {"off": 0, "all": 1, "filter_match": 2, "whitelist": 3, "target": 4}.get(saved_mode, 0)
+        if saved_mode == "filter_match":
+            saved_mode = "all"
+        _mode_idx = {"off": 0, "all": 1, "no_black": 2, "whitelist": 3, "target": 4}.get(saved_mode, 0)
         self._rr_auto_mode_combo.setCurrentIndex(_mode_idx)
         self._rr_auto_mode_combo.currentIndexChanged.connect(self._on_rr_auto_mode_changed)
         tb_layout.addWidget(self._rr_auto_mode_combo)
@@ -496,8 +503,8 @@ class CommentWindowQt(QMainWindow):
         return widget
 
     def _on_rr_auto_mode_changed(self, index: int) -> None:
-        """i112: 自動送信モードをコンボ選択に合わせて設定に保存する（5モード対応）。"""
-        modes = ["off", "all", "filter_match", "whitelist", "target"]
+        """自動送信モードをコンボ選択に合わせて設定に保存する。"""
+        modes = ["off", "all", "no_black", "whitelist", "target"]
         mode = modes[index] if index < len(modes) else "off"
         self._sm.update({"rr_auto_send_mode": mode})
 
@@ -516,7 +523,8 @@ class CommentWindowQt(QMainWindow):
 
     def _on_filter_row_selected(self, index: int | None) -> None:
         """フィルタビューで行が選択されたときのコールバック。"""
-        if index is None or index >= len(self._filter_buffer):
+        selected_indices = getattr(self._filter_view, "selected_row_indices", []) or []
+        if not selected_indices:
             self._rr_send_btn.setEnabled(False)
             self._rr_test_btn.setEnabled(False)
             self._rr_selected_lbl.setText("（行を選択してください）")
@@ -524,12 +532,18 @@ class CommentWindowQt(QMainWindow):
             self._rr_status_lbl.setText("RR: [未判定]")
             self._rr_status_lbl.setStyleSheet("color: #666688; font-size: 8pt;")
         else:
+            index = selected_indices[-1]
+            if index >= len(self._filter_buffer):
+                return
             item = list(self._filter_buffer)[index]
             text = getattr(item, "body", "") or ""
             preview = text[:30] + ("…" if len(text) > 30 else "")
+            selected_count = len(selected_indices)
             self._rr_send_btn.setEnabled(True)
             self._rr_test_btn.setEnabled(True)
-            self._rr_selected_lbl.setText(preview)
+            self._rr_selected_lbl.setText(
+                f"{selected_count}件選択" if selected_count > 1 else preview
+            )
             self._rr_selected_lbl.setStyleSheet("color: #AAAAAA; font-size: 8pt;")
             self._update_rr_status_for_item(item)
 
@@ -568,8 +582,20 @@ class CommentWindowQt(QMainWindow):
         self._rr_status_lbl.setText(f"RR: [{text}]")
         self._rr_status_lbl.setStyleSheet(f"color: {color}; font-size: 8pt;")
 
+    def _rr_marker_for_status(self, item):
+        status = getattr(item, "roulette_send_status", "未判定")
+        if status in ("送信済み", "手動送信済み"):
+            return "✓", QColor("#44CC88")
+        if status in ("送信中", "送信中(手動)"):
+            return "…", QColor("#4488FF")
+        if status.startswith("失敗"):
+            return "!", QColor("#FF6666")
+        if status == "dry-run":
+            return "D", QColor("#8888CC")
+        return "", QColor("#666688")
+
     def _update_filter_row_header(self, item) -> None:
-        """i112: フィルタビューの対応行ヘッダーをRR状態付きで更新する。"""
+        """フィルタビューの対応行左端へRR状態マーカーを反映する。"""
         if not hasattr(self, "_filter_view"):
             return
         buf_list = list(self._filter_buffer)
@@ -581,16 +607,12 @@ class CommentWindowQt(QMainWindow):
         base = self._filter_base_headers.get(seq_no, "") if seq_no is not None else ""
         if not base:
             return
-        status = getattr(item, "roulette_send_status", "未判定")
-        reason = getattr(item, "roulette_send_reason", "")
-        if reason:
-            tag = f" [RR:{status}:{reason}]"
-        else:
-            tag = f" [RR:{status}]"
-        self._filter_view.update_row_header(idx, base + tag)
+        self._filter_view.update_row_header(idx, base)
+        marker, color = self._rr_marker_for_status(item)
+        self._filter_view.update_row_marker(idx, marker, color)
 
     def _update_all_row_header(self, item) -> None:
-        """i113: 全メッセージビューの対応行ヘッダーをRR状態付きで更新する。"""
+        """全メッセージビューの対応行左端へRR状態マーカーを反映する。"""
         if not hasattr(self, "_comment_view"):
             return
         seq_no = getattr(item, "seq_no", None)
@@ -605,10 +627,9 @@ class CommentWindowQt(QMainWindow):
         base = self._all_base_headers.get(seq_no, "")
         if not base:
             return
-        status = getattr(item, "roulette_send_status", "未判定")
-        reason = getattr(item, "roulette_send_reason", "")
-        tag = f" [RR:{status}:{reason}]" if reason else f" [RR:{status}]"
-        self._comment_view.update_row_header(current_idx, base + tag)
+        self._comment_view.update_row_header(current_idx, base)
+        marker, color = self._rr_marker_for_status(item)
+        self._comment_view.update_row_marker(current_idx, marker, color)
 
     def _on_roulette_status(self, item) -> None:
         """i112/i113: RRoulette送信状態変化コールバック（メインスレッドで実行）。"""
@@ -627,14 +648,36 @@ class CommentWindowQt(QMainWindow):
         """i112: テスト経路ボタン — 選択行を自動送信経路でテスト送信する。
         debug source チェックをバイパスするので、デバッグコメントでも確認可能。
         """
-        idx = self._filter_view.selected_row_index
-        if idx is None or idx >= len(self._filter_buffer):
-            return
-        item = list(self._filter_buffer)[idx]
         if not hasattr(self._ctrl, "test_roulette_link"):
             return
-        self._ctrl.test_roulette_link(item)
-        self._update_rr_status_for_item(item)
+        for item in self._selected_filter_items():
+            self._ctrl.test_roulette_link(item)
+            self._update_rr_status_for_item(item)
+
+    def _selected_filter_items(self) -> list:
+        indices = getattr(self._filter_view, "selected_row_indices", []) or []
+        buf = list(self._filter_buffer)
+        return [buf[i] for i in indices if 0 <= i < len(buf)]
+
+    def _on_all_context_menu(self, index: int | None, global_pos: QPoint) -> None:
+        indices = getattr(self._comment_view, "selected_row_indices", []) or []
+        if index is not None and index not in indices:
+            indices = [index]
+        buf = list(self._all_buffer)
+        items = [
+            buf[i] for i in indices
+            if 0 <= i < len(buf) and not getattr(buf[i], "is_system_message", False)
+        ]
+        menu = QMenu(self)
+        send_action = menu.addAction(
+            "RRouletteへ送信" if len(items) <= 1 else f"RRouletteへ送信 ({len(items)}件)"
+        )
+        send_action.setEnabled(bool(items))
+        action = menu.exec(global_pos)
+        if action == send_action and items:
+            self._rr_send_btn.setEnabled(False)
+            for item in items:
+                self._send_one_to_rroulette(item)
 
     def _send_to_rroulette(self) -> None:
         """選択中フィルタ行を外部（RRoulette 等）へ送信する（dry-run / HTTP POST）。
@@ -642,10 +685,15 @@ class CommentWindowQt(QMainWindow):
         RCommentHub の責務は「フィルタ済みコメントを送信する」ことのみ。
         RRoulette 側の動作（候補追加・スピン等）はすべて受信側が判断する。
         """
-        idx = self._filter_view.selected_row_index
-        if idx is None or idx >= len(self._filter_buffer):
+        items = self._selected_filter_items()
+        if not items:
             return
-        item = list(self._filter_buffer)[idx]
+        self._rr_send_btn.setEnabled(False)
+        for item in items:
+            self._send_one_to_rroulette(item)
+
+    def _send_one_to_rroulette(self, item) -> None:
+        """フィルタ行1件を外部（RRoulette 等）へ送信する。"""
 
         text        = getattr(item, "body", "") or ""
         author_name = getattr(item, "author_name", "") or ""
@@ -693,9 +741,12 @@ class CommentWindowQt(QMainWindow):
             }
 
         # i112: 手動送信中のitem参照を保持してステータス更新に使う
+        send_id = str(uuid.uuid4())
         self._rr_manual_item = item
+        self._rr_manual_items[send_id] = item
         item.roulette_send_status = "送信中(手動)"
-        self._rr_send_btn.setEnabled(False)
+        self._update_filter_row_header(item)
+        self._update_all_row_header(item)
 
         if dry_run:
             # dry-run: HTTP 送信せず JSON をログに出す
@@ -705,18 +756,31 @@ class CommentWindowQt(QMainWindow):
                 {"ok": True,
                  "message": "[dry-run] 送信しませんでした（dry_run=True）",
                  "reason": "dry_run"},
-                text, None,
+                text, None, send_id,
             )
             return
 
         threading.Thread(
             target=self._do_send_http,
-            args=(payload, text, endpoint_url),
+            args=(payload, text, endpoint_url, send_id),
             daemon=True,
         ).start()
 
-    def _do_send_http(self, payload: dict, text: str, url: str) -> None:
+    @staticmethod
+    def _rr_response_ok(resp: dict | None) -> bool:
+        if not resp:
+            return False
+        return bool(resp.get("ok")) or str(resp.get("status", "")).lower() == "ok"
+
+    def _do_send_http(self, payload: dict, text: str, url: str, send_id: str) -> None:
         """HTTP POST を別スレッドで実行し、結果を Qt メインスレッドへ渡す。"""
+        def done(resp, err):
+            dispatch = getattr(self._ctrl, "_dispatch", None)
+            if callable(dispatch):
+                dispatch(lambda: self._on_rr_result(resp, text, err, send_id))
+            else:
+                QTimer.singleShot(0, lambda: self._on_rr_result(resp, text, err, send_id))
+
         try:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             req  = _url_request.Request(
@@ -726,19 +790,21 @@ class CommentWindowQt(QMainWindow):
                 method="POST",
             )
             with _url_request.urlopen(req, timeout=_RR_TIMEOUT) as resp:
-                resp_body = json.loads(resp.read().decode("utf-8"))
+                raw_body = resp.read().decode("utf-8", errors="replace").strip()
+                resp_body = json.loads(raw_body) if raw_body else {"status": "ok"}
         except URLError as e:
             reason = str(e.reason) if hasattr(e, "reason") else str(e)
-            QTimer.singleShot(0, lambda: self._on_rr_result(None, text, reason))
+            done(None, reason)
             return
         except Exception as e:
-            QTimer.singleShot(0, lambda: self._on_rr_result(None, text, str(e)))
+            done(None, str(e))
             return
-        QTimer.singleShot(0, lambda: self._on_rr_result(resp_body, text, None))
+        done(resp_body, None)
 
-    def _on_rr_result(self, resp: dict | None, text: str, error: str | None) -> None:
+    def _on_rr_result(self, resp: dict | None, text: str, error: str | None, send_id: str | None = None) -> None:
         """HTTP 結果をメインスレッドで受け取り、システムメッセージとして表示する。"""
-        self._rr_send_btn.setEnabled(True)
+        if not getattr(self, "_rr_manual_items", {}):
+            self._rr_send_btn.setEnabled(True)
 
         if error is not None:
             msg = f"RRouletteへの送信に失敗しました: {error}"
@@ -746,17 +812,23 @@ class CommentWindowQt(QMainWindow):
             msg = "RRouletteへの送信に失敗しました: 不明なエラー"
         elif resp.get("reason") == "dry_run":
             msg = resp.get("message", "[dry-run]")
-        elif not resp.get("ok"):
+        elif not self._rr_response_ok(resp):
             msg = f"RRouletteへの送信に失敗しました: {resp.get('message', '?')}"
         else:
             preview = text[:20] + ("…" if len(text) > 20 else "")
             msg = f"RRouletteへ送信しました: {preview}"
 
         # i112/i113: 手動送信アイテムのステータス更新（update_roulette_status でUI通知統一）
-        manual_item = self._rr_manual_item
-        self._rr_manual_item = None
+        if send_id is not None:
+            manual_item = self._rr_manual_items.pop(send_id, None)
+        else:
+            manual_item = self._rr_manual_item
+        if not self._rr_manual_items:
+            self._rr_send_btn.setEnabled(True)
+        if manual_item is self._rr_manual_item:
+            self._rr_manual_item = None
         if manual_item is not None:
-            if error is not None or (resp is not None and not resp.get("ok")
+            if error is not None or (resp is not None and not self._rr_response_ok(resp)
                                      and resp.get("reason") != "dry_run"):
                 _err_str = error if error is not None else (resp.get("message", "?") if resp else "?")
                 if hasattr(self._ctrl, "update_roulette_status"):
@@ -782,6 +854,9 @@ class CommentWindowQt(QMainWindow):
                     manual_item.roulette_sent_at     = datetime.now()
                     self._update_rr_status_for_item(manual_item)
                     self._update_filter_row_header(manual_item)
+
+        if error is None and resp is not None and self._rr_response_ok(resp):
+            return
 
         try:
             import time as _time
@@ -1152,6 +1227,7 @@ class CommentWindowQt(QMainWindow):
         header, body_text, author, bg_color, fg_color, profile_url = row
 
         # タブ1: 全メッセージ
+        self._all_buffer.append(item)
         self._comment_view.add_row(
             header, body_text, author, bg_color, fg_color,
             profile_url=profile_url,

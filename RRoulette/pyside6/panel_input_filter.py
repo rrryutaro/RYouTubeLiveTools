@@ -189,13 +189,39 @@ class PanelInputFilter(QObject):
         if isinstance(obj, self.EXEMPT_TYPES):
             return True
         p = obj
-        for _ in range(3):
+        for _ in range(16):
             if p is None:
+                break
+            try:
+                if p.property("rr_ocr_interactive"):
+                    return True
+            except Exception:
                 break
             if isinstance(p, self.EXEMPT_TYPES):
                 return True
+            if not hasattr(p, "parentWidget"):
+                break
             p = p.parentWidget()
         return False
+
+    def _has_property_in_widget_chain(self, obj, property_name: str) -> bool:
+        p = obj
+        for _ in range(64):
+            if p is None:
+                break
+            try:
+                if p.property(property_name):
+                    return True
+            except Exception:
+                return False
+            if not hasattr(p, "parentWidget"):
+                return False
+            p = p.parentWidget()
+        return False
+
+    def _is_ocr_interactive(self, obj) -> bool:
+        """OCR overlay descendants should handle their own drag/resize."""
+        return self._has_property_in_widget_chain(obj, "rr_ocr_interactive")
 
     def _is_grip(self, obj) -> bool:
         """obj 自身またはその祖先に _PanelGrip があるか判定する。
@@ -430,6 +456,9 @@ class PanelInputFilter(QObject):
             QEvent.Type.MouseButtonRelease,
             QEvent.Type.Leave,
         ):
+            return False
+
+        if self._is_ocr_interactive(obj):
             return False
 
         # ============================================================
