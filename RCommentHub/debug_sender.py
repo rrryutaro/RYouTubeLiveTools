@@ -15,6 +15,19 @@ from constants import (
     UI_COLORS, FONT_FAMILY, FONT_SIZE_S, FONT_SIZE_M,
 )
 
+# ─── メッセージ種別オプション ────────────────────────────────────────────────
+_MSG_TYPE_OPTIONS = [
+    ("通常コメント",              "textMessageEvent"),
+    ("Super Chat",                "superChatEvent"),
+    ("Super Sticker",             "superStickerEvent"),
+    ("メンバー記念チャット",      "memberMilestoneChatEvent"),
+    ("ギフトメンバー送信",        "membershipGiftingEvent"),
+    ("ギフトメンバー受取",        "giftMembershipReceivedEvent"),
+    ("投票",                      "pollEvent"),
+]
+_MSG_TYPE_LABELS  = [label for label, _ in _MSG_TYPE_OPTIONS]
+_MSG_TYPE_BY_LABEL = {label: kind for label, kind in _MSG_TYPE_OPTIONS}
+
 # ─── デフォルトプリセット ─────────────────────────────────────────────────────
 _DEFAULT_PRESETS = [
     {
@@ -88,9 +101,28 @@ _DEFAULT_PRESETS = [
 def _build_debug_raw(preset: dict, body: str,
                      source_id: str = "conn1", source_name: str = "",
                      source_type: str = INPUT_SOURCE_DEBUG,
-                     tts_source_name: str = "") -> dict:
+                     tts_source_name: str = "",
+                     msg_type: str = "textMessageEvent",
+                     sc_amount: str = "¥500",
+                     gift_count: int = 1) -> dict:
     """デバッグコメント用の YouTube API 形式 raw dict を生成する"""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    if msg_type == "superChatEvent":
+        snippet_extra = {"superChatDetails": {"amountDisplayString": sc_amount, "userComment": body}}
+    elif msg_type == "superStickerEvent":
+        snippet_extra = {"superStickerDetails": {"amountDisplayString": sc_amount}}
+    elif msg_type == "memberMilestoneChatEvent":
+        snippet_extra = {"memberMilestoneChatDetails": {"userComment": body}}
+    elif msg_type == "membershipGiftingEvent":
+        snippet_extra = {"membershipGiftingDetails": {"giftMembershipsCount": gift_count}}
+    elif msg_type == "giftMembershipReceivedEvent":
+        snippet_extra = {}
+    elif msg_type == "pollEvent":
+        snippet_extra = {"pollDetails": {"prompt": body}}
+    else:  # textMessageEvent
+        snippet_extra = {"textMessageDetails": {"messageText": body}}
+
     return {
         "id":                f"debug_{uuid.uuid4().hex[:12]}",
         "_source":           source_type,
@@ -98,12 +130,12 @@ def _build_debug_raw(preset: dict, body: str,
         "_source_name":      source_name,
         "_tts_source_name":  tts_source_name or source_name,
         "snippet": {
-            "type":                "textMessageEvent",
-            "publishedAt":         now_iso,
-            "displayMessage":      body,
-            "hasDisplayContent":   True,
-            "liveChatId":          "",
-            "textMessageDetails":  {"messageText": body},
+            "type":              msg_type,
+            "publishedAt":       now_iso,
+            "displayMessage":    body,
+            "hasDisplayContent": True,
+            "liveChatId":        "",
+            **snippet_extra,
         },
         "authorDetails": {
             "channelId":        preset.get("channel_id", "debug_unknown"),
@@ -263,11 +295,55 @@ class DebugSenderWindow:
         )
         self._lbl_detail.pack(fill=tk.X, padx=8, pady=4)
 
-        # ── コメント本文 ──
-        tk.Label(win, text="コメント本文:",
+        # ── メッセージ種別 ──
+        type_frame = tk.Frame(win, bg=C["bg_main"])
+        type_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+        tk.Label(type_frame, text="メッセージ種別:",
                  font=(FONT_FAMILY, FONT_SIZE_S),
                  fg=C["fg_label"], bg=C["bg_main"]
-                 ).pack(anchor=tk.W, padx=8)
+                 ).pack(side=tk.LEFT)
+        self._msg_type_var = tk.StringVar(value=_MSG_TYPE_LABELS[0])
+        self._msg_type_cb = ttk.Combobox(
+            type_frame, textvariable=self._msg_type_var,
+            values=_MSG_TYPE_LABELS,
+            state="readonly", font=(FONT_FAMILY, FONT_SIZE_S), width=22,
+        )
+        self._msg_type_cb.pack(side=tk.LEFT, padx=(6, 0))
+        self._msg_type_cb.bind("<<ComboboxSelected>>", lambda _: self._on_type_change())
+
+        # ── 種別追加フィールド（金額 / ギフト数）──
+        extra_frame = tk.Frame(win, bg=C["bg_main"])
+        extra_frame.pack(fill=tk.X, padx=8, pady=(0, 2))
+
+        # 金額行
+        self._amount_row = tk.Frame(extra_frame, bg=C["bg_main"])
+        tk.Label(self._amount_row, text="金額:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]
+                 ).pack(side=tk.LEFT)
+        self._amount_var = tk.StringVar(value="¥500")
+        tk.Entry(self._amount_row, textvariable=self._amount_var,
+                 bg=C["bg_list"], fg=C["fg_main"], insertbackground=C["fg_main"],
+                 relief=tk.FLAT, font=(FONT_FAMILY, FONT_SIZE_S), width=12,
+                 ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ギフト数行
+        self._gift_row = tk.Frame(extra_frame, bg=C["bg_main"])
+        tk.Label(self._gift_row, text="ギフト数:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"]
+                 ).pack(side=tk.LEFT)
+        self._gift_var = tk.StringVar(value="1")
+        tk.Spinbox(self._gift_row, from_=1, to=999, textvariable=self._gift_var,
+                   bg=C["bg_list"], fg=C["fg_main"], insertbackground=C["fg_main"],
+                   relief=tk.FLAT, font=(FONT_FAMILY, FONT_SIZE_S), width=6,
+                   ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── コメント本文 ──
+        self._lbl_body = tk.Label(win, text="コメント本文:",
+                 font=(FONT_FAMILY, FONT_SIZE_S),
+                 fg=C["fg_label"], bg=C["bg_main"])
+        self._lbl_body.pack(anchor=tk.W, padx=8)
 
         self._body_text = tk.Text(
             win, height=4,
@@ -279,6 +355,9 @@ class DebugSenderWindow:
         self._body_text.pack(fill=tk.X, padx=8, pady=(2, 6))
         self._body_text.bind("<Return>",   self._on_enter_key)
         self._body_text.bind("<KP_Enter>", self._on_enter_key)
+
+        # 初期状態を反映
+        self._on_type_change()
 
         # ── 接続先セレクタ ──
         src_frame = tk.Frame(win, bg=C["bg_main"])
@@ -308,6 +387,34 @@ class DebugSenderWindow:
         # 初期データ投入
         self._reload_presets()
         self._preset_cb.bind("<<ComboboxSelected>>", lambda _: self._update_detail())
+
+    def _on_type_change(self):
+        """メッセージ種別が変わったとき、追加フィールドと本文欄を切り替える"""
+        kind = _MSG_TYPE_BY_LABEL.get(self._msg_type_var.get(), "textMessageEvent")
+        # 金額フィールド: SC / SuperSticker
+        if kind in ("superChatEvent", "superStickerEvent"):
+            self._amount_row.pack(fill=tk.X, pady=(2, 0))
+        else:
+            self._amount_row.pack_forget()
+        # ギフト数フィールド: membershipGiftingEvent
+        if kind == "membershipGiftingEvent":
+            self._gift_row.pack(fill=tk.X, pady=(2, 0))
+        else:
+            self._gift_row.pack_forget()
+        # 本文欄ラベルと有効/無効
+        body_needed = kind not in ("superStickerEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent")
+        if kind == "pollEvent":
+            self._lbl_body.config(text="投票テキスト:")
+        elif kind in ("superChatEvent", "memberMilestoneChatEvent"):
+            self._lbl_body.config(text="コメント本文 (任意):")
+        else:
+            self._lbl_body.config(text="コメント本文:")
+        state = tk.NORMAL if body_needed else tk.DISABLED
+        self._body_text.config(state=state)
+        if not body_needed:
+            self._body_text.config(bg=UI_COLORS["bg_panel"])
+        else:
+            self._body_text.config(bg=UI_COLORS["bg_list"])
 
     def _reload_presets(self):
         presets = self._get_presets()
@@ -386,11 +493,25 @@ class DebugSenderWindow:
             messagebox.showwarning("送信エラー", "送信者プリセットを選択してください。",
                                    parent=self._win)
             return
+        kind = _MSG_TYPE_BY_LABEL.get(self._msg_type_var.get(), "textMessageEvent")
+        body_needed = kind not in ("superStickerEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent")
         body = self._body_text.get("1.0", tk.END).strip()
-        if not body:
+        if body_needed and not body and kind not in ("superChatEvent", "memberMilestoneChatEvent"):
             messagebox.showwarning("送信エラー", "コメント本文を入力してください。",
                                    parent=self._win)
             return
+
+        # 金額
+        sc_amount = self._amount_var.get().strip() if kind in ("superChatEvent", "superStickerEvent") else "¥500"
+        if kind in ("superChatEvent", "superStickerEvent") and not sc_amount:
+            messagebox.showwarning("送信エラー", "金額を入力してください。", parent=self._win)
+            return
+
+        # ギフト数
+        try:
+            gift_count = int(self._gift_var.get()) if kind == "membershipGiftingEvent" else 1
+        except ValueError:
+            gift_count = 1
 
         # 接続先を解決
         self._refresh_source_list()
@@ -403,7 +524,8 @@ class DebugSenderWindow:
         source_type  = INPUT_SOURCE_TWITCH if platform == "twitch" else INPUT_SOURCE_DEBUG
 
         raw = _build_debug_raw(preset, body, source_id=source_id, source_name=source_name,
-                               source_type=source_type, tts_source_name=tts_name)
+                               source_type=source_type, tts_source_name=tts_name,
+                               msg_type=kind, sc_amount=sc_amount, gift_count=gift_count)
         self._add_comment(raw)
 
         # 送信後に本文クリア

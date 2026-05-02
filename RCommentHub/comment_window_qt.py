@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QEvent, QPoint, QTimer
 from PySide6.QtGui import QColor, QGuiApplication
 
-from constants import CONN_STATUS_LABELS
+from constants import CONN_STATUS_LABELS, APP_VERSION
 from comment_view_qt import CommentView
 from filter_rules import FilterRule, MATCH_TYPES
 
@@ -202,7 +202,7 @@ class CommentWindowQt(QMainWindow):
         self._dragging: bool = False                 # 閾値超過後の drag 中フラグ
         self._drag_win_offset: QPoint | None = None  # window.pos() - cursor_pos at drag start
 
-        self.setWindowTitle("RCommentHub - コメントビュー")
+        self.setWindowTitle(f"RCommentHub {APP_VERSION} - コメントビュー")
         self.resize(
             int(self._sm.get("cw_width",  440)),
             int(self._sm.get("cw_height", 680)),
@@ -290,6 +290,11 @@ class CommentWindowQt(QMainWindow):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         sb_layout.addWidget(self._title_lbl)
+
+        _ver_lbl = QLabel(APP_VERSION)
+        _ver_lbl.setStyleSheet("color: #555577; font-size: 8pt;")
+        _ver_lbl.setToolTip("実行中のビルドバージョン")
+        sb_layout.addWidget(_ver_lbl)
 
         _btn_style = (
             "QPushButton {"
@@ -1272,7 +1277,7 @@ class CommentWindowQt(QMainWindow):
         if title:
             self.setWindowTitle(f"RCommentHub - {title}")
         else:
-            self.setWindowTitle("RCommentHub - コメントビュー")
+            self.setWindowTitle(f"RCommentHub {APP_VERSION} - コメントビュー")
         # i110: 受信中のみ切断ボタンを有効化
         if hasattr(self, "_btn_disconnect"):
             self._btn_disconnect.setEnabled(status == "receiving")

@@ -127,9 +127,11 @@ class CommentItem:
             d   = snippet.get("superChatDetails", {})
             amt = d.get("amountDisplayString", "")
             msg = d.get("userComment", "")
-            return f"{amt}  {msg}".strip()
+            body = f"{amt}  {msg}".strip()
+            return body if body else snippet.get("displayMessage", "")
         if kind == "superStickerEvent":
-            return snippet.get("superStickerDetails", {}).get("amountDisplayString", "")
+            amt = snippet.get("superStickerDetails", {}).get("amountDisplayString", "")
+            return amt if amt else snippet.get("displayMessage", "")
         if kind == "memberMilestoneChatEvent":
             return snippet.get("memberMilestoneChatDetails", {}).get("userComment", "")
         if kind == "membershipGiftingEvent":

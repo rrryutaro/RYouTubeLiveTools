@@ -11,11 +11,12 @@ X で閉じると非表示（アプリは終了しない）。
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QTextEdit, QPushButton, QComboBox, QFrame,
+    QLineEdit, QSpinBox, QWidget,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 
-from debug_sender import _build_debug_raw
+from debug_sender import _build_debug_raw, _MSG_TYPE_LABELS, _MSG_TYPE_BY_LABEL
 from constants import INPUT_SOURCE_DEBUG, INPUT_SOURCE_TWITCH
 
 # ─── スタイル ─────────────────────────────────────────────────────────────────
@@ -156,10 +157,63 @@ class DebugSenderWindowQt(QDialog):
         sep2.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep2)
 
+        # ── メッセージ種別 ──
+        type_row = QHBoxLayout()
+        type_lbl = QLabel("種別:")
+        type_lbl.setStyleSheet("color: #AAAACC;")
+        type_lbl.setFixedWidth(56)
+        type_row.addWidget(type_lbl)
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(_MSG_TYPE_LABELS)
+        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
+        type_row.addWidget(self._type_combo)
+        type_row.addStretch()
+        root.addLayout(type_row)
+
+        # ── 金額（Super Chat / Super Sticker）──
+        self._amount_row = QWidget()
+        amount_inner = QHBoxLayout(self._amount_row)
+        amount_inner.setContentsMargins(0, 0, 0, 0)
+        amount_lbl = QLabel("金額:")
+        amount_lbl.setStyleSheet("color: #AAAACC;")
+        amount_lbl.setFixedWidth(56)
+        amount_inner.addWidget(amount_lbl)
+        self._amount_edit = QLineEdit("¥500")
+        self._amount_edit.setFixedWidth(100)
+        self._amount_edit.setStyleSheet(
+            "QLineEdit { background:#252540; color:#FFFFFF; border:1px solid #333355;"
+            " border-radius:2px; padding:3px 6px; }"
+        )
+        amount_inner.addWidget(self._amount_edit)
+        amount_inner.addStretch()
+        root.addWidget(self._amount_row)
+        self._amount_row.setVisible(False)
+
+        # ── ギフト数（ギフトメンバー送信）──
+        self._gift_row = QWidget()
+        gift_inner = QHBoxLayout(self._gift_row)
+        gift_inner.setContentsMargins(0, 0, 0, 0)
+        gift_lbl = QLabel("ギフト数:")
+        gift_lbl.setStyleSheet("color: #AAAACC;")
+        gift_lbl.setFixedWidth(56)
+        gift_inner.addWidget(gift_lbl)
+        self._gift_spin = QSpinBox()
+        self._gift_spin.setRange(1, 999)
+        self._gift_spin.setValue(1)
+        self._gift_spin.setFixedWidth(70)
+        self._gift_spin.setStyleSheet(
+            "QSpinBox { background:#252540; color:#FFFFFF; border:1px solid #333355;"
+            " border-radius:2px; padding:3px 4px; }"
+        )
+        gift_inner.addWidget(self._gift_spin)
+        gift_inner.addStretch()
+        root.addWidget(self._gift_row)
+        self._gift_row.setVisible(False)
+
         # ── コメント本文 ──
-        body_lbl = QLabel("コメント本文  (Ctrl+Enter で送信):")
-        body_lbl.setStyleSheet("color: #AAAACC;")
-        root.addWidget(body_lbl)
+        self._body_lbl = QLabel("コメント本文  (Ctrl+Enter で送信):")
+        self._body_lbl.setStyleSheet("color: #AAAACC;")
+        root.addWidget(self._body_lbl)
 
         self._body_edit = QTextEdit()
         self._body_edit.setMaximumHeight(72)
@@ -290,6 +344,22 @@ class DebugSenderWindowQt(QDialog):
         self._ctrl.set_debug_presets(presets)
         self._reload_presets()
 
+    # ─── 種別切替 ─────────────────────────────────────────────────────────────
+
+    def _on_type_changed(self):
+        kind = _MSG_TYPE_BY_LABEL.get(self._type_combo.currentText(), "textMessageEvent")
+        self._amount_row.setVisible(kind in ("superChatEvent", "superStickerEvent"))
+        self._gift_row.setVisible(kind == "membershipGiftingEvent")
+        body_needed = kind not in ("superStickerEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent")
+        self._body_edit.setEnabled(body_needed)
+        if kind == "pollEvent":
+            self._body_lbl.setText("投票テキスト  (Ctrl+Enter で送信):")
+        elif kind in ("superChatEvent", "memberMilestoneChatEvent"):
+            self._body_lbl.setText("コメント本文 (任意、Ctrl+Enter で送信):")
+        else:
+            self._body_lbl.setText("コメント本文  (Ctrl+Enter で送信):")
+        self.adjustSize()
+
     # ─── 接続先 ────────────────────────────────────────────────────────────────
 
     def _refresh_source_list(self):
@@ -340,10 +410,19 @@ class DebugSenderWindowQt(QDialog):
             QMessageBox.warning(self, "送信エラー", "送信者プリセットを選択してください。")
             return
 
+        kind = _MSG_TYPE_BY_LABEL.get(self._type_combo.currentText(), "textMessageEvent")
+        body_needed = kind not in ("superStickerEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent")
         body = self._body_edit.toPlainText().strip()
-        if not body:
+        if body_needed and not body and kind not in ("superChatEvent", "memberMilestoneChatEvent"):
             QMessageBox.warning(self, "送信エラー", "コメント本文を入力してください。")
             return
+
+        sc_amount = self._amount_edit.text().strip() if kind in ("superChatEvent", "superStickerEvent") else "¥500"
+        if kind in ("superChatEvent", "superStickerEvent") and not sc_amount:
+            QMessageBox.warning(self, "送信エラー", "金額を入力してください。")
+            return
+
+        gift_count = self._gift_spin.value() if kind == "membershipGiftingEvent" else 1
 
         self._refresh_source_list()
         src_label = self._source_combo.currentText()
@@ -357,6 +436,9 @@ class DebugSenderWindowQt(QDialog):
             source_name=source_name,
             source_type=source_type,
             tts_source_name=tts_name,
+            msg_type=kind,
+            sc_amount=sc_amount,
+            gift_count=gift_count,
         )
         self._ctrl.add_comment(raw)
 

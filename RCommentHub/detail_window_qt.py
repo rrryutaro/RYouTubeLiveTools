@@ -18,12 +18,14 @@ v0.3.2 Tk版 detail_window.py の役割を PySide6 QMainWindow で再実装。
 """
 
 import datetime
+import json
+import os
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem,
     QPlainTextEdit, QSplitter, QHeaderView, QLineEdit,
-    QFrame, QSizePolicy,
+    QFrame, QSizePolicy, QListWidget,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
@@ -80,6 +82,11 @@ class DetailWindowQt(QMainWindow):
 
         # 行インデックス → item（詳細表示用）
         self._row_items: list = []
+
+        # 過去ログ閲覧モード
+        self._past_log_mode: bool = False
+        self._past_sessions: list = []          # [(folder, dir_path, meta), ...]
+        self._past_log_records: dict = {}       # {row_index: record_dict}
 
         self.setWindowTitle("RCommentHub - 詳細")
         self.resize(
@@ -275,6 +282,43 @@ class DetailWindowQt(QMainWindow):
         btn_clear.clicked.connect(lambda: self._filter_edit.clear())
         lay.addWidget(btn_clear)
 
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color: #2A2A4A;")
+        lay.addWidget(sep2)
+
+        # ── 過去ログ閲覧トグル ──
+        self._btn_past_log = QPushButton("📋 過去ログ閲覧")
+        self._btn_past_log.clicked.connect(self._toggle_past_log_mode)
+        lay.addWidget(self._btn_past_log)
+
+        # ── セッション選択パネル（トグル時のみ表示）──
+        self._past_log_panel = QWidget()
+        past_lay = QVBoxLayout(self._past_log_panel)
+        past_lay.setContentsMargins(0, 2, 0, 0)
+        past_lay.setSpacing(4)
+
+        self._session_list = QListWidget()
+        self._session_list.setStyleSheet(
+            "QListWidget { background:#1A1A2E; color:#CCCCCC; border:1px solid #2A2A4A; }"
+            "QListWidget::item:selected { background:#3A3A6A; }"
+        )
+        self._session_list.setMaximumHeight(150)
+        self._session_list.currentRowChanged.connect(self._on_past_session_select)
+        past_lay.addWidget(self._session_list)
+
+        btn_refresh = QPushButton("一覧を更新")
+        btn_refresh.clicked.connect(self._refresh_past_sessions)
+        past_lay.addWidget(btn_refresh)
+
+        self._session_info_lbl = QLabel("")
+        self._session_info_lbl.setStyleSheet("color: #8888AA; font-size: 8pt;")
+        self._session_info_lbl.setWordWrap(True)
+        past_lay.addWidget(self._session_info_lbl)
+
+        lay.addWidget(self._past_log_panel)
+        self._past_log_panel.setVisible(False)
+
         lay.addStretch()
         return panel
 
@@ -367,10 +411,17 @@ class DetailWindowQt(QMainWindow):
 
     def _on_comment_added(self, item):
         """コントローラからのコメント追加 → 一覧に追加する。"""
+        self._row_items.append(item)
+        if self._past_log_mode:
+            return
+        self._append_item_to_table(item)
+        self._table.scrollToBottom()
+        self._hdr_count_lbl.setText(f"受信: {len(self._row_items)}件")
+
+    def _append_item_to_table(self, item):
+        """CommentItem を一覧テーブルの末尾に追加する。"""
         row = self._table.rowCount()
         self._table.insertRow(row)
-        self._row_items.append(item)
-
         vals = [
             str(getattr(item, "seq_no", row + 1)),
             item.recv_time_str() if hasattr(item, "recv_time_str") else "",
@@ -383,22 +434,13 @@ class DetailWindowQt(QMainWindow):
             getattr(item, "msg_id", ""),
             item.status_label()  if hasattr(item, "status_label")  else "",
         ]
-
         tag = item.row_tag() if hasattr(item, "row_tag") else "default"
         bg, fg = _ROW_COLORS.get(tag, _ROW_COLORS["default"])
-
         for col, val in enumerate(vals):
             cell = QTableWidgetItem(val)
             cell.setBackground(bg)
             cell.setForeground(fg)
             self._table.setItem(row, col, cell)
-
-        # 最下部へスクロール
-        self._table.scrollToBottom()
-
-        # 統計更新
-        total = self._table.rowCount()
-        self._hdr_count_lbl.setText(f"受信: {total}件")
 
     def _on_conn_status(self, status: str):
         """接続状態変化 → ヘッダー更新。"""
@@ -438,11 +480,18 @@ class DetailWindowQt(QMainWindow):
     # ─── 行選択 → 詳細パネル更新 ──────────────────────────────────────────────
 
     def _on_row_selected(self, current_row: int, *_):
-        if current_row < 0 or current_row >= len(self._row_items):
+        if current_row < 0:
             self._detail_text.clear()
             return
-        item = self._row_items[current_row]
-        self._show_detail(item)
+        if self._past_log_mode:
+            rec = self._past_log_records.get(current_row)
+            if rec:
+                self._show_past_log_detail(rec)
+            return
+        if current_row >= len(self._row_items):
+            self._detail_text.clear()
+            return
+        self._show_detail(self._row_items[current_row])
 
     def _show_detail(self, item):
         lines = []
@@ -507,6 +556,226 @@ class DetailWindowQt(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._geom_save_timer.start()
+
+    # ─── 過去ログ閲覧 ─────────────────────────────────────────────────────────
+
+    def _toggle_past_log_mode(self):
+        if self._past_log_mode:
+            self._exit_past_log_mode()
+        else:
+            self._enter_past_log_mode()
+
+    def _enter_past_log_mode(self):
+        self._past_log_mode = True
+        self._btn_past_log.setText("▶ ライブモードに戻る")
+        self._btn_past_log.setStyleSheet("background:#3A1A3A; color:#FF88FF;")
+        self._past_log_panel.setVisible(True)
+        self._list_mode_lbl.setText("【過去ログ閲覧 — 読み取り専用】")
+        self._list_mode_lbl.setStyleSheet("color: #FF8888; font-weight: bold;")
+        self._table.setRowCount(0)
+        self._past_log_records.clear()
+        self._detail_text.clear()
+        self._refresh_past_sessions()
+
+    def _exit_past_log_mode(self):
+        self._past_log_mode = False
+        self._past_log_records.clear()
+        self._btn_past_log.setText("📋 過去ログ閲覧")
+        self._btn_past_log.setStyleSheet("")
+        self._past_log_panel.setVisible(False)
+        self._list_mode_lbl.setText("【現在セッション】")
+        self._list_mode_lbl.setStyleSheet("color: #88FF88; font-weight: bold;")
+        self._detail_text.clear()
+        self._restore_live_table()
+
+    def _restore_live_table(self):
+        """ライブモードへ戻る際、蓄積済みの _row_items をテーブルに再描画する。"""
+        self._table.setRowCount(0)
+        for item in self._row_items:
+            self._append_item_to_table(item)
+        self._hdr_count_lbl.setText(f"受信: {len(self._row_items)}件")
+        self._table.scrollToBottom()
+
+    def _refresh_past_sessions(self):
+        """セッションログ一覧を読み込んでリストに表示する。"""
+        base_dir = getattr(self._ctrl, "_base_dir", "")
+        sessions_dir = os.path.join(base_dir, "logs", "sessions")
+        self._past_sessions = []
+        self._session_list.blockSignals(True)
+        self._session_list.clear()
+        self._session_info_lbl.setText("")
+        try:
+            if not os.path.isdir(sessions_dir):
+                self._session_list.addItem("（セッションなし）")
+                return
+            entries = sorted(os.listdir(sessions_dir), reverse=True)
+            for folder in entries:
+                d = os.path.join(sessions_dir, folder)
+                meta_path = os.path.join(d, "session_meta.json")
+                if not os.path.isfile(meta_path):
+                    continue
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except Exception:
+                    continue
+                start = meta.get("start_time", "")
+                try:
+                    dt = datetime.datetime.fromisoformat(start)
+                    date_str = dt.strftime("%Y/%m/%d %H:%M")
+                except Exception:
+                    date_str = start[:16] if start else folder
+                title = meta.get("title") or meta.get("video_id", "")
+                short = (title[:18] + "…") if len(title) > 18 else title
+                self._past_sessions.append((folder, d, meta))
+                self._session_list.addItem(f"{date_str}  {short}")
+            if not self._past_sessions:
+                self._session_list.addItem("（セッションなし）")
+        except Exception as e:
+            self._session_list.addItem(f"[エラー] {e}")
+        finally:
+            self._session_list.blockSignals(False)
+
+    def _on_past_session_select(self, idx: int):
+        if idx < 0 or idx >= len(self._past_sessions):
+            return
+        folder, session_dir, meta = self._past_sessions[idx]
+        start = meta.get("start_time", "")
+        try:
+            dt = datetime.datetime.fromisoformat(start)
+            start_str = dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            start_str = start[:16]
+        self._session_info_lbl.setText(
+            f"{start_str}\n{meta.get('title', '—')}\n"
+            f"video_id: {meta.get('video_id', '—')}"
+        )
+        self._load_session_comments(session_dir, meta)
+
+    def _load_session_comments(self, session_dir: str, meta: dict):
+        """セッションの comments.jsonl を読み込んでテーブルに展開する。"""
+        self._table.setRowCount(0)
+        self._past_log_records.clear()
+        self._detail_text.clear()
+
+        jsonl_path = os.path.join(session_dir, "comments.jsonl")
+        if not os.path.isfile(jsonl_path):
+            self._on_log_message(f"[過去ログ] comments.jsonl が見つかりません: {session_dir}")
+            return
+
+        count = 0
+        try:
+            with open(jsonl_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+
+                    recv_raw = rec.get("received_at_local", "")
+                    post_raw = rec.get("published_at", "")
+                    def _fmt_time(s):
+                        try:
+                            return datetime.datetime.fromisoformat(s).strftime("%H:%M:%S")
+                        except Exception:
+                            return s[:8] if s else ""
+
+                    flags = []
+                    if rec.get("is_chat_owner"):     flags.append("O")
+                    if rec.get("is_chat_moderator"):  flags.append("M")
+                    if rec.get("is_chat_sponsor"):    flags.append("S")
+                    if rec.get("is_verified"):        flags.append("V")
+
+                    body_raw = rec.get("message_text_raw", "") or ""
+                    body_s = (body_raw[:48] + "…") if len(body_raw) > 48 else body_raw
+
+                    vals = [
+                        str(count + 1),
+                        _fmt_time(recv_raw),
+                        _fmt_time(post_raw),
+                        rec.get("message_type", ""),
+                        rec.get("author_display_name_raw", ""),
+                        body_s,
+                        rec.get("author_channel_id", ""),
+                        "/".join(flags),
+                        rec.get("message_id", ""),
+                        "保存済",
+                    ]
+                    row = self._table.rowCount()
+                    self._table.insertRow(row)
+                    msg_type = rec.get("message_type", "")
+                    if msg_type == "superChatEvent":
+                        bg, fg = _ROW_COLORS["superchat"]
+                    elif msg_type == "superStickerEvent":
+                        bg, fg = _ROW_COLORS["supersticker"]
+                    elif rec.get("is_chat_owner"):
+                        bg, fg = _ROW_COLORS["owner"]
+                    elif rec.get("is_chat_moderator"):
+                        bg, fg = _ROW_COLORS["moderator"]
+                    else:
+                        bg, fg = _ROW_COLORS["alt"] if count % 2 else _ROW_COLORS["default"]
+                    for col, val in enumerate(vals):
+                        cell = QTableWidgetItem(val)
+                        cell.setBackground(bg)
+                        cell.setForeground(fg)
+                        self._table.setItem(row, col, cell)
+
+                    self._past_log_records[count] = rec
+                    count += 1
+                    if count >= 5000:
+                        break
+        except Exception as e:
+            self._on_log_message(f"[過去ログ] 読み込みエラー: {e}")
+            return
+
+        self._hdr_count_lbl.setText(f"ログ: {count}件")
+        self._on_log_message(f"[過去ログ] {count}件 読み込みました")
+
+    def _show_past_log_detail(self, rec: dict):
+        """過去ログレコードの詳細をパネルに表示する。"""
+        lines = ["▼ 保存済みログ — 読み取り専用 ▼", "─" * 44, ""]
+        lines.append("【A. 基本情報】")
+        for k, label in [
+            ("message_id",    "message_id"),
+            ("message_type",  "message_type"),
+            ("published_at",  "published_at"),
+            ("received_at_local", "received_at_local"),
+            ("video_id",      "video_id"),
+            ("live_chat_id",  "live_chat_id"),
+            ("input_source",  "input_source"),
+        ]:
+            lines.append(f"  {label}: {rec.get(k, '—')}")
+        lines.append("")
+        lines.append("【B. 投稿者情報】")
+        for k, label in [
+            ("author_display_name_raw", "表示名"),
+            ("author_display_name_tts", "TTS名"),
+            ("author_channel_id",       "channel_id"),
+            ("author_channel_url",      "channel_url"),
+        ]:
+            lines.append(f"  {label}: {rec.get(k, '—')}")
+        lines.append(f"  owner={rec.get('is_chat_owner',False)}  "
+                     f"mod={rec.get('is_chat_moderator',False)}  "
+                     f"member={rec.get('is_chat_sponsor',False)}  "
+                     f"verified={rec.get('is_verified',False)}")
+        lines.append("")
+        lines.append("【C. メッセージ内容】")
+        lines.append(f"  message_text_raw:     {rec.get('message_text_raw', '—')}")
+        lines.append(f"  message_text_display: {rec.get('message_text_display', '—')}")
+        lines.append(f"  filter_match: {rec.get('filter_match', '—')}")
+        lines.append(f"  filter_rule_ids: {rec.get('filter_rule_ids', '—')}")
+        lines.append("")
+        lines.append("【D. Raw JSON】")
+        try:
+            lines.append(json.dumps(rec, ensure_ascii=False, indent=2))
+        except Exception:
+            lines.append(str(rec))
+        self._detail_text.setPlainText("\n".join(lines))
+
+    # ─── 位置・サイズ保存・復元 ────────────────────────────────────────────────
 
     def closeEvent(self, event):
         """X ボタンで閉じると非表示になるだけ（アプリは終了しない）。"""

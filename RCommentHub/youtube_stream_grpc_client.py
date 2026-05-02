@@ -132,9 +132,64 @@ def _grpc_message_to_raw_dict(msg: stream_list_pb2.LiveChatMessage) -> dict:
         },
     }
 
-    if type_int == 1 and snip.HasField("text_message_details"):
+    # 種別ごとの詳細フィールドを抽出（displayed_content oneof）
+    try:
+        which = snip.WhichOneof("displayed_content")
+    except Exception:
+        which = None
+
+    if which == "text_message_details":
         raw["snippet"]["textMessageDetails"] = {
             "messageText": snip.text_message_details.message_text,
+        }
+    elif which == "super_chat_details":
+        d = snip.super_chat_details
+        raw["snippet"]["superChatDetails"] = {
+            "amountMicros":        str(d.amount_micros),
+            "currency":            d.currency,
+            "amountDisplayString": d.amount_display_string,
+            "userComment":         d.user_comment,
+            "tier":                d.tier,
+        }
+    elif which == "super_sticker_details":
+        d = snip.super_sticker_details
+        raw["snippet"]["superStickerDetails"] = {
+            "amountMicros":        str(d.amount_micros),
+            "currency":            d.currency,
+            "amountDisplayString": d.amount_display_string,
+            "tier":                d.tier,
+        }
+    elif which == "member_milestone_chat_details":
+        d = snip.member_milestone_chat_details
+        raw["snippet"]["memberMilestoneChatDetails"] = {
+            "memberLevelName": d.member_level_name,
+            "memberMonth":     d.member_month,
+            "userComment":     d.user_comment,
+        }
+    elif which == "membership_gifting_details":
+        d = snip.membership_gifting_details
+        raw["snippet"]["membershipGiftingDetails"] = {
+            "giftMembershipsCount":     d.gift_memberships_count,
+            "giftMembershipsLevelName": d.gift_memberships_level_name,
+        }
+    elif which == "gift_membership_received_details":
+        d = snip.gift_membership_received_details
+        raw["snippet"]["giftMembershipReceivedDetails"] = {
+            "memberLevelName": d.member_level_name,
+            "gifterChannelId": d.gifter_channel_id,
+        }
+    elif which == "poll_details":
+        d = snip.poll_details
+        raw["snippet"]["pollDetails"] = {
+            "prompt": d.metadata.question_text if d.HasField("metadata") else "",
+        }
+    elif which == "user_banned_details":
+        d = snip.user_banned_details
+        raw["snippet"]["userBannedDetails"] = {
+            "bannedUserDetails": {
+                "displayName": d.banned_user_details.display_name
+                               if d.HasField("banned_user_details") else "",
+            },
         }
 
     return raw
