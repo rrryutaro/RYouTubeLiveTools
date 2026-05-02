@@ -1,0 +1,114 @@
+{
+  "管理パネル（F1）": [
+    {
+      "title": "パネル管理",
+      "file": "manage_パネル管理.png"
+    },
+    {
+      "title": "ルーレット管理",
+      "file": "manage_ルーレット管理.png"
+    },
+    {
+      "title": "ルーレット以外非表示時",
+      "file": "manage_ルーレット以外非表示時.png"
+    },
+    {
+      "title": "アプリ設定",
+      "file": "manage_アプリ設定.png"
+    },
+    {
+      "title": "アプリ設定 > ウィンドウ表示",
+      "file": "manage_アプリ設定__ウィンドウ表示.png"
+    },
+    {
+      "title": "アプリ設定 > OCR",
+      "file": "manage_アプリ設定__OCR.png"
+    },
+    {
+      "title": "アプリ設定 > テーマ・動作",
+      "file": "manage_アプリ設定__テーマ_動作.png"
+    },
+    {
+      "title": "アプリ設定 > 音量",
+      "file": "manage_アプリ設定__音量.png"
+    },
+    {
+      "title": "アプリ設定 > リプレイ",
+      "file": "manage_アプリ設定__リプレイ.png"
+    },
+    {
+      "title": "アプリ設定 > 自動全面非表示",
+      "file": "manage_アプリ設定__自動全面非表示.png"
+    },
+    {
+      "title": "アプリ設定 > 外部連携",
+      "file": "manage_アプリ設定__外部連携.png"
+    }
+  ],
+  "項目パネル（F2）": [
+    {
+      "title": "パターン",
+      "file": "item_パターン.png"
+    },
+    {
+      "title": "項目リスト",
+      "file": "item_項目リスト.png"
+    }
+  ],
+  "設定パネル（F3）": [
+    {
+      "title": "スピン",
+      "file": "settings_スピン.png"
+    },
+    {
+      "title": "スピン > スピン詳細（4段階個別調整）",
+      "file": "settings_スピン__スピン詳細_4段階個別調整.png"
+    },
+    {
+      "title": "表示",
+      "file": "settings_表示.png"
+    },
+    {
+      "title": "デザイン",
+      "file": "settings_デザイン.png"
+    },
+    {
+      "title": "結果表示",
+      "file": "settings_結果表示.png"
+    },
+    {
+      "title": "サウンド",
+      "file": "settings_サウンド.png"
+    },
+    {
+      "title": "ログ",
+      "file": "settings_ログ.png"
+    },
+    {
+      "title": "リプレイ",
+      "file": "settings_リプレイ.png"
+    },
+    {
+      "title": "特殊演出（テスト版）",
+      "file": "settings_特殊演出_テスト版.png"
+    },
+    {
+      "title": "特殊演出（テスト版） > 音系",
+      "file": "settings_特殊演出_テスト版__音系.png"
+    },
+    {
+      "title": "特殊演出（テスト版） > ミニキャラ系",
+      "file": "settings_特殊演出_テスト版__ミニキャラ系.png"
+    },
+    {
+      "title": "特殊演出（テスト版） > カットイン系",
+      "file": "settings_特殊演出_テスト版__カットイン系.png"
+    },
+    {
+      "title": "特殊演出（テスト版） > その他",
+      "file": "settings_特殊演出_テスト版__その他.png"
+    }
+  ],
+  "チケットパネル（F4）": [],
+  "連携パネル（F6）": []
+}
