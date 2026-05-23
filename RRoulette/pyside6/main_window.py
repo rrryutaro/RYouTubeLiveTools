@@ -1370,6 +1370,9 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._manage_panel.auto_hide_after_spin_restore_changed.connect(  # i098
             self._on_auto_hide_after_spin_restore_changed
         )
+        self._manage_panel.roulette_reorder_requested.connect(
+            self._on_manage_roulette_reorder
+        )
         self._manage_panel.roulette_rename_requested.connect(  # i047
             self._on_manage_roulette_rename
         )

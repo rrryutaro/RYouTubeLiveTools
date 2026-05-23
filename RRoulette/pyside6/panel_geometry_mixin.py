@@ -791,6 +791,9 @@ class PanelGeometryMixin:
         s.roulette_panel_width = rp.width()
         s.roulette_panel_height = rp.height()
 
+        # アクティブルーレット ID を保存
+        self._config["active_roulette_id"] = self._manager.active_id
+
         # i336/i338: マルチルーレット構成を config["roulettes"] に保存
         roulettes_cfg = []
         for rid in self._manager.ids():
@@ -986,6 +989,11 @@ class PanelGeometryMixin:
                 self._sync_settings_to_active()
             except Exception:
                 pass
+            # i462 fix: 全初期化完了後に管理パネルを前面に出す。
+            # _restore_all_panel_geometries で raise_ した後に他の処理が
+            # ルーレットパネルを前面に出す場合があるため、最後に再度 raise する。
+            if getattr(self, "_manage_panel_visible", False):
+                self._manage_panel.raise_()
 
     def moveEvent(self, event):
         """ウィンドウ移動時に位置を保存対象にする (最小化中はスキップ)。"""

@@ -449,6 +449,12 @@ class RouletteLifecycleMixin:
         # 設定を保存
         self._save_config()
 
+    def _on_manage_roulette_reorder(self, roulette_id: str, direction: int) -> None:
+        """ManagePanel からの順番変更コールバック。"""
+        if self._manager.move(roulette_id, direction):
+            self._update_roulette_manage_panel()
+            self._save_config()
+
     def _on_manage_apply_to_all_changed(self, value: bool) -> None:
         """ManagePanel の一括適用チェックボックスから: _apply_to_all フラグを更新する（i347）。"""
         self._apply_to_all = value
@@ -907,6 +913,11 @@ class RouletteLifecycleMixin:
                     ctx.ticket_holdings  = list(entry.get("ticket_holdings", []))
                     ctx.ticket_history   = list(entry.get("ticket_history", []))
                     ctx.ticket_templates = list(entry.get("ticket_templates", []))
+                    # i424 fix: "default" ルーレットの表示/非表示も復元する（continue で
+                    # 後続のvisibilityチェックがスキップされるため、ここで明示的に処理する）
+                    if not entry.get("visible", True):
+                        ctx.panel.hide()
+                        self._roulette_visible_ids.discard(rid)
                 continue
 
             if self._manager.get(rid) is not None:
@@ -979,6 +990,16 @@ class RouletteLifecycleMixin:
                 ctx.panel.hide()
                 self._roulette_visible_ids.discard(rid)
 
+        # config に保存された順序でマネージャーを並び替える（Bug3 reorder対応）
+        config_order = [e.get("id") for e in roulettes_cfg if e.get("id")]
+        if config_order:
+            self._manager.reorder(config_order)
+
+        # アクティブルーレット ID を復元する
+        saved_active = self._config.get("active_roulette_id", "")
+        if saved_active and self._manager.get(saved_active) is not None:
+            self._manager.set_active(saved_active)
+
     def _restore_per_panel_from_entry(self, panel, entry: dict,
                                        ctx=None) -> None:
         """per-roulette 実設定を config エントリから復元する。i364
@@ -996,6 +1017,18 @@ class RouletteLifecycleMixin:
         ro = panel.result_overlay
         if entry.get("spin_duration") is not None:
             sc.set_spin_duration(entry["spin_duration"])
+        if "spin_preset_profile" in entry:
+            sc.set_spin_profile(entry["spin_preset_profile"])
+        if "spin_preset_random" in entry:
+            sc.set_spin_preset_random(entry["spin_preset_random"])
+        if "spin_duration_random" in entry:
+            sc.set_spin_duration_random(entry["spin_duration_random"])
+        if "spin_duration_random_ratio" in entry:
+            sc.set_spin_duration_random_ratio(entry["spin_duration_random_ratio"])
+        if "spin_phase_randomize" in entry:
+            sc.set_spin_phase_randomize(entry["spin_phase_randomize"])
+        if "spin_phase_overrides" in entry:
+            sc.set_spin_phase_overrides(entry["spin_phase_overrides"])
         if entry.get("spin_mode") is not None:
             sc.set_spin_mode(entry["spin_mode"])
         if entry.get("double_duration") is not None:

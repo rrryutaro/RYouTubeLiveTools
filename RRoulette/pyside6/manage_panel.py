@@ -85,6 +85,7 @@ class ManagePanel(QFrame):
     link_port_changed = Signal(int)               # i099: 連携受信ポート
     link_max_hold_changed = Signal(int)           # i099: 連携メッセージ保持件数
     link_show_time_changed = Signal(bool)         # i100: 連携パネル時刻列表示
+    roulette_reorder_requested = Signal(str, int)  # roulette_id, direction (-1=up, +1=down)
     roulette_rename_requested = Signal(str, str)  # roulette_id, new_name
     ticket_panel_toggled = Signal(bool)   # i051: チケットパネル表示切替
     seq_panel_toggled = Signal(bool)      # i051: 実行パネル表示切替
@@ -719,7 +720,7 @@ class ManagePanel(QFrame):
         body_layout.addSpacing(4)
 
         # i467: バージョン表示（管理パネル下部）
-        _ver_lbl = QLabel(f"RRoulette  v{APP_VERSION}")
+        _ver_lbl = QLabel(APP_VERSION)
         _ver_lbl.setFont(QFont("Meiryo", 8))
         _ver_lbl.setStyleSheet(f"color: {design.text_sub};")
         _ver_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -1220,13 +1221,14 @@ class ManagePanel(QFrame):
         self._roulette_rows.clear()
 
         total = len(entries)
-        for entry in entries:
+        for i, entry in enumerate(entries):
             rid = entry["id"]
-            row = self._make_roulette_row(entry, total_count=total)
+            row = self._make_roulette_row(entry, total_count=total, row_index=i)
             self._roulette_list_layout.addWidget(row)
             self._roulette_rows[rid] = row
 
-    def _make_roulette_row(self, entry: dict, *, total_count: int = 2) -> QWidget:
+    def _make_roulette_row(self, entry: dict, *, total_count: int = 2,
+                           row_index: int = 0) -> QWidget:
         """ルーレット1件の行ウィジェットを作成する。"""
         rid = entry["id"]
         is_active = entry["active"]
@@ -1302,6 +1304,35 @@ class ManagePanel(QFrame):
         name_edit.returnPressed.connect(_confirm_rename)
         name_edit.editingFinished.connect(_confirm_rename)
         name_edit.escape_pressed.connect(_cancel_rename)
+
+        # 上下移動ボタン
+        _move_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: {self._design.separator}; color: {self._design.text};"
+            f"  border: none; border-radius: 4px; font-size: 8pt;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {self._design.accent}; }}"
+            f"QPushButton:disabled {{ opacity: 0.3; color: {self._design.text_sub}; }}"
+        )
+        up_btn = QPushButton("▲")
+        up_btn.setFont(QFont("Meiryo", 8))
+        up_btn.setFixedSize(22, 28)
+        up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        up_btn.setStyleSheet(_move_btn_style)
+        up_btn.setToolTip("上へ移動")
+        up_btn.setEnabled(row_index > 0)
+        up_btn.clicked.connect(lambda checked=False, r=rid: self.roulette_reorder_requested.emit(r, -1))
+        row_layout.addWidget(up_btn)
+
+        down_btn = QPushButton("▼")
+        down_btn.setFont(QFont("Meiryo", 8))
+        down_btn.setFixedSize(22, 28)
+        down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        down_btn.setStyleSheet(_move_btn_style)
+        down_btn.setToolTip("下へ移動")
+        down_btn.setEnabled(row_index < total_count - 1)
+        down_btn.clicked.connect(lambda checked=False, r=rid: self.roulette_reorder_requested.emit(r, 1))
+        row_layout.addWidget(down_btn)
 
         # 表示/非表示トグル
         vis_btn = QPushButton("👁" if is_visible else "🚫")

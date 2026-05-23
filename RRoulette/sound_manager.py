@@ -1,10 +1,16 @@
 # ─── サウンド用ライブラリ（オプション）────────────────────────────────
 try:
-    import numpy as np
     import pygame
     SOUND_AVAILABLE = True
 except ImportError:
     SOUND_AVAILABLE = False
+
+try:
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    np = None  # type: ignore
+    _NUMPY_AVAILABLE = False
 
 TICK_PATTERN_NAMES = ["スナップ", "クリック", "ドラム", "コイン", "ソフト", "消音", "カスタム"]
 WIN_PATTERN_NAMES  = ["ベル", "ファンファーレ", "カジノ", "チャイム", "ビクトリー", "消音", "カスタム"]
@@ -40,39 +46,91 @@ class SoundManager:
             return
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-            self._tick_snds = [
-                self._build_tick_snap(),
-                self._build_tick_click(),
-                self._build_tick_drum(),
-                self._build_tick_coin(),
-                self._build_tick_soft(),
-                None,               # 消音
-            ]
-            self._win_snds = [
-                self._build_bell(),
-                self._build_fanfare(),
-                self._build_casino(),
-                self._build_chime(),
-                self._build_victory(),
-                None,               # 消音
-            ]
-            # 演出音: PWA と同じ wav ファイルを優先ロード、無ければ生成音にフォールバック
+            # WAVファイルから読み込み（なければnumpy生成にフォールバック）
+            self._tick_snds   = self._load_tick_sounds()
+            self._win_snds    = self._load_win_sounds()
             self._effect_snds = self._load_effect_sounds()
         except Exception:
             pass
+
+    @staticmethod
+    def _sounds_base_dirs() -> list:
+        """sounds/ フォルダの検索パスリストを返す（PyInstaller bundle / 通常実行 両対応）。"""
+        import os, sys
+        dirs = []
+        if hasattr(sys, "_MEIPASS"):
+            dirs.append(os.path.join(sys._MEIPASS, "sounds"))
+        try:
+            dirs.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds"))
+        except Exception:
+            pass
+        return dirs
+
+    def _load_tick_sounds(self) -> list:
+        """tick_*.wav を sounds/ から読み込む。不足分は生成音で補う。末尾に None（消音）を付加。"""
+        import os
+        base_dirs = self._sounds_base_dirs()
+
+        def _try_load(filename):
+            for base in base_dirs:
+                path = os.path.join(base, filename)
+                if os.path.isfile(path):
+                    try:
+                        return pygame.mixer.Sound(path)
+                    except Exception:
+                        continue
+            return None
+
+        names = ["tick_snap", "tick_click", "tick_drum", "tick_coin", "tick_soft"]
+        fallbacks = [
+            self._build_tick_snap,
+            self._build_tick_click,
+            self._build_tick_drum,
+            self._build_tick_coin,
+            self._build_tick_soft,
+        ]
+        result = []
+        for name, fb in zip(names, fallbacks):
+            snd = _try_load(f"{name}.wav")
+            result.append(snd if snd is not None else (fb() if _NUMPY_AVAILABLE else None))
+        result.append(None)  # 消音
+        return result
+
+    def _load_win_sounds(self) -> list:
+        """win_*.wav を sounds/ から読み込む。不足分は生成音で補う。末尾に None（消音）を付加。"""
+        import os
+        base_dirs = self._sounds_base_dirs()
+
+        def _try_load(filename):
+            for base in base_dirs:
+                path = os.path.join(base, filename)
+                if os.path.isfile(path):
+                    try:
+                        return pygame.mixer.Sound(path)
+                    except Exception:
+                        continue
+            return None
+
+        names = ["win_bell", "win_fanfare", "win_casino", "win_chime", "win_victory"]
+        fallbacks = [
+            self._build_bell,
+            self._build_fanfare,
+            self._build_casino,
+            self._build_chime,
+            self._build_victory,
+        ]
+        result = []
+        for name, fb in zip(names, fallbacks):
+            snd = _try_load(f"{name}.wav")
+            result.append(snd if snd is not None else (fb() if _NUMPY_AVAILABLE else None))
+        result.append(None)  # 消音
+        return result
 
     def _load_effect_sounds(self) -> dict:
         """sounds/ から PWA と同じ effect_*.wav を読み込む。失敗時は生成音を返す。"""
         import os, sys
         # 実行時パス: PyInstaller bundle / 通常実行 両対応
-        base_dirs = []
-        if hasattr(sys, "_MEIPASS"):
-            base_dirs.append(os.path.join(sys._MEIPASS, "sounds"))
-        # constants.py と同じディレクトリの sounds/
-        try:
-            base_dirs.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds"))
-        except Exception:
-            pass
+        base_dirs = self._sounds_base_dirs()
 
         def _try_load(filename: str):
             for base in base_dirs:

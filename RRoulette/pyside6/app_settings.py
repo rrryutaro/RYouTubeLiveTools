@@ -128,7 +128,7 @@ class AppSettings:
     replay_record_effects: bool = True  # v0.6.1: 特殊演出もリプレイに記録/再現
 
     # 全面非表示 (i485):
-    auto_hide_enabled: bool = True   # 自動全面非表示 ON/OFF (デフォルト: ON)
+    auto_hide_enabled: bool = False  # 自動全面非表示 ON/OFF (デフォルト: OFF)
     auto_hide_seconds: int = 10      # 自動非表示までの秒数 (デフォルト: 10秒)
     auto_hide_fade_enabled: bool = True  # 自動非表示時フェードアウト ON/OFF (デフォルト: ON)
     auto_hide_fade_seconds: float = 0.6  # フェードアウト時間（秒, デフォルト: 0.6秒）
@@ -339,7 +339,7 @@ class AppSettings:
             replay_max_count=config.get("replay_max_count", 5),
             replay_show_indicator=config.get("replay_show_indicator", True),
             replay_record_effects=config.get("replay_record_effects", True),
-            auto_hide_enabled=config.get("auto_hide_enabled", True),
+            auto_hide_enabled=config.get("auto_hide_enabled", False),
             auto_hide_seconds=config.get("auto_hide_seconds", 10),
             auto_hide_fade_enabled=config.get("auto_hide_fade_enabled", True),
             auto_hide_fade_seconds=float(config.get("auto_hide_fade_seconds", 0.6)),

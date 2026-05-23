@@ -25,6 +25,17 @@ if not exist "%PI_PATH%" (
 )
 
 echo [Use] %PI_PATH%
+
+echo [Sounds] Generating WAV sound files...
+python build_sounds.py
+if errorlevel 1 (
+    echo.
+    echo [Error] Sound generation failed.
+    pause
+    exit /b 1
+)
+echo.
+
 echo [Build] Creating RRoulette.exe...
 echo.
 

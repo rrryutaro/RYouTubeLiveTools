@@ -121,6 +121,38 @@ class RouletteManager(QObject):
         """カスタム表示名を削除する（ルーレット削除時）。"""
         self._names.pop(roulette_id, None)
 
+    def move(self, roulette_id: str, direction: int) -> bool:
+        """ルーレットの表示順を direction だけ移動する。
+
+        Args:
+            roulette_id: 移動対象の ID
+            direction: -1 = 前へ（上）, +1 = 次へ（下）
+
+        Returns:
+            移動できた場合 True、境界やIDが無効な場合 False。
+        """
+        keys = list(self._roulettes.keys())
+        if roulette_id not in keys:
+            return False
+        idx = keys.index(roulette_id)
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(keys):
+            return False
+        keys[idx], keys[new_idx] = keys[new_idx], keys[idx]
+        self._roulettes = {k: self._roulettes[k] for k in keys}
+        return True
+
+    def reorder(self, id_list: list[str]) -> None:
+        """指定された ID 順にルーレットを並べ替える。
+
+        id_list に含まれない既存 ID は末尾に残す。
+        """
+        known = set(self._roulettes.keys())
+        ordered = [rid for rid in id_list if rid in known]
+        remaining = [rid for rid in self._roulettes if rid not in set(ordered)]
+        new_keys = ordered + remaining
+        self._roulettes = {k: self._roulettes[k] for k in new_keys}
+
     def set_active(self, roulette_id: str) -> None:
         """アクティブなルーレットを切り替える。
 

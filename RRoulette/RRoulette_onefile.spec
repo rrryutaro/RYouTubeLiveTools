@@ -1,20 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
+# onefile 版 spec — 単一 EXE として全ファイルを埋め込む
+# 起動時に %TEMP%\MEI{hash}\ へ展開するため初回起動は遅い（Windows Defender が毎回スキャン）
+# 配布の手軽さを優先する場合に使用する
 import os
 from PyInstaller.utils.hooks import collect_all
 
-# ─── 不要 DLL の除外リスト（Analysis 後に a.binaries をフィルタ）─────────────
-# RRoulette が使わない Qt モジュールの DLL および PIL バイナリを除外する
+# ─── 不要 DLL の除外リスト ───────────────────────────────────────────────────
 _EXCLUDE_DLL_PREFIXES = (
-    'Qt6WebEngine',       # ~195MB — 最大の不要ファイル
-    'Qt6Quick',           # QML/QtQuick — 不使用
-    'Qt6Qml',             # QML エンジン — 不使用
-    'Qt63D',              # Qt3D — 不使用
+    'Qt6WebEngine',
+    'Qt6Quick',
+    'Qt6Qml',
+    'Qt63D',
     'Qt6Bluetooth',
     'Qt6Charts',
     'Qt6DataVisualization',
     'Qt6Designer',
     'Qt6Location',
-    'Qt6Multimedia',      # pygame で音声を扱うため不要
+    'Qt6Multimedia',
     'Qt6Nfc',
     'Qt6Pdf',
     'Qt6Positioning',
@@ -34,19 +36,14 @@ _EXCLUDE_DLL_PREFIXES = (
     'Qt6DBus',
 )
 
-# ─── 不要ディレクトリの除外リスト（a.binaries / a.datas 両方に適用）───────
-# 宛先パスのプレフィックスで判定する
 _EXCLUDE_DEST_DIRS = (
-    # Pillow: pygame.mixer のみ使用、pygame.image は未使用
     'PIL',
-    # NumPy: WAV ファイル事前生成済みのため実行時に不要（sound_manager でオプション化済み）
     'numpy',
-    # PySide6 開発用リソース（実行時不要）
-    'PySide6/resources',       # WebEngine .pak ファイル群 ~101MB
-    'PySide6/translations',    # Qt UI 翻訳ファイル ~58MB
-    'PySide6/qml',             # QML モジュール ~22MB
-    'PySide6/metatypes',       # Qt メタデータ JSON ~14MB
-    'PySide6/include',         # C++ ヘッダー ~1MB
+    'PySide6/resources',
+    'PySide6/translations',
+    'PySide6/qml',
+    'PySide6/metatypes',
+    'PySide6/include',
     'PySide6/doc',
     'PySide6/glue',
     'PySide6/typesystems',
@@ -56,13 +53,10 @@ _EXCLUDE_DEST_DIRS = (
 
 
 def _keep_binary(entry):
-    """不要な DLL / pyd を除外する。"""
     dest = entry[0]
     name = os.path.basename(dest).lower()
-    # Qt 不要 DLL をファイル名プレフィックスで除外
     if any(name.startswith(p.lower()) for p in _EXCLUDE_DLL_PREFIXES):
         return False
-    # 不要ディレクトリ配下のバイナリを宛先パスで除外
     dest_norm = dest.replace('\\', '/')
     return not any(
         dest_norm.startswith(d + '/') or dest_norm == d
@@ -71,7 +65,6 @@ def _keep_binary(entry):
 
 
 def _keep_data(entry):
-    """不要なデータファイルを除外する。"""
     dest_norm = entry[0].replace('\\', '/')
     return not any(
         dest_norm.startswith(d + '/') or dest_norm.startswith(d + '\\') or dest_norm == d
@@ -87,7 +80,6 @@ tmp_ret = collect_all('PySide6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pygame')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-# numpy は実行時任意依存のため collect_all しない
 tmp_ret = collect_all('winsdk')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -109,12 +101,9 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # NumPy（実行時不要）
         'numpy',
-        # Pillow（pygame.image 未使用のため不要）
         'PIL',
         'Pillow',
-        # 未使用 PySide6 モジュール
         'PySide6.QtWebEngine',
         'PySide6.QtWebEngineCore',
         'PySide6.QtWebEngineWidgets',
@@ -158,7 +147,6 @@ a = Analysis(
     optimize=0,
 )
 
-# hooks が追加した不要ファイルを Analysis 後に除去する
 a.binaries = [b for b in a.binaries if _keep_binary(b)]
 a.datas    = [d for d in a.datas    if _keep_data(d)]
 
@@ -167,7 +155,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    [],
+    a.binaries,
+    a.datas,
     name='RRoulette',
     debug=False,
     bootloader_ignore_signals=False,
@@ -179,14 +168,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='RRoulette',
 )
