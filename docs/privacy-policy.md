@@ -18,6 +18,8 @@ RCommentHub uses YouTube Data API v3, including live chat related APIs, to retri
 
 RCommentHub may also support an API key mode for public data access and compatibility.
 
+Google's handling of information in Google services is described in the [Google Privacy Policy](https://policies.google.com/privacy).
+
 ## Information RCommentHub May Access
 
 When you use RCommentHub with YouTube Live, the tool may access or process the following information through YouTube API Services:
