@@ -23,6 +23,22 @@ RCommentHub で YouTube ライブチャットを受信するには、Google Clou
 
 ---
 
+## プライバシー・利用規約
+
+RCommentHub の YouTube Data API v3 利用を含むデータの扱いについては、以下を参照してください。
+
+| 文書 | English | 日本語 |
+|---|---|---|
+| Privacy Policy / プライバシーポリシー | [English](PRIVACY_POLICY.md) | [日本語](PRIVACY_POLICY.ja.md) |
+| Terms of Service / 利用規約 | [English](TERMS_OF_SERVICE.md) | [日本語](TERMS_OF_SERVICE.ja.md) |
+
+GitHub Pages 用の同等ページ:
+
+- Privacy Policy: [English](docs/privacy-policy.md) / [日本語](docs/privacy-policy.ja.md)
+- Terms of Service: [English](docs/terms-of-service.md) / [日本語](docs/terms-of-service.ja.md)
+
+---
+
 ## OBSでの使用について
 
 各ツールはOBSの**ウィンドウキャプチャ**でキャプチャできます。
