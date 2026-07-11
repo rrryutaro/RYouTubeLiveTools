@@ -2,10 +2,20 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.6.4"
+VERSION = "0.6.6"
 # Development builds: integer build number. None for release/public builds.
 DEV_BUILD = None
 APP_VERSION = f"v{VERSION}+b{DEV_BUILD}" if DEV_BUILD is not None else f"v{VERSION}"
+
+# ─── 自動アップデート用 リポジトリ情報 ───────────────────────────────
+# GitHub Releases から最新版を確認する。
+GITHUB_OWNER = "rrryutaro"
+GITHUB_REPO = "RYouTubeLiveTools"
+RELEASE_TAG_PREFIX = "RRoulette-v"  # このプレフィックスのタグのみ RRoulette のリリースとして扱う
+
+# 外部リンク（管理パネルのアップデートセクションから開く）
+RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+MANUAL_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/docs/rroulette_sections.md"
 
 # Windows ウィンドウスタイル定数
 GWL_EXSTYLE      = -20

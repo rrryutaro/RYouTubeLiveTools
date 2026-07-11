@@ -44,8 +44,33 @@ app.setFont(QFont("Meiryo", 9))
 # クラッシュ後の stale 問題は発生しない。
 _INSTANCE_MUTEX_NAME = "Local\\RRoulette_SingleInstance_v1"
 _ERROR_ALREADY_EXISTS = 183
-_instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
-if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+
+
+def _acquire_instance_mutex():
+    """単一起動ミューテックスを取得する。取得できたら (handle, True) を返す。
+
+    自動更新直後の再起動（引数 --rr-updated）では、旧プロセスの終了直後で
+    ミューテックスがまだ解放されていないことがあるため、数秒間リトライする。
+    通常起動では 1 回だけ試し、既存があれば即 (handle, False)。
+    """
+    import time
+    updated = "--rr-updated" in sys.argv
+    attempts = 24 if updated else 1   # 更新時は ~12 秒までリトライ
+    handle = None
+    for _i in range(attempts):
+        handle = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
+        if ctypes.windll.kernel32.GetLastError() != _ERROR_ALREADY_EXISTS:
+            return handle, True   # 取得成功
+        # 既存あり → 更新時は旧プロセスの完全終了を待って再試行
+        ctypes.windll.kernel32.CloseHandle(handle)
+        handle = None
+        if _i < attempts - 1:
+            time.sleep(0.5)
+    return handle, False
+
+
+_instance_mutex, _acquired = _acquire_instance_mutex()
+if not _acquired:
     # 既に起動中 — ウィンドウを列挙して前面化する
     _found_hwnd = [0]
     _EnumCB = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)

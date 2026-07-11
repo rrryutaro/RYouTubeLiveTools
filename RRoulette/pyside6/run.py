@@ -54,8 +54,27 @@ app.setFont(QFont("Meiryo", 9))
 # もう一方の多重起動を防ぐ。
 _INSTANCE_MUTEX_NAME = "Local\\RRoulette_SingleInstance_v1"
 _ERROR_ALREADY_EXISTS = 183
-_instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
-if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+
+
+def _acquire_instance_mutex():
+    """単一起動ミューテックスを取得（更新直後 --rr-updated は数秒リトライ）。"""
+    import time
+    updated = "--rr-updated" in sys.argv
+    attempts = 24 if updated else 1
+    handle = None
+    for _i in range(attempts):
+        handle = ctypes.windll.kernel32.CreateMutexW(None, True, _INSTANCE_MUTEX_NAME)
+        if ctypes.windll.kernel32.GetLastError() != _ERROR_ALREADY_EXISTS:
+            return handle, True
+        ctypes.windll.kernel32.CloseHandle(handle)
+        handle = None
+        if _i < attempts - 1:
+            time.sleep(0.5)
+    return handle, False
+
+
+_instance_mutex, _acquired = _acquire_instance_mutex()
+if not _acquired:
     # 既に起動中 — ウィンドウを列挙して前面化する
     _found_hwnd = [0]
     _EnumCB = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)

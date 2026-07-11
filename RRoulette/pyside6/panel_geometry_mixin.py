@@ -994,6 +994,13 @@ class PanelGeometryMixin:
             # ルーレットパネルを前面に出す場合があるため、最後に再度 raise する。
             if getattr(self, "_manage_panel_visible", False):
                 self._manage_panel.raise_()
+            # v0.6.5: 起動時の更新チェック（非ブロッキング）。ウィンドウ表示・
+            # パネル復元が完了したこの時点で開始する（仕様_001 §9）。
+            try:
+                if hasattr(self, "_maybe_check_update_on_startup"):
+                    self._maybe_check_update_on_startup()
+            except Exception as _e:
+                print(f"[update] 起動時チェック起動に失敗（無視）: {_e}")
 
     def moveEvent(self, event):
         """ウィンドウ移動時に位置を保存対象にする (最小化中はスキップ)。"""

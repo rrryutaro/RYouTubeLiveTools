@@ -97,6 +97,7 @@ from window_frame_mixin import WindowFrameMixin
 from action_dispatch_mixin import ActionDispatchMixin
 from save_load_mixin import SaveLoadMixin
 from accessor_helper_mixin import AccessorHelperMixin
+from update_flow_mixin import UpdateFlowMixin
 from main_window_helpers import _SpaceSpinFilter, _TabRouletteFilter, _MainWindowDragBar, _IdleResetFilter
 
 import logging
@@ -106,7 +107,7 @@ _LINK_SPIN_QUEUE_MAX = 10  # i114: 連携スピンキューの最大件数
 
 
 
-class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, SequentialSpinMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, PanelGeometryMixin, QMainWindow):
+class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, WindowFrameMixin, ContextMenuMixin, UIToggleMixin, PackageIOMixin, SettingsIOMixin, LogShuffleMixin, MacroFlowMixin, SequentialSpinMixin, DesignGraphMixin, ReplayManagementMixin, PatternManagementMixin, ItemEntriesMixin, SettingsDispatchMixin, SpinFlowMixin, RouletteLifecycleMixin, UpdateFlowMixin, PanelGeometryMixin, QMainWindow):
     """PySide6 プロトタイプのメインウィンドウ。
 
     独立パネル群（RoulettePanel, SettingsPanel）を載せる土台。
@@ -156,6 +157,10 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         # 初期化完了フラグを立て、以後の geometry_changed で
         # _persist_panel_positions が走るようにする。
         self._init_complete = True
+
+        # v0.6.5: 自動アップデートの初期状態（source/開発ビルドはボタン無効化）。
+        # 起動時チェックは showEvent 後（_do_initial_panel_restore）で非同期起動する。
+        self._init_update_flow()
 
     # ================================================================
     #  __init__ 補助 — 責務別 private initializer 群 (i453)
@@ -1396,6 +1401,15 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         )
         self._manage_panel.link_show_time_changed.connect(  # i100
             self._on_manage_link_show_time_changed
+        )
+        self._manage_panel.update_check_requested.connect(  # v0.6.5
+            self._on_update_check_requested
+        )
+        self._manage_panel.release_page_requested.connect(  # v0.6.6
+            self._on_open_releases_page
+        )
+        self._manage_panel.manual_page_requested.connect(  # v0.6.6
+            self._on_open_manual_page
         )
 
     def _on_manage_ticket_toggled(self, visible: bool):

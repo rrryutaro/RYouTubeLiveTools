@@ -100,6 +100,12 @@ class ManagePanel(QFrame):
     # v0.6.1: アプリ設定内サブグループ単位の初期化要求 (subgroup_key)
     app_subgroup_reset_requested = Signal(str)
 
+    # v0.6.5: 自動アップデート（仕様_001）
+    update_check_requested = Signal()        # [更新を確認] クリック（手動チェック）
+    # v0.6.6: 外部リンク
+    release_page_requested = Signal()        # 「リリースページ」クリック
+    manual_page_requested = Signal()         # 「マニュアル」クリック
+
     def __init__(self, design: DesignSettings, *,
                  items_visible: bool = True,
                  settings_visible: bool = False,
@@ -719,6 +725,110 @@ class ManagePanel(QFrame):
 
         body_layout.addSpacing(4)
 
+        # ── v0.6.5: アップデート（折りたたみ式・初期展開） ──────────
+        # 仕様_001 §8: 現在版表示 / [更新を確認] / 起動時チェック CB /
+        #              ステータス行 / バッジ（更新ありの控えめ通知）
+        self._update_available_version = None  # str | None（バッジ/ヘッダ表示制御）
+
+        self._update_grp_btn = QPushButton("▼ アップデート")
+        self._update_grp_btn.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._update_grp_btn.setCheckable(True)
+        self._update_grp_btn.setChecked(True)
+        self._update_grp_btn.setStyleSheet(_grp_toggle_style)
+        self._update_grp_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._update_grp_btn.toggled.connect(self._on_update_grp_toggle)
+        body_layout.addWidget(self._update_grp_btn)
+
+        self._update_grp_content = QWidget(body)  # i068: 親なし HWND フラッシュ防止
+        _ugc = QVBoxLayout(self._update_grp_content)
+        _ugc.setContentsMargins(0, 4, 0, 4)
+        _ugc.setSpacing(4)
+
+        # 現在バージョン + バッジ行
+        _ver_row = QHBoxLayout()
+        _ver_row.setContentsMargins(0, 0, 0, 0)
+        _ver_row.setSpacing(6)
+        self._update_current_lbl = QLabel(f"現在: {APP_VERSION}")
+        self._update_current_lbl.setFont(QFont("Meiryo", 9))
+        self._update_current_lbl.setStyleSheet(f"color: {design.text};")
+        _ver_row.addWidget(self._update_current_lbl)
+        # バッジ（更新あり時のみ表示・控えめな●）
+        self._update_badge_lbl = QLabel("●")
+        self._update_badge_lbl.setFont(QFont("Meiryo", 9, QFont.Weight.Bold))
+        self._update_badge_lbl.setStyleSheet(f"color: {design.accent};")
+        self._update_badge_lbl.setVisible(False)
+        _ver_row.addWidget(self._update_badge_lbl)
+        _ver_row.addStretch(1)
+        _ugc.addLayout(_ver_row)
+
+        # [更新を確認] ボタン
+        self._update_check_btn = QPushButton("更新を確認")
+        self._update_check_btn.setFont(QFont("Meiryo", 9))
+        self._update_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_check_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {design.separator}; color: {design.text};"
+            f"  border: none; border-radius: 4px; padding: 5px 10px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {design.accent}; }}"
+            f"QPushButton:disabled {{ color: {design.text_sub}; }}"
+        )
+        self._update_check_btn.clicked.connect(self.update_check_requested.emit)
+        _ugc.addWidget(self._update_check_btn)
+
+        # ステータス行
+        self._update_status_lbl = QLabel("")
+        self._update_status_lbl.setFont(QFont("Meiryo", 8))
+        self._update_status_lbl.setStyleSheet(f"color: {design.text_sub};")
+        self._update_status_lbl.setWordWrap(True)
+        _ugc.addWidget(self._update_status_lbl)
+
+        # 起動時チェック CB（AppSettings へ保存）
+        _startup_default = getattr(self._settings, "update_check_on_startup", True) \
+            if self._settings is not None else True
+        self._update_startup_cb = QCheckBox("起動時に更新を確認する")
+        self._update_startup_cb.setFont(QFont("Meiryo", 9))
+        self._update_startup_cb.setStyleSheet(f"color: {design.text};")
+        self._update_startup_cb.setChecked(bool(_startup_default))
+        self._update_startup_cb.toggled.connect(
+            lambda v: self.app_setting_changed.emit("update_check_on_startup", bool(v))
+        )
+        _ugc.addWidget(self._update_startup_cb)
+
+        # v0.6.6: 外部リンク（リリースページ / マニュアル）
+        _link_btn_style = (
+            f"QPushButton {{"
+            f"  background-color: transparent; color: {design.text_sub};"
+            f"  border: none; text-align: left; padding: 1px 0px;"
+            f"  text-decoration: underline;"
+            f"}}"
+            f"QPushButton:hover {{ color: {design.accent}; }}"
+        )
+        _links_row = QHBoxLayout()
+        _links_row.setContentsMargins(0, 0, 0, 0)
+        _links_row.setSpacing(12)
+        self._update_releases_btn = QPushButton("リリースページ")
+        self._update_releases_btn.setFont(QFont("Meiryo", 8))
+        self._update_releases_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_releases_btn.setStyleSheet(_link_btn_style)
+        self._update_releases_btn.setToolTip("更新内容（リリース一覧）をブラウザで開く")
+        self._update_releases_btn.clicked.connect(self.release_page_requested.emit)
+        _links_row.addWidget(self._update_releases_btn)
+        self._update_manual_btn = QPushButton("マニュアル")
+        self._update_manual_btn.setFont(QFont("Meiryo", 8))
+        self._update_manual_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_manual_btn.setStyleSheet(_link_btn_style)
+        self._update_manual_btn.setToolTip("RRoulette の使い方（マニュアル）をブラウザで開く")
+        self._update_manual_btn.clicked.connect(self.manual_page_requested.emit)
+        _links_row.addWidget(self._update_manual_btn)
+        _links_row.addStretch(1)
+        _ugc.addLayout(_links_row)
+
+        self._update_grp_content.setVisible(True)
+        body_layout.addWidget(self._update_grp_content)
+
+        body_layout.addSpacing(4)
+
         # i467: バージョン表示（管理パネル下部）
         _ver_lbl = QLabel(APP_VERSION)
         _ver_lbl.setFont(QFont("Meiryo", 8))
@@ -764,6 +874,85 @@ class ManagePanel(QFrame):
         """ルーレット管理グループの展開/折りたたみ。"""
         self._roulette_grp_content.setVisible(expanded)
         self._roulette_grp_btn.setText("▼ ルーレット管理" if expanded else "▶ ルーレット管理")
+
+    # -----------------------------------------------------------------
+    #  v0.6.5: アップデートセクション（仕様_001 §8）
+    # -----------------------------------------------------------------
+
+    def _update_grp_header_text(self, expanded: bool) -> str:
+        """アップデートグループのヘッダ文字列（折りたたみ時も更新ありを示す）。"""
+        arrow = "▼" if expanded else "▶"
+        mark = "  — 更新あり" if self._update_available_version else ""
+        return f"{arrow} アップデート{mark}"
+
+    def _on_update_grp_toggle(self, expanded: bool):
+        """アップデートグループの展開/折りたたみ。"""
+        self._update_grp_content.setVisible(expanded)
+        self._update_grp_btn.setText(self._update_grp_header_text(expanded))
+
+    def update_set_checking(self):
+        """手動チェック中: ステータス「確認中...」＋ボタン無効化。"""
+        self._update_status_lbl.setText("確認中...")
+        self._update_status_lbl.setStyleSheet(f"color: {self._design.text_sub};")
+        self._update_check_btn.setEnabled(False)
+
+    def update_set_latest(self):
+        """最新: バッジ消去・ステータス「最新です」。"""
+        self._update_available_version = None
+        self._update_badge_lbl.setVisible(False)
+        self._update_status_lbl.setText("最新です")
+        self._update_status_lbl.setStyleSheet(f"color: {self._design.text_sub};")
+        self._update_check_btn.setEnabled(True)
+        self._update_grp_btn.setText(
+            self._update_grp_header_text(self._update_grp_btn.isChecked())
+        )
+
+    def update_set_available(self, version: str):
+        """更新あり: バッジ表示＋ヘッダに「更新あり」＋ステータス。"""
+        self._update_available_version = version
+        self._update_badge_lbl.setVisible(True)
+        self._update_status_lbl.setText(f"v{version} があります")
+        self._update_status_lbl.setStyleSheet(
+            f"color: {self._design.accent}; font-weight: bold;"
+        )
+        self._update_check_btn.setEnabled(True)
+        self._update_grp_btn.setText(
+            self._update_grp_header_text(self._update_grp_btn.isChecked())
+        )
+
+    def update_set_error(self, detail: str = ""):
+        """確認失敗: ステータス「確認できませんでした」。"""
+        msg = "確認できませんでした"
+        if detail:
+            msg += f"（{detail}）"
+        self._update_status_lbl.setText(msg)
+        self._update_status_lbl.setStyleSheet(f"color: {self._design.text_sub};")
+        self._update_check_btn.setEnabled(True)
+
+    def update_set_disabled(self, reason: str):
+        """更新チェック無効（source/開発ビルド）: ボタン無効化＋理由表示。"""
+        self._update_available_version = None
+        self._update_badge_lbl.setVisible(False)
+        self._update_status_lbl.setText(reason)
+        self._update_status_lbl.setStyleSheet(f"color: {self._design.text_sub};")
+        self._update_check_btn.setEnabled(False)
+
+    def update_set_skipped(self, version: str):
+        """このバージョンをスキップ: バッジ消去・ステータス表示。"""
+        self._update_available_version = None
+        self._update_badge_lbl.setVisible(False)
+        self._update_status_lbl.setText(f"v{version} をスキップしました")
+        self._update_status_lbl.setStyleSheet(f"color: {self._design.text_sub};")
+        self._update_check_btn.setEnabled(True)
+        self._update_grp_btn.setText(
+            self._update_grp_header_text(self._update_grp_btn.isChecked())
+        )
+
+    def set_update_startup_checked(self, checked: bool):
+        """起動時チェック CB を外部から同期する（シグナルなし）。"""
+        self._update_startup_cb.blockSignals(True)
+        self._update_startup_cb.setChecked(bool(checked))
+        self._update_startup_cb.blockSignals(False)
 
     # v0.6.1: _on_apply_grp_toggle / set_apply_to_all は廃止
     # 「全ルーレットに適用」CB は設定パネル側へ移動

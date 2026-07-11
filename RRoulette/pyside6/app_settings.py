@@ -236,6 +236,12 @@ class AppSettings:
     log_history_all_patterns: bool = False  # False=選択中パターンのみ, True=全パターン表示
 
     # ============================================================
+    #  自動アップデート (v0.6.5)
+    # ============================================================
+    update_check_on_startup: bool = True       # 起動時に更新を確認するか
+    update_skipped_version: str | None = None  # 通知を抑止するバージョン（例 "0.6.6"）
+
+    # ============================================================
     #  ファクトリ
     # ============================================================
 
@@ -386,6 +392,8 @@ class AppSettings:
             link_panel_show_time=config.get("link_panel_show_time", False),
             link_auto_analyze=config.get("link_auto_analyze", True),
             link_auto_execute=config.get("link_auto_execute", False),
+            update_check_on_startup=config.get("update_check_on_startup", True),
+            update_skipped_version=config.get("update_skipped_version"),
         )
 
     @classmethod
@@ -528,4 +536,6 @@ class AppSettings:
             "link_panel_show_time": self.link_panel_show_time,
             "link_auto_analyze": self.link_auto_analyze,
             "link_auto_execute": self.link_auto_execute,
+            "update_check_on_startup": self.update_check_on_startup,
+            "update_skipped_version": self.update_skipped_version,
         }
