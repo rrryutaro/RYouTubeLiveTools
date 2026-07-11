@@ -848,6 +848,16 @@ class RouletteLifecycleMixin:
                     _lp.show()
                 else:
                     _lp.hide()
+        elif key == "graph_btn":
+            # roulette_only 中に設定変更: グラフボタンの表示/非表示を即時反映
+            for _rid2 in self._manager.ids():
+                _ctx2 = self._manager.get(_rid2)
+                if _ctx2 and _ctx2.panel:
+                    if value:
+                        _ctx2.panel._graph_btn.show()
+                        _ctx2.panel._graph_btn.raise_()
+                    else:
+                        _ctx2.panel._graph_btn.hide()
 
     def _bring_panel_to_front(self, panel):
         """指定パネルを Z オーダーの最前面へ移動する。

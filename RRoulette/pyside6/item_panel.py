@@ -65,8 +65,8 @@ class _ItemPanelAPI:
     def replace_from_texts(self, texts):
         return self._sp.replace_entries_from_texts(texts)
 
-    def live_update(self, texts):
-        self._sp._live_update_from_text_entries(texts)
+    def live_update(self, texts, fresh=False):
+        self._sp._live_update_from_text_entries(texts, fresh=fresh)
 
     def set_active(self, entries):
         self._sp.set_active_entries(entries)
@@ -286,6 +286,9 @@ class ItemPanel(QFrame):
         self._skip_simple_rebuild: bool = False
         # テキスト編集モード開始時のスナップショット（キャンセル時ロールバック用）
         self._text_edit_snapshot: list | None = None
+        # テキストエリアが一度空にされた印。以後の入力は旧項目の属性
+        # （分割・確率）を継承せず全て新規項目として扱う。
+        self._text_was_emptied: bool = False
         self._capture_selector = None
         self._ocr_result_overlay = None
 
@@ -1251,6 +1254,11 @@ class ItemPanel(QFrame):
             mode_idx = 2
         self._simple_mode_combo.setCurrentIndex(mode_idx)
 
+        # 確率計算（固定確率スピンのデフォルト値にも使うため先に行う）
+        entries_list = list(entries)
+        probs = _calc_item_probs(entries_list)
+        pv = probs[idx] if idx < len(probs) else None
+
         # 重み係数コンボを有効項目数に応じて再構築してから選択
         n = len(entries)
         _populate_weight_combo(self._simple_weight_combo, n)
@@ -1265,10 +1273,13 @@ class ItemPanel(QFrame):
                     best = ci
             self._simple_weight_combo.setCurrentIndex(best)
 
-        # 固定確率スピン
+        # 固定確率スピン: fixed モードは保存値、それ以外は現在の計算確率をデフォルトに
+        # （前の項目の値が残って引き継がれる問題を防ぐ）
         if entry.prob_mode == "fixed":
             v = float(entry.prob_value) if entry.prob_value is not None else 10.0
-            self._simple_fixed_spin.setValue(v)
+        else:
+            v = round(pv, 1) if pv is not None else 10.0
+        self._simple_fixed_spin.setValue(max(0.1, min(99.9, v)))
 
         self._simple_value_stack.setCurrentIndex(mode_idx)
         self._simple_split_spin.setValue(entry.split_count if entry.split_count else 1)
@@ -1287,9 +1298,6 @@ class ItemPanel(QFrame):
             w.blockSignals(False)
 
         # 確率・当選数ラベル更新
-        entries_list = list(entries)
-        probs = _calc_item_probs(entries_list)
-        pv = probs[idx] if idx < len(probs) else None
         self._simple_prob_disp_lbl.setText(f"{pv:.1f}%" if pv is not None else "")
         win_count = self._simple_win_counts.get(entry.text, 0)
         self._simple_win_disp_lbl.setText(str(win_count) if win_count > 0 else "")
@@ -1480,10 +1488,11 @@ class ItemPanel(QFrame):
         if not on_entries:
             return
         total_after = sum(min(10, e.split_count + 1) for e in on_entries)
-        if total_after > ITEM_MAX_COUNT:
+        _max_count = self._api.settings.max_item_count
+        if total_after > _max_count:
             QMessageBox.warning(
                 self, "まとめて分割",
-                f"分割後のセグメント数（{total_after}）が上限（{ITEM_MAX_COUNT}）を\n"
+                f"分割後のセグメント数（{total_after}）が上限（{_max_count}）を\n"
                 "超えるため適用できません。",
             )
             return
@@ -1517,6 +1526,7 @@ class ItemPanel(QFrame):
             entries = self._api.entries
             # i305: 開始時スナップショット保存（キャンセル時ロールバック用）
             self._text_edit_snapshot = list(entries)
+            self._text_was_emptied = False
             text = serialize_items_text([e.text for e in entries])
             self._text_edit.blockSignals(True)
             self._text_edit.setPlainText(text)
@@ -1553,6 +1563,33 @@ class ItemPanel(QFrame):
         """テキスト編集をキャンセルする。MainWindow の ESC 処理から呼ばれる。"""
         self._on_text_cancel()
 
+    def show_text_edit_switch_refused(self):
+        """テキスト編集モード中にルーレット切替が要求されたときの警告表示。
+
+        切替は _set_active_roulette 側で拒否済み。ここでは理由をユーザーへ
+        明示するだけ（パターン切替の i340/i341 ガードと同じ流儀）。
+        """
+        self._text_warn_lbl.setText(
+            "テキスト編集中はルーレットを切り替えできません。"
+            "保存またはキャンセルしてください。"
+        )
+        self._text_warn_lbl.setVisible(True)
+
+    def force_discard_text_edit(self):
+        """テキスト編集モード中にアクティブルーレットが変わった場合の安全弁。
+
+        通常の切替は _set_active_roulette で拒否されるが、ルーレット削除など
+        ガードを通らない経路でアクティブが変わることがある。その場合は
+        スナップショットを適用せずに編集を破棄する。適用してしまうと
+        切替前のルーレットの項目（分割・確率つき）が切替後のルーレットへ
+        注入されてしまうため。
+        """
+        if not self.is_text_edit_mode():
+            return
+        self._text_edit_snapshot = None
+        self._text_was_emptied = False
+        self._exit_text_edit_mode()
+
     def _exit_text_edit_mode(self):
         """テキスト編集モードを終了して元の表示モードへ戻る。"""
         self._text_edit_btn.blockSignals(True)
@@ -1570,7 +1607,8 @@ class ItemPanel(QFrame):
             self._text_warn_lbl.setVisible(True)
             return
         # i078: 上限超過は silent truncate せず明示エラーで保存中止
-        limit_err = validate_item_limits(parsed)
+        _s = self._api.settings
+        limit_err = validate_item_limits(parsed, max_count=_s.max_item_count, max_chars=_s.max_item_chars)
         if limit_err:
             self._text_warn_lbl.setText(limit_err)
             self._text_warn_lbl.setVisible(True)
@@ -1609,15 +1647,30 @@ class ItemPanel(QFrame):
         """i305: テキスト編集モードでの入力途中即時プレビュー反映（live update 復活）。
 
         キャンセル / ESC では _on_text_cancel によりスナップショットへ巻き戻しされる。
+        テキストエリアを一度空にした場合、以後の入力は旧項目の属性
+        （分割・確率）を継承せず全て新規項目として扱う（_text_was_emptied）。
         """
         raw = self._text_edit.toPlainText()
         parsed = parse_items_text(raw)
         if not parsed:
+            # 全て消された: ホイールも空にする。
+            # 従来は return するだけで、直前に parse できた最後の 1 項目が
+            # ホイールに残り続ける不具合があった。空を反映してクリアする。
+            # 既に空なら再通知しない（連続 backspace 等での無駄な発火を防ぐ）。
+            if self._api.entries:
+                self._api.live_update([])
+            # 「空にした」印を立て、以後の入力を新規項目として扱う
+            # （旧項目の分割・確率を継承させない）。
+            self._text_was_emptied = True
             return
-        trimmed, _changed, _warn = enforce_item_limits(list(parsed))
+        _s2 = self._api.settings
+        trimmed, _changed, _warn = enforce_item_limits(list(parsed), max_count=_s2.max_item_count, max_chars=_s2.max_item_chars)
         if not trimmed:
             return
-        self._api.live_update(trimmed)
+        fresh = self._text_was_emptied
+        self._api.live_update(trimmed, fresh=fresh)
+        if fresh:
+            self._text_was_emptied = False
 
     # ----------------------------------------------------------------
     #  ドラッグ吸収

@@ -155,6 +155,16 @@ class DesignGraphMixin:
             self.apply_action(SetActiveRoulette(roulette_id))
         self._open_graph()
 
+    def _on_settings_graph_requested(self):
+        """設定パネルのグラフボタンからアクティブルーレットの in-panel グラフを開閉する。
+
+        独立ウィンドウ (GraphDialog) の代わりにパネル内グラフを使用することで
+        OBS キャプチャ対象に含まれ、タイトルルールの問題も回避できる。
+        """
+        ctx = self._manager.get(self._manager.active_id)
+        if ctx and ctx.panel:
+            ctx.panel._toggle_graph_panel()
+
     # ------------------------------------------------------------------
     #  パネル内グラフ
     # ------------------------------------------------------------------

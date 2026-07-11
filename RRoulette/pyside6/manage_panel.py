@@ -1065,6 +1065,37 @@ class ManagePanel(QFrame):
         )
         replay_layout.addWidget(self._mp_replay_record_effects_cb)
 
+        # === サブグループ 5: 項目リスト制限 ===
+        item_limit_layout = _make_subgroup("項目リスト制限", "item_limit", expanded=False)
+
+        def _make_limit_row(label_text, key, init_val, min_val, max_val, suffix, parent):
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            lbl = QLabel(label_text)
+            lbl.setFont(QFont("Meiryo", 8))
+            lbl.setStyleSheet(lbl_style)
+            row.addWidget(lbl)
+            sp = NoWheelSpinBox()
+            sp.setFont(QFont("Meiryo", 8))
+            sp.setRange(min_val, max_val)
+            sp.setValue(int(init_val))
+            sp.setSuffix(suffix)
+            sp.setStyleSheet(spin_style)
+            sp.valueChanged.connect(lambda v, k=key: emit(k, v))
+            row.addWidget(sp)
+            row.addStretch(1)
+            parent.addLayout(row)
+            return sp
+
+        self._mp_max_item_count_spin = _make_limit_row(
+            "最大項目数:", "max_item_count",
+            _g("max_item_count", 36), 2, 200, " 件", item_limit_layout,
+        )
+        self._mp_max_item_chars_spin = _make_limit_row(
+            "1行の最大文字数:", "max_item_chars",
+            _g("max_item_chars", 20), 5, 100, " 文字", item_limit_layout,
+        )
+
         # v0.6.1: 「自動全面非表示」「外部連携」サブグループは __init__ 末尾で
         # 既存ウィジェットを CollapsibleSection に再ペアレントする形で組み込む。
         # ここではサブグループ用 layout を確保するための placeholder 関数を保存。
@@ -1125,6 +1156,14 @@ class ManagePanel(QFrame):
             self._mp_replay_max_spin.blockSignals(True)
             self._mp_replay_max_spin.setValue(int(value))
             self._mp_replay_max_spin.blockSignals(False)
+        elif key == "max_item_count":
+            self._mp_max_item_count_spin.blockSignals(True)
+            self._mp_max_item_count_spin.setValue(int(value))
+            self._mp_max_item_count_spin.blockSignals(False)
+        elif key == "max_item_chars":
+            self._mp_max_item_chars_spin.blockSignals(True)
+            self._mp_max_item_chars_spin.setValue(int(value))
+            self._mp_max_item_chars_spin.blockSignals(False)
 
     def _on_ro_only_toggle(self, expanded: bool):
         """ルーレット以外非表示時セクションの展開/折りたたみ。"""

@@ -2,7 +2,7 @@
 RRoulette — 共有定数
 """
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 # Development builds: integer build number. None for release/public builds.
 DEV_BUILD = None
 APP_VERSION = f"v{VERSION}+b{DEV_BUILD}" if DEV_BUILD is not None else f"v{VERSION}"

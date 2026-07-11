@@ -148,6 +148,14 @@ class SaveLoadMixin:
         i338: SettingsPanel のパターン一覧も active ルーレット専用に切り替える。
         i422: DesignEditorDialog が開いていれば active ルーレットの項目数を反映する。
         """
+        # 安全弁: テキスト編集モードのままアクティブが変わった場合は編集を破棄する。
+        # 通常の切替は _set_active_roulette で拒否されるが、ルーレット削除など
+        # ガードを通らない経路でアクティブが変わることがある。破棄しないと
+        # 編集画面・スナップショットが旧ルーレットの内容のまま残り、
+        # キャンセル/保存時に新しい active へ旧項目が注入されてしまう。
+        _ip = getattr(self, "_item_panel", None)
+        if _ip is not None and _ip.is_text_edit_mode():
+            _ip.force_discard_text_edit()
         ctx = self._active_context
         entries = ctx.item_entries
         self._settings_panel.set_active_entries(entries)

@@ -386,7 +386,7 @@ class MainWindow(AccessorHelperMixin, SaveLoadMixin, ActionDispatchMixin, Window
         self._settings_panel.design_editor_requested.connect(
             self._open_design_editor
         )
-        self._settings_panel.graph_requested.connect(self._open_graph)
+        self._settings_panel.graph_requested.connect(self._on_settings_graph_requested)
         self._settings_panel.replay_play_requested.connect(
             lambda: self._start_replay(0)
         )

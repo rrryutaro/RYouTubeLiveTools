@@ -80,6 +80,16 @@ class ActionDispatchMixin:
         将来の複数ルーレット切替の統一入口。
         manager の set_active → SettingsPanel 同期をまとめる。
         """
+        # テキスト編集モード中のルーレット切替は拒否する。
+        # 切替を許すと、編集画面とキャンセル用スナップショットが切替前の
+        # ルーレットの内容のまま残り、キャンセル/保存/即時反映が切替後の
+        # ルーレットへ旧ルーレットの項目（分割・確率つき）を注入してしまう。
+        # パターン切替のガード（i340/i341）と対称の扱い。
+        ip = getattr(self, "_item_panel", None)
+        if (ip is not None and ip.is_text_edit_mode()
+                and roulette_id != self._manager.active_id):
+            ip.show_text_edit_switch_refused()
+            return
         old_id = self._manager.active_id
         # i050: active 切替前に現在のチケットデータを old context に flush する
         tp = getattr(self, "_ticket_panel", None)

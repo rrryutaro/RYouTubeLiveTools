@@ -626,7 +626,9 @@ class _ItemsMixin:
             for i in range(combo.count()):
                 if combo.itemData(i) is not None and combo.itemData(i) <= old_val:
                     best_idx = i
+            combo.blockSignals(True)
             combo.setCurrentIndex(best_idx)
+            combo.blockSignals(False)
 
     def _on_prob_value_changed(self):
         """確率値変更時: 通知。"""

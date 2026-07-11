@@ -107,6 +107,10 @@ class AppSettings:
     # 項目パネル表示モード (i289): 0=詳細表示, 1=シンプル表示
     item_panel_display_mode: int = 1  # i315: デフォルトはシンプルモード
 
+    # 項目リスト制限値（管理パネルから変更可）:
+    max_item_count: int = 36   # 最大項目数
+    max_item_chars: int = 20   # 1行の最大文字数
+
     # ルーレット以外非表示時の個別表示設定 (i463/i464/i465):
     # True = ルーレット以外非表示モード ON 時にも「表示する」（残す）
     # --- ルーレットパネル内の補助要素 ---
@@ -349,6 +353,8 @@ class AppSettings:
             show_item_win_count=config.get("show_item_win_count", True),
             show_item_extra_badges=config.get("show_item_extra_badges", True),
             item_panel_display_mode=config.get("item_panel_display_mode", 1),
+            max_item_count=config.get("max_item_count", 36),
+            max_item_chars=config.get("max_item_chars", 20),
             roulette_only_show_selection_handle=config.get("roulette_only_show_selection_handle", True),
             roulette_only_show_title_plate=config.get("roulette_only_show_title_plate", True),
             roulette_only_show_graph_btn=config.get("roulette_only_show_graph_btn", True),
@@ -489,6 +495,8 @@ class AppSettings:
             "show_item_win_count": self.show_item_win_count,
             "show_item_extra_badges": self.show_item_extra_badges,
             "item_panel_display_mode": self.item_panel_display_mode,
+            "max_item_count": self.max_item_count,
+            "max_item_chars": self.max_item_chars,
             "roulette_only_show_selection_handle": self.roulette_only_show_selection_handle,
             "roulette_only_show_title_plate": self.roulette_only_show_title_plate,
             "roulette_only_show_graph_btn": self.roulette_only_show_graph_btn,

@@ -8,7 +8,7 @@ Launcher — YouTubeLiveTools 管理ランチャー
 
 import tkinter as tk
 from tkinter import messagebox
-import json, os, sys, glob, subprocess, ctypes, ctypes.wintypes, re
+import json, os, sys, glob, subprocess, ctypes, ctypes.wintypes, re, shutil, time
 
 # ─── ウィンドウスタイル定数 ──────────────────────────────────────────
 GWL_EXSTYLE      = -20
@@ -30,6 +30,7 @@ VERSION_HINTS = {
 # 値は os.path.join 用のパス要素タプル。
 ENTRY_OVERRIDES = {
     "RRoulette": ("pyside6", "run.py"),
+    "RSheetsViewer": ("sheets_viewer.py",),
 }
 
 
@@ -67,7 +68,7 @@ def _read_version(tool_dir, tool_name):
             return None
         dev_build = values.get("DEV_BUILD")
         if dev_build is not None:
-            return f"{version}-dev.{dev_build}"
+            return f"{version}+b{dev_build}"
         return str(version)
     except Exception:
         pass
@@ -80,6 +81,7 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CONFIG_FILE = os.path.join(BASE_DIR, "launcher_settings.json")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 DEFAULT_CONFIG = {
     "x": 200, "y": 200,
@@ -114,6 +116,21 @@ REQUIREMENT_IMPORTS = {
 }
 
 
+def _python_command():
+    """Return a command prefix that can run project Python scripts."""
+    if not getattr(sys, "frozen", False):
+        return [sys.executable]
+
+    for candidate in ("python", "py"):
+        path = shutil.which(candidate)
+        if not path:
+            continue
+        if candidate == "py":
+            return [path, "-3"]
+        return [path]
+    return []
+
+
 def _requirement_package_name(line):
     """Return the distribution name from one requirements.txt line."""
     name = line.split("#", 1)[0].strip()
@@ -123,6 +140,19 @@ def _requirement_package_name(line):
     name = re.split(r"\s*[<>=!~]", name, maxsplit=1)[0].strip()
     name = name.split("[", 1)[0].strip()
     return name
+
+
+def _safe_log_name(name):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "tool"
+
+
+def _read_log_tail(path, limit=4000):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = f.read()
+        return data[-limit:].strip()
+    except Exception as e:
+        return f"ログを読み取れませんでした: {e}"
 
 
 def _is_on_any_monitor(x, y, w=1, h=1):
@@ -330,17 +360,78 @@ class LauncherApp:
 
     # ─── 起動 ────────────────────────────────────────────────────
     def _run_python(self, tool):
-        if not self._check_python_requirements(tool):
+        python_cmd = _python_command()
+        if not python_cmd:
+            messagebox.showerror(
+                "Python が見つかりません",
+                "Python 実行ファイルが見つかりませんでした。\n"
+                "Python実行で起動する場合は python.exe または py.exe が必要です。\n"
+                "EXEを使用する場合は Build 後に ▶ EXE から起動してください。",
+                parent=self.root,
+            )
+            return
+
+        if not self._check_python_requirements(tool, python_cmd):
             return
         try:
-            subprocess.Popen(
-                [sys.executable, tool["py"]],
-                cwd=os.path.dirname(tool["py"])
+            os.makedirs(LOG_DIR, exist_ok=True)
+            log_path = os.path.join(
+                LOG_DIR,
+                f"{_safe_log_name(tool['name'])}_python_{time.strftime('%Y%m%d_%H%M%S')}.log"
+            )
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+                log.write("Command: " + " ".join(python_cmd + [tool["py"]]) + "\n")
+                log.write("CWD: " + os.path.dirname(tool["py"]) + "\n\n")
+                log.flush()
+                proc = subprocess.Popen(
+                    python_cmd + [tool["py"]],
+                    cwd=os.path.dirname(tool["py"]),
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            self.root.after(
+                1000,
+                lambda p=proc, t=tool, lp=log_path: self._check_python_launch(p, t, lp, 0),
             )
         except Exception as e:
-            print(f"Python起動エラー [{tool['name']}]: {e}")
+            messagebox.showerror(
+                "Python起動エラー",
+                f"{tool['name']} を起動できませんでした。\n\n{e}",
+                parent=self.root,
+            )
 
-    def _check_python_requirements(self, tool):
+    def _check_python_launch(self, proc, tool, log_path, elapsed_ms):
+        code = proc.poll()
+        if code is None:
+            if elapsed_ms < 30000:
+                self.root.after(
+                    1000,
+                    lambda p=proc, t=tool, lp=log_path, e=elapsed_ms + 1000:
+                        self._check_python_launch(p, t, lp, e),
+                )
+            return
+
+        # 正常終了（コード0）はエラー扱いしない。
+        # GUI アプリを普通に利用してから閉じた場合もここに到達するため、
+        # 「起動直後に終了」の誤検出になっていた。起動失敗（未処理例外等）は
+        # コードが非0になるので、code != 0 のときだけエラーを表示する。
+        if code == 0:
+            return
+
+        tail = _read_log_tail(log_path)
+        if not tail:
+            tail = "ログ出力はありません。"
+        messagebox.showerror(
+            "Python起動エラー",
+            f"{tool['name']} が起動直後に終了しました。\n"
+            f"終了コード: {code}\n\n"
+            f"ログ: {log_path}\n\n"
+            f"{tail}",
+            parent=self.root,
+        )
+
+    def _check_python_requirements(self, tool, python_cmd):
         req_path = tool.get("requirements")
         if not req_path:
             return True
@@ -357,7 +448,7 @@ class LauncherApp:
                     import_check = REQUIREMENT_IMPORTS.get(
                         package.lower(), package.replace("-", "_")
                     )
-                    if not self._can_import(import_check):
+                    if not self._can_import(python_cmd, import_check):
                         missing.append(package)
         except Exception:
             return True
@@ -371,16 +462,16 @@ class LauncherApp:
             "このPython環境へ依存パッケージをインストールしますか？\n"
             "実行する場合は、処理内容が見えるように別コンソールでpipを起動します。\n\n"
             "手動で行う場合のコマンド:\n"
-            f'"{sys.executable}" -m pip install -r "{req_path}"'
+            f'"{python_cmd[0]}" {" ".join(python_cmd[1:])} -m pip install -r "{req_path}"'.replace("  ", " ")
         )
         if messagebox.askyesno("依存パッケージ不足", msg, parent=self.root):
-            self._run_requirements_install(tool, req_path)
+            self._run_requirements_install(tool, req_path, python_cmd)
         return False
 
-    def _run_requirements_install(self, tool, req_path):
+    def _run_requirements_install(self, tool, req_path, python_cmd):
         try:
             subprocess.Popen(
-                [sys.executable, "-m", "pip", "install", "-r", req_path],
+                python_cmd + ["-m", "pip", "install", "-r", req_path],
                 cwd=os.path.dirname(req_path),
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
@@ -391,7 +482,7 @@ class LauncherApp:
                 parent=self.root,
             )
 
-    def _can_import(self, import_check):
+    def _can_import(self, python_cmd, import_check):
         code = (
             import_check
             if "\n" in import_check or import_check.lstrip().startswith(("import ", "from "))
@@ -399,7 +490,7 @@ class LauncherApp:
         )
         try:
             completed = subprocess.run(
-                [sys.executable, "-c", code],
+                python_cmd + ["-c", code],
                 capture_output=True,
                 text=True,
                 timeout=10,

@@ -301,10 +301,10 @@ class PanelGeometryMixin:
                 if _ctx and _ctx.panel:
                     _p = _ctx.panel
                     _rp_ui_saved[_rid] = {
-                        "selection_handle": _p._selection_handle.isVisible(),
-                        "title_plate":      _p._title_plate.isVisible(),
-                        "graph_btn":        _p._graph_btn.isVisible(),
-                        "grip":             _p._grip.isVisible(),
+                        "selection_handle": _p._selection_handle.isVisibleTo(_p),
+                        "title_plate":      _p._title_plate.isVisibleTo(_p),
+                        "graph_btn":        _p._graph_btn.isVisibleTo(_p),
+                        "grip":             _p._grip.isVisibleTo(_p),
                     }
             _startup_snapshot = {
                 "item":                   s.items_panel_visible,

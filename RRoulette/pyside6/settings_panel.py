@@ -35,7 +35,10 @@ from PySide6.QtWidgets import (
     QMessageBox, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QApplication,
 )
 
-from item_text_helpers import serialize_items_text, parse_items_text, enforce_item_limits
+from item_text_helpers import (
+    serialize_items_text, parse_items_text, enforce_item_limits,
+    match_entries_to_texts,
+)
 from panel_widgets import (
     _SectionHeader, CollapsibleSection, _PanelGrip, _PanelDragBar,
     install_panel_context_menu, _PlaceholderSection, _MW_DRAG_BAR_H,
@@ -303,8 +306,10 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
     def replace_entries_from_texts(self, texts: list[str]) -> tuple[bool, str]:
         """テキスト直接編集モードからの結果を反映する。
 
-        - 既存 entries とテキストを順位ごとに突き合わせ、enabled / 確率設定 等は
-          可能な範囲で引き継ぐ
+        - 既存 entries とテキストを突き合わせ、enabled / 確率設定 / 分割等を
+          引き継ぐ。対応付けは「テキスト完全一致優先 → 残りは出現順ペアリング」
+          （match_entries_to_texts）。従来の行位置ベースは行の削除・挿入・
+          並べ替えで属性が別項目へ移る不具合があった。
         - 上限超過は enforce_item_limits でカット
         - 新しい行を `set_active_entries` で再構築
         - `item_entries_changed` シグナルで MainWindow へ通知
@@ -313,65 +318,35 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
             (changed_by_limit, warn_message): 上限により切り詰められたかどうかと
             ユーザーへのメッセージ。
         """
-        trimmed, changed, warn = enforce_item_limits(list(texts))
-        old_entries = list(self._item_entries)
-        new_entries: list[ItemEntry] = []
-        for j, text in enumerate(trimmed):
-            if j < len(old_entries) and old_entries[j].text == text:
-                new_entries.append(old_entries[j])
-            else:
-                # 既存の enabled 状態は同じ位置から引き継ぐ
-                if j < len(old_entries):
-                    base = old_entries[j]
-                    entry = ItemEntry(
-                        text=text,
-                        enabled=base.enabled,
-                        prob_mode=base.prob_mode,
-                        prob_value=base.prob_value,
-                        split_count=base.split_count,
-                    )
-                else:
-                    entry = ItemEntry(
-                        text=text, enabled=True,
-                        prob_mode=None, prob_value=None,
-                        split_count=1,
-                    )
-                new_entries.append(entry)
+        trimmed, changed, warn = enforce_item_limits(
+            list(texts),
+            max_count=self._settings.max_item_count,
+            max_chars=self._settings.max_item_chars,
+        )
+        new_entries = match_entries_to_texts(list(self._item_entries), trimmed)
         self.set_active_entries(new_entries)
         self.item_entries_changed.emit(new_entries)
         return changed, warn
 
-    def _live_update_from_text_entries(self, texts: list[str]) -> None:
+    def _live_update_from_text_entries(self, texts: list[str],
+                                       fresh: bool = False) -> None:
         """i284: テキスト編集モードからの即時プレビュー反映。
 
         `replace_entries_from_texts` は行 UI を再構築するためフォーカスや
         スクロール位置を壊してしまう（テキスト編集モード中であっても
         裏側で QLineEdit 群が作り直される）。
         ここでは ItemEntry のリストだけを更新し、シグナルだけ発火する。
-        既存の prob_mode / prob_value / split_count / enabled は同位置の
-        旧エントリから引き継ぎ、新規行はデフォルトを与える。
+        属性の対応付けは match_entries_to_texts（テキスト完全一致優先）。
+
+        Args:
+            texts: 反映する項目テキストのリスト
+            fresh: True の場合は旧エントリから一切継承せず、全行を初期値で
+                   新規作成する（テキストエリアを一度空にした後の入力用）。
         """
-        old_entries = list(self._item_entries)
-        new_entries: list[ItemEntry] = []
-        for j, text in enumerate(texts):
-            if j < len(old_entries) and old_entries[j].text == text:
-                new_entries.append(old_entries[j])
-                continue
-            if j < len(old_entries):
-                base = old_entries[j]
-                new_entries.append(ItemEntry(
-                    text=text,
-                    enabled=base.enabled,
-                    prob_mode=base.prob_mode,
-                    prob_value=base.prob_value,
-                    split_count=base.split_count,
-                ))
-            else:
-                new_entries.append(ItemEntry(
-                    text=text, enabled=True,
-                    prob_mode=None, prob_value=None,
-                    split_count=1,
-                ))
+        if fresh:
+            new_entries = [ItemEntry(text=t) for t in texts]
+        else:
+            new_entries = match_entries_to_texts(list(self._item_entries), texts)
         self._item_entries = new_entries
         self.item_entries_changed.emit(list(new_entries))
 
@@ -556,6 +531,10 @@ class SettingsPanel(_SectionsMixin, _ItemsMixin, QFrame):
                 self._log_all_patterns_cb.blockSignals(True)
                 self._log_all_patterns_cb.setChecked(value)
                 self._log_all_patterns_cb.blockSignals(False)
+        elif key == "max_item_count":
+            self._settings.max_item_count = int(value)
+        elif key == "max_item_chars":
+            self._settings.max_item_chars = int(value)
         elif key in ("confirm_reset", "confirm_item_delete", "theme_mode",
                       "float_win_show_instance",
                       "window_transparent", "roulette_transparent",

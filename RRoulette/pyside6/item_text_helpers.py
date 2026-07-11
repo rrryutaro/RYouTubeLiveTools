@@ -9,6 +9,65 @@ settings_panel.py から分離した純関数群。
 """
 
 from app_constants import ITEM_MAX_COUNT, ITEM_MAX_LINE_CHARS, ITEM_MAX_LINES
+from item_entry import ItemEntry
+
+
+def match_entries_to_texts(old_entries: list, texts: list[str]) -> list:
+    """テキスト編集結果（行リスト）と旧項目リストを対応付けて新しい ItemEntry リストを返す。
+
+    対応付けの規則:
+      1. テキスト完全一致（上から順に 1 対 1 で消費）
+         → 旧エントリのオブジェクトをそのまま維持（属性・item_id を保持）
+      2. 一致しなかった行同士を出現順にペアリングして属性を継承（リネーム扱い）
+         → enabled / prob_mode / prob_value / split_count / special_role / item_id
+      3. どちらにも該当しない行は初期値（分割なし・確率なし）で新規作成
+
+    従来は「同じ行位置」だけで対応付けていたため、行の削除・挿入・並べ替えで
+    分割・確率などの属性が別の項目へ移る不具合があった（例: 中間行を削除すると
+    削除した項目の分割数が次の項目へ引き継がれる）。
+
+    Args:
+        old_entries: 編集前の ItemEntry リスト
+        texts: テキスト編集で得られた項目テキストのリスト
+
+    Returns:
+        新しい ItemEntry リスト（texts と同じ順序・件数）
+    """
+    n_old = len(old_entries)
+    consumed = [False] * n_old
+    matched: list = [None] * len(texts)
+
+    # パス1: テキスト完全一致（上から順に未消費の旧エントリを消費）
+    for j, text in enumerate(texts):
+        for i in range(n_old):
+            if not consumed[i] and old_entries[i].text == text:
+                consumed[i] = True
+                matched[j] = old_entries[i]
+                break
+
+    # パス2: 残った行同士を出現順にペアリングして属性継承（リネーム扱い）
+    leftovers = [old_entries[i] for i in range(n_old) if not consumed[i]]
+    li = 0
+    result: list = []
+    for j, text in enumerate(texts):
+        if matched[j] is not None:
+            result.append(matched[j])
+            continue
+        if li < len(leftovers):
+            base = leftovers[li]
+            li += 1
+            result.append(ItemEntry(
+                text=text,
+                enabled=base.enabled,
+                prob_mode=base.prob_mode,
+                prob_value=base.prob_value,
+                split_count=base.split_count,
+                item_id=base.item_id,
+                special_role=base.special_role,
+            ))
+        else:
+            result.append(ItemEntry(text=text))
+    return result
 
 
 def serialize_items_text(items: list[str]) -> str:
@@ -102,19 +161,26 @@ def parse_items_text(raw: str) -> list[str]:
     return items
 
 
-def validate_item_limits(items: list[str]) -> str:
+def validate_item_limits(
+    items: list[str],
+    max_count: int | None = None,
+    max_chars: int | None = None,
+) -> str:
     """項目数 / 行数 / 文字数の上限を検証し、違反があればエラーメッセージを返す。
 
     i078: 保存前チェック用。切り捨ては行わない。
     問題なければ空文字列を返す。
+    max_count / max_chars を省略した場合は定数のデフォルト値を使う。
 
     Returns:
         エラーメッセージ文字列。問題なければ "" を返す。
     """
+    n_count = max_count if max_count is not None else ITEM_MAX_COUNT
+    n_chars = max_chars if max_chars is not None else ITEM_MAX_LINE_CHARS
     errors: list[str] = []
-    if len(items) > ITEM_MAX_COUNT:
+    if len(items) > n_count:
         errors.append(
-            f"項目数が上限（{ITEM_MAX_COUNT}件）を超えています（現在 {len(items)} 件）。"
+            f"項目数が上限（{n_count}件）を超えています（現在 {len(items)} 件）。"
             f"\n超過分を削除してから保存してください。"
         )
     for i, item in enumerate(items):
@@ -125,10 +191,10 @@ def validate_item_limits(items: list[str]) -> str:
                 f"項目 {i + 1}「{label}」の行数が上限（{ITEM_MAX_LINES}行）を超えています。"
             )
         for ln in lines:
-            if len(ln) > ITEM_MAX_LINE_CHARS:
+            if len(ln) > n_chars:
                 label = item[:10] + "…" if len(item) > 10 else item
                 errors.append(
-                    f"項目 {i + 1}「{label}」に {ITEM_MAX_LINE_CHARS} 文字を超える行があります"
+                    f"項目 {i + 1}「{label}」に {n_chars} 文字を超える行があります"
                     f"（{len(ln)} 文字）。"
                 )
                 break  # 1 項目につき 1 件のエラーで十分
@@ -137,17 +203,25 @@ def validate_item_limits(items: list[str]) -> str:
     return "\n".join(errors)
 
 
-def enforce_item_limits(items: list[str]) -> tuple[list[str], bool, str]:
+def enforce_item_limits(
+    items: list[str],
+    max_count: int | None = None,
+    max_chars: int | None = None,
+) -> tuple[list[str], bool, str]:
     """項目数 / 行数 / 文字数の上限を強制する。
+
+    max_count / max_chars を省略した場合は定数のデフォルト値を使う。
 
     Returns: (trimmed_items, was_changed, warn_message)
     （v0.4.4 `item_list._enforce_limits` を移植）
     """
+    n_count = max_count if max_count is not None else ITEM_MAX_COUNT
+    n_chars = max_chars if max_chars is not None else ITEM_MAX_LINE_CHARS
     warnings: list[str] = []
     changed = False
-    if len(items) > ITEM_MAX_COUNT:
-        items = items[:ITEM_MAX_COUNT]
-        warnings.append(f"項目数を上限（{ITEM_MAX_COUNT}）に制限")
+    if len(items) > n_count:
+        items = items[:n_count]
+        warnings.append(f"項目数を上限（{n_count}）に制限")
         changed = True
     trimmed: list[str] = []
     for item in items:
@@ -158,9 +232,9 @@ def enforce_item_limits(items: list[str]) -> tuple[list[str], bool, str]:
             changed = True
         new_lines: list[str] = []
         for ln in lines:
-            if len(ln) > ITEM_MAX_LINE_CHARS:
-                new_lines.append(ln[:ITEM_MAX_LINE_CHARS])
-                warnings.append(f"1行{ITEM_MAX_LINE_CHARS}文字に制限")
+            if len(ln) > n_chars:
+                new_lines.append(ln[:n_chars])
+                warnings.append(f"1行{n_chars}文字に制限")
                 changed = True
             else:
                 new_lines.append(ln)
