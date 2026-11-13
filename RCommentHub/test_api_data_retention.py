@@ -4,9 +4,12 @@ import datetime
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
-from api_data_retention import fresh_user_flags, purge_expired_sessions
+from api_data_retention import (
+    flags_from_records, fresh_user_flags, purge_expired_sessions,
+)
 from settings_manager import SettingsManager
 
 
@@ -37,6 +40,19 @@ class RetentionTests(unittest.TestCase):
             "legacy": {"display_name": "legacy"},
         }
         self.assertEqual(list(fresh_user_flags(flags, now)), ["new"])
+
+    def test_saving_one_viewer_does_not_refresh_other_viewers(self):
+        now = datetime.datetime(2026, 11, 13, 12)
+        def viewer(channel_id, days_old):
+            return SimpleNamespace(
+                channel_id=channel_id, display_name=channel_id,
+                last_comment_time=now - datetime.timedelta(days=days_old),
+                is_whitelist=True, is_blacklist=False,
+                is_filter_target=True,
+            )
+        flags = flags_from_records([viewer('old', 40), viewer('recent', 1)], now)
+        self.assertEqual(list(flags), ['recent'])
+        self.assertEqual(flags['recent']['stored_at'], '2026-11-12T12:00:00')
 
     def test_settings_reload_keeps_unrelated_configuration(self):
         build_dir = Path(__file__).parent / "build"

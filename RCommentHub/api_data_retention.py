@@ -72,3 +72,20 @@ def fresh_user_flags(flags, now=None):
         if cutoff < stored <= current + datetime.timedelta(minutes=5):
             retained[channel_id] = value
     return retained
+
+
+def flags_from_records(records, now=None):
+    """Save viewer flags only while their API-derived identity is fresh."""
+    flags = {}
+    for record in records:
+        seen = getattr(record, 'last_comment_time', None)
+        if not seen or not record.channel_id:
+            continue
+        flags[record.channel_id] = {
+            'stored_at': seen.isoformat(),
+            'display_name': record.display_name,
+            'is_whitelist': record.is_whitelist,
+            'is_blacklist': record.is_blacklist,
+            'is_filter_target': record.is_filter_target,
+        }
+    return fresh_user_flags(flags, now)

@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
 
 a = Analysis(
     ['rcommenthub.py'],
@@ -26,6 +28,12 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Qt6Core.dll needs unversioned ICU exports. Other tools on PATH can cause
+# PyInstaller to bundle incompatible ICU 78 DLLs instead.
+a.binaries[:] = [
+    binary for binary in a.binaries
+    if os.path.basename(binary[0]).lower() not in {'icuuc.dll', 'icudt78.dll'}
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(

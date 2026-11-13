@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QEvent, QPoint, QTimer
 from PySide6.QtGui import QColor, QGuiApplication
 
+from api_data_retention import flags_from_records
 from constants import CONN_STATUS_LABELS, APP_VERSION
 from comment_view_qt import CommentView
 from filter_rules import FilterRule, MATCH_TYPES
@@ -1388,17 +1389,7 @@ class CommentWindowQt(QMainWindow):
         user_mgr = getattr(self._ctrl, "user_mgr", None)
         if user_mgr is None:
             return
-        stored_at = datetime.now().isoformat()
-        flags = {
-            rec.channel_id: {
-                "stored_at":       stored_at,
-                "display_name":     rec.display_name,
-                "is_whitelist":     rec.is_whitelist,
-                "is_blacklist":     rec.is_blacklist,
-                "is_filter_target": rec.is_filter_target,
-            }
-            for rec in user_mgr.all_users()
-        }
+        flags = flags_from_records(user_mgr.all_users())
         self._sm.update({"user_flags": flags})
 
     # ─── フィルタ設定タブ ──────────────────────────────────────────────────────

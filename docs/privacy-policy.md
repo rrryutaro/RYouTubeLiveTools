@@ -70,7 +70,7 @@ RCommentHub does not itself set, read, or recognize browser cookies or similar t
 
 While connected, live chat information is updated as new API responses arrive. RCommentHub checks local session history at launch, whenever a session starts, and every 12 hours while running. It deletes app-managed session folders aged 29 days or more, including comments and viewer snapshots. This limit also applies to Twitch data in mixed session folders. Previously saved session folders are included. If RCommentHub is closed when a folder reaches that age, it is deleted at the next launch.
 
-Saved viewer flags containing API-derived channel IDs and display names are deleted at the same checks once they are 29 days old, unless the user saves them again. Undated flags created by older versions are removed at the first launch of this version. Diagnostic log files are reset at each launch and every 12 hours while running. OAuth tokens remain locally while needed for the user's authorization; users can revoke access and delete local files as described below.
+Saved viewer flags containing API-derived channel IDs and display names are deleted at the same checks once 29 days have passed since the viewer's most recent received comment. Undated flags created by older versions are removed at the first launch of this version. Diagnostic log files are reset at each launch and every 12 hours while running. OAuth tokens remain locally while needed for the user's authorization; users can revoke access and delete local files as described below.
 
 ## Data Sharing
 
