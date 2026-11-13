@@ -9,6 +9,8 @@ import ctypes
 import ctypes.wintypes
 import base64
 
+from api_data_retention import fresh_user_flags
+
 
 # ─── DPAPI 構造体 ─────────────────────────────────────────────────────────────
 
@@ -92,10 +94,25 @@ class SettingsManager:
                     pass
             self._flush()
 
+        self.purge_expired_user_flags()
+
         # API キーを復号してキャッシュ
         self._api_key_cache = self._decrypt_api_key()
 
         return dict(self._data)
+
+    def purge_expired_user_flags(self, now=None):
+        """Remove API-derived viewer identifiers after 29 days."""
+        original = self._data.get("user_flags")
+        if original is None:
+            return 0
+        retained = fresh_user_flags(original, now)
+        if retained == original:
+            return 0
+        removed = len(original) - len(retained) if isinstance(original, dict) else 0
+        self._data["user_flags"] = retained
+        self._flush()
+        return removed
 
     def save(self, data: dict):
         """設定を保存する（平文 api_key は保存しない）"""

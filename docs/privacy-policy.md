@@ -1,6 +1,6 @@
 # RYouTubeLiveTools Privacy Policy
 
-Last updated: July 4, 2026
+Last updated: November 13, 2026
 
 Language: English | [日本語](privacy-policy.ja.md)
 
@@ -59,6 +59,18 @@ RCommentHub is a desktop application. Data is stored on the user's local PC.
 - User-provided OAuth client configuration files such as `client_secrets.json` remain local.
 
 The developer does not operate a server that receives or stores RCommentHub OAuth tokens, YouTube Live chat messages, chat author data, or local session logs.
+
+## Storage on Your Device and Cookies
+
+RCommentHub writes and reads the local files listed above on your device. Saved viewer flags also contain chat author channel IDs and display names in `rcommenthub_settings.json`.
+
+RCommentHub does not itself set, read, or recognize browser cookies or similar tracking technologies. Google OAuth sign-in opens Google's pages in your browser. Google may use browser cookies under the [Google Privacy Policy](https://policies.google.com/privacy); RCommentHub receives OAuth tokens, not browser cookies.
+
+## Retention of YouTube API Data
+
+While connected, live chat information is updated as new API responses arrive. RCommentHub checks local session history at launch, whenever a session starts, and every 12 hours while running. It deletes app-managed session folders aged 29 days or more, including comments and viewer snapshots. This limit also applies to Twitch data in mixed session folders. Previously saved session folders are included. If RCommentHub is closed when a folder reaches that age, it is deleted at the next launch.
+
+Saved viewer flags containing API-derived channel IDs and display names are deleted at the same checks once they are 29 days old, unless the user saves them again. Undated flags created by older versions are removed at the first launch of this version. Diagnostic log files are reset at each launch and every 12 hours while running. OAuth tokens remain locally while needed for the user's authorization; users can revoke access and delete local files as described below.
 
 ## Data Sharing
 

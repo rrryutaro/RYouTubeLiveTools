@@ -21,6 +21,7 @@ from PySide6.QtCore import QTimer, QObject, Signal, Qt
 from constants import VERSION, CONFIG_FILENAME
 from comment_controller import CommentController
 from settings_manager import SettingsManager
+from api_data_retention import purge_expired_sessions
 from connect_dialog_qt import ConnectDialogQt
 from comment_window_qt import CommentWindowQt
 from settings_window_qt import SettingsWindowQt
@@ -148,17 +149,18 @@ def _setup_file_logging(base_dir: str):
         "%(asctime)s [%(name)s] %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    handlers = []
     for logger_name, filename in _file_log_targets:
         log_path = os.path.join(logs_dir, filename)
-        handler = logging.FileHandler(log_path, encoding="utf-8")
+        # Previous versions kept diagnostics indefinitely. Reset them on each start.
+        handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
         handler.setFormatter(fmt)
         logger = logging.getLogger(logger_name)
         logger.addHandler(handler)
+        handlers.append(handler)
         logger.setLevel(logging.DEBUG)
         logger.propagate = True  # basicConfig の stdout ハンドラへも引き続き出力
-
-
-_setup_file_logging(BASE_DIR)
+    return handlers
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -181,8 +183,9 @@ class RCommentHubQtApp:
       × ボタン → _quit_app() → _ctrl.shutdown() + app.quit()
     """
 
-    def __init__(self, app: QApplication):
+    def __init__(self, app: QApplication, diagnostic_handlers=()):
         self._app = app
+        self._diagnostic_handlers = tuple(diagnostic_handlers)
         # 最後のウィンドウが閉じてもイベントループを継続（手動終了制御）
         self._app.setQuitOnLastWindowClosed(False)
 
@@ -254,6 +257,12 @@ class RCommentHubQtApp:
         self._ctrl.on_comment_added(self._on_comment_added)
         self._ctrl.on_conn_status(self._on_conn_status)
 
+        # Clean while running as well as on startup. The timer never opens a window.
+        self._retention_timer = QTimer(self._app)
+        self._retention_timer.setInterval(12 * 60 * 60 * 1000)
+        self._retention_timer.timeout.connect(self._purge_retained_data)
+        self._retention_timer.start()
+
         # ── 起動: コメントビュー（正規メイン）を前面表示 ──────────────────────
         self._comment_win.open()
 
@@ -262,6 +271,22 @@ class RCommentHubQtApp:
         self._ctrl.log(f"RCommentHub v{VERSION} 起動完了")
 
     # ─── ConnectDialog 操作 ───────────────────────────────────────────────────
+
+    def _purge_retained_data(self):
+        purge_expired_sessions(BASE_DIR)
+        self._sm.purge_expired_user_flags()
+        self._ctrl.user_mgr.load_saved_flags(self._sm.get("user_flags", {}))
+        # Diagnostic logs contain live chat IDs and are retained only for the
+        # current run or the last 12 hours, whichever is shorter.
+        for handler in self._diagnostic_handlers:
+            handler.acquire()
+            try:
+                handler.flush()
+                if handler.stream and not handler.stream.closed:
+                    handler.stream.seek(0)
+                    handler.stream.truncate(0)
+            finally:
+                handler.release()
 
     def _open_connect_dialog(self):
         self._connect_dialog.open()
@@ -360,7 +385,8 @@ def main():
 
     # ── メインウィンドウ生成 ──────────────────────────────────────────────
     _log.info("単一起動確認 OK → メインウィンドウ生成開始")
-    _qt_app = RCommentHubQtApp(app)  # noqa: F841  アプリライフサイクルアンカー
+    diagnostic_handlers = _setup_file_logging(BASE_DIR)
+    _qt_app = RCommentHubQtApp(app, diagnostic_handlers)  # noqa: F841  アプリライフサイクルアンカー
     _log.info("メインウィンドウ生成完了 → イベントループ開始")
     sys.exit(app.exec())
 

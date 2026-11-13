@@ -14,11 +14,14 @@ import json
 import os
 import datetime
 
+from api_data_retention import purge_expired_sessions
+
 
 class SessionLogger:
     """セッション単位でコメントログを保存するクラス"""
 
     def __init__(self, base_dir: str):
+        purge_expired_sessions(base_dir)
         self._base_dir     = base_dir
         self._session_dir  = ""
         self._meta_path    = ""
@@ -39,6 +42,7 @@ class SessionLogger:
         セッションフォルダの絶対パスを返す。
         """
         self.close()
+        purge_expired_sessions(self._base_dir)
 
         self._video_id     = video_id
         self._live_chat_id = live_chat_id

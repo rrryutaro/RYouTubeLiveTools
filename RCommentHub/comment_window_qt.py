@@ -1388,8 +1388,10 @@ class CommentWindowQt(QMainWindow):
         user_mgr = getattr(self._ctrl, "user_mgr", None)
         if user_mgr is None:
             return
+        stored_at = datetime.now().isoformat()
         flags = {
             rec.channel_id: {
+                "stored_at":       stored_at,
                 "display_name":     rec.display_name,
                 "is_whitelist":     rec.is_whitelist,
                 "is_blacklist":     rec.is_blacklist,
